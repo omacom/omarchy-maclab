@@ -329,6 +329,69 @@ class LabAutoUnlockTest(unittest.TestCase):
                 self.assertEqual(self.boot_check(cmdline=cmdline)["status"], "fail")
 
 
+class KeyboardAutoTest(unittest.TestCase):
+    """The MacBook Air M3 in lab job j1116-131205-2bb9: Omarchy 4.5 ships no omarchy-brightness-keyboard-auto."""
+
+    DISPLAY_CHECK = ["bundled:apple-display-check", "--read-only"]
+    COMMAND = ["sh", "-c", "command -v omarchy-brightness-keyboard-auto"]
+    UNIT = ["systemctl", "--user", "show", "omarchy-brightness-keyboard-auto.service", "--property=LoadState", "--value"]
+    MISSING = "omarchy-brightness-keyboard-auto isn't installed: Omarchy doesn't ship the automatic keyboard light yet"
+
+    def display_check(self, lux="ok", available="FAIL", loop="FAIL", command=False, unit=False) -> tuple[RecordedHost, dict]:
+        """The display check's ALS lines as the current script prints them, on a Mac with or without the tool's command and unit."""
+        rec = copy.deepcopy(M2_MAX)
+        als = [f"{lux} - the ambient light sensor reads lux", f"{available} - ALS and keyboard LED are available",
+               f"{loop} - the ALS keyboard loop runs"]
+        edit_lines(rec, self.DISPLAY_CHECK, lambda lines: [new for l in lines if "the ALS keyboard loop runs" not in l
+                                                           for new in (als if "ALS and keyboard LED" in l else [l])])
+        answer(rec, self.COMMAND, *((0, "/usr/bin/omarchy-brightness-keyboard-auto\n") if command else (1, "")))
+        answer(rec, self.UNIT, 0, "loaded\n" if unit else "not-found\n")
+
+        _, mac, report = run(rec)
+
+        self.assertEqual(errors(SCHEMA, report), [])
+        return mac, results(report)
+
+    def test_without_the_tool_a_sensor_that_reads_lux_passes_and_the_loop_still_fails(self):
+        _, found = self.display_check()
+
+        light, loop = found["input.ambient-light"], found["input.auto-keyboard-light"]
+        self.assertEqual((light["status"], light["classification"]["outcome"]), ("pass", "works"))
+        self.assertEqual(light["evidence"], ["FAIL - ALS and keyboard LED are available", self.MISSING, "ok - the ambient light sensor reads lux"])
+        self.assertEqual((loop["status"], loop["classification"]["outcome"]), ("fail", "fails"))
+        self.assertEqual(loop["evidence"], ["FAIL - the ALS keyboard loop runs", self.MISSING])
+
+    def test_without_the_tool_a_sensor_that_reads_no_lux_still_fails(self):
+        _, found = self.display_check(lux="FAIL")
+
+        self.assertEqual(found["input.ambient-light"]["status"], "fail")
+        self.assertIn("FAIL - the ambient light sensor reads lux", found["input.ambient-light"]["evidence"])
+        self.assertEqual((found["input.auto-keyboard-light"]["status"], found["input.auto-keyboard-light"]["classification"]["outcome"]),
+                         ("fail", "fails"))
+
+    def test_with_the_tool_installed_a_loop_that_isnt_running_still_fails(self):
+        _, found = self.display_check(available="ok", command=True, unit=True)
+
+        loop = found["input.auto-keyboard-light"]
+        self.assertEqual((loop["status"], loop["classification"]["outcome"]), ("fail", "fails"))
+        self.assertEqual(loop["evidence"], ["FAIL - the ALS keyboard loop runs"])
+        self.assertEqual(found["input.ambient-light"]["status"], "pass")
+
+    def test_either_the_command_or_the_unit_counts_as_installed(self):
+        for command, unit in ((True, False), (False, True)):
+            with self.subTest(command=command, unit=unit):
+                _, found = self.display_check(command=command, unit=unit)
+
+                self.assertEqual(found["input.ambient-light"]["status"], "fail")
+                self.assertEqual(found["input.auto-keyboard-light"]["evidence"], ["FAIL - the ALS keyboard loop runs"])
+
+    def test_a_working_tool_is_not_looked_for(self):
+        mac, found = self.display_check(available="ok", loop="ok")
+
+        self.assertNotIn(self.COMMAND, mac.commands_run)
+        self.assertEqual(found["input.auto-keyboard-light"]["status"], "pass")
+
+
 class ScriptFailureTest(unittest.TestCase):
     def test_mac_checks_speakerguardd_pass_fails_speaker_protection_off_the_macbook_neo(self):
         rec = copy.deepcopy(M2_MAX)

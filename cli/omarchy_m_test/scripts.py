@@ -64,6 +64,17 @@ DISPLAY_CHECK = {
     "the ALS keyboard loop runs": "input.auto-keyboard-light",
 }
 
+# The automatic keyboard light (omarchy-brightness-keyboard-auto and its user unit) came with the omarchy-mac line;
+# Omarchy doesn't ship it yet. Without the tool, apple-display-check fails both lines that call it: the light sensor
+# is then judged by its lux reading alone. The loop is left as the script reports it, with the tool's absence noted
+# in its evidence. With the tool installed, both lines are judged as the script reports them.
+KEYBOARD_AUTO = "omarchy-brightness-keyboard-auto"
+KEYBOARD_AUTO_AVAILABLE = "ALS and keyboard LED are available"
+KEYBOARD_AUTO_LOOP = "the ALS keyboard loop runs"
+KEYBOARD_AUTO_COMMAND = ["sh", "-c", f"command -v {KEYBOARD_AUTO}"]
+KEYBOARD_AUTO_UNIT = ["systemctl", "--user", "show", f"{KEYBOARD_AUTO}.service", "--property=LoadState", "--value"]
+KEYBOARD_AUTO_MISSING = f"{KEYBOARD_AUTO} isn't installed: Omarchy doesn't ship the automatic keyboard light yet"
+
 # Lab-only auto-unlock (scripts/lab-only-autounlock, docs/encrypted-macs.md) adds one key slot for a key file
 # the initramfs carries, which omarchy-apple-silicon-boot-check counts as the throwaway provisioning slot. It is
 # on when its mkinitcpio drop-in carries /etc/cryptsetup-keys.d/<volume>.key and this boot's command line gave
@@ -180,6 +191,34 @@ def _boot_check(host: Host, lines: list[tuple[str, str]]) -> list[tuple[str, str
     return lines
 
 
+def _keyboard_auto_missing(host: Host) -> bool:
+    """Neither the command nor its user unit is there; False when either is, or either can't be told."""
+    command = host.run(KEYBOARD_AUTO_COMMAND)
+    if command.returncode not in (1, 127) or command.stdout.strip():
+        return False
+    unit = host.run(KEYBOARD_AUTO_UNIT)
+    return unit.returncode == 0 and unit.stdout.strip() == "not-found"
+
+
+def _keyboard_auto(host: Host, found: dict[str, list[tuple[str, str]]]) -> dict[str, list[tuple[str, str]]]:
+    """apple-display-check's lines, with the sensor's availability line skipped rather than failed when the
+    keyboard-auto tool it calls is missing, so the lux reading alone judges input.ambient-light.
+
+    The loop's lines keep their status: a missing tool is only noted there. Only a failed `--available` line is
+    looked into: when it passed, the tool ran.
+    """
+    if not any(status == "FAIL" for status, _ in found.get(KEYBOARD_AUTO_AVAILABLE, [])):
+        return found
+    if not _keyboard_auto_missing(host):
+        return found
+    adjusted = dict(found)
+    adjusted[KEYBOARD_AUTO_AVAILABLE] = [*(("SKIP", raw) if status == "FAIL" else (status, raw)
+                                          for status, raw in found[KEYBOARD_AUTO_AVAILABLE]), ("SKIP", KEYBOARD_AUTO_MISSING)]
+    if KEYBOARD_AUTO_LOOP in found:
+        adjusted[KEYBOARD_AUTO_LOOP] = [*found[KEYBOARD_AUTO_LOOP], ("INFO", KEYBOARD_AUTO_MISSING)]
+    return adjusted
+
+
 def mac_check(host: Host) -> ScriptResults:
     run = host.run_bundled("mac-check")
     found: dict[str, list[tuple[str, str]]] = {}
@@ -203,7 +242,8 @@ def mac_check(host: Host) -> ScriptResults:
     return ScriptResults(results, boot_loader)
 
 
-def _manual_check(host: Host, system: System, name: str, args: list[str], pattern: re.Pattern, mapping: dict[str, str]) -> list[dict]:
+def _manual_check(host: Host, system: System, name: str, args: list[str], pattern: re.Pattern, mapping: dict[str, str],
+                  adjust=None) -> list[dict]:
     if system.stack != "converged":
         why = f"{name} checks the converged image's omarchy-mac integration; not run on {system.describe()}"
         return [_result(check_id, "skip", [why]) for check_id in mapping.values()]
@@ -214,6 +254,8 @@ def _manual_check(host: Host, system: System, name: str, args: list[str], patter
         if match and match.group(2) in mapping:
             status = "PASS" if match.group(1) == "ok" else match.group(1)
             found.setdefault(match.group(2), []).append(_timed_out(status, raw, timeout))
+    if adjust:
+        found = adjust(host, found)
     ran = (bool(found) or run.returncode in (0, 1)) and not run.timed_out
     # A check several descriptions map to gets one result from all their lines.
     results = []
@@ -230,4 +272,4 @@ def audio_check(host: Host, system: System) -> list[dict]:
 
 
 def display_check(host: Host, system: System) -> list[dict]:
-    return _manual_check(host, system, "apple-display-check", ["--read-only"], _DISPLAY_LINE, DISPLAY_CHECK)
+    return _manual_check(host, system, "apple-display-check", ["--read-only"], _DISPLAY_LINE, DISPLAY_CHECK, _keyboard_auto)
