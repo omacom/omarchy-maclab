@@ -196,7 +196,13 @@ argument, and rebuild the boot images.
   (setup records it from a boot that had them) whatever cmdline base or
   strip the job asks for.
 - On an Omarchy Mac, `omarchy-apple-silicon-boot-check` (full mode) reports
-  the extra key slot as a failure while auto-unlock is enabled.
+  the extra key slot as a failure while auto-unlock is enabled. The check
+  stops there, so `omarchy-m-test` reports `boot.chain` as skipped ("lab-only
+  auto-unlock key slot present") when the drop-in and this boot's
+  `rd.luks.key=` account for exactly one extra slot; any other extra slot
+  still fails. It doesn't prove the key file opens that slot (that would
+  take `cryptsetup open`, which `omarchy-m-test` never runs), and the result
+  says the slot wasn't verified.
 - If a boot goes wrong, pick the Limine fallback or a snapshot entry, or type
   the passphrase: it still works.
 

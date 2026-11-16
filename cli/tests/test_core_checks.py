@@ -18,6 +18,7 @@ from omarchy_m_test.consent import ACCEPT_PROMPT
 from omarchy_m_test.recording import ENDED, RecordedHost
 from omarchy_m_test.host import CommandResult
 from omarchy_m_test.packages import install_command
+from omarchy_m_test.safety import refusal
 from omarchy_m_test.sections import APPLE
 from tests.desktop import recording
 from tests.live_mac import LiveMac, MacState, live_recording
@@ -263,6 +264,69 @@ class RootChecksTest(unittest.TestCase):
         self.assertEqual(found["network.wifi"]["evidence"], ["mac-check didn't run: mac-check isn't installed next to omarchy-m-test"])
         self.assertEqual(report["system"]["boot_loader"], "unknown")
         self.assertEqual(found["gpu.driver"]["status"], "pass")
+
+
+class LabAutoUnlockTest(unittest.TestCase):
+    """The MacBook Neo in lab job j1116-125420-8bac: scripts/lab-only-autounlock's key slot is the boot check's extra slot."""
+
+    UUID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+    LAB_CMDLINE = f"root=UUID=5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9 rw rd.luks.name={UUID}=root rd.luks.key={UUID}=/etc/cryptsetup-keys.d/root.key quiet\n"
+    DROPIN = "FILES+=(/etc/cryptsetup-keys.d/root.key)\n"
+
+    def boot_check(self, slots=2, dropin=DROPIN, cmdline=LAB_CMDLINE) -> dict:
+        rec = copy.deepcopy(M2_MAX)
+        line = f"FAIL  boot-check       throwaway LUKS keyslot still present after provisioning ({slots} keyslots, expected 1)"
+        edit_lines(rec, MAC_CHECK, lambda lines: [line if " boot-check " in l else l for l in lines])
+        rec["files"]["/etc/mkinitcpio.conf.d/99-lab-only-autounlock.conf"] = None if dropin is None else {"text": dropin}
+        rec["files"]["/proc/cmdline"] = {"text": cmdline}
+
+        _, _, report = run(rec)
+
+        self.assertEqual(errors(SCHEMA, report), [])
+        return results(report)["boot.chain"]
+
+    def test_the_lab_auto_unlock_slot_is_skipped_not_failed(self):
+        chain = self.boot_check()
+
+        self.assertEqual(chain["status"], "skip")
+        self.assertEqual(chain["evidence"][1:], [
+            "lab-only auto-unlock key slot present (scripts/lab-only-autounlock): it is the extra key slot",
+            "the extra key slot wasn't verified as the lab's auto-unlock key: omarchy-m-test never opens the disk with a key,"
+            " so only the drop-in and this boot's rd.luks.key= say it is",
+            "the boot check stops there, so the rest of the boot chain wasn't checked",
+        ])
+
+    def test_the_slot_is_not_proved_with_cryptsetup(self):
+        """Proving the key opens the slot takes `cryptsetup open --test-passphrase`, which the tool never runs."""
+        rec = copy.deepcopy(M2_MAX)
+        line = "FAIL  boot-check       throwaway LUKS keyslot still present after provisioning (2 keyslots, expected 1)"
+        edit_lines(rec, MAC_CHECK, lambda lines: [line if " boot-check " in l else l for l in lines])
+        rec["files"]["/etc/mkinitcpio.conf.d/99-lab-only-autounlock.conf"] = {"text": self.DROPIN}
+        rec["files"]["/proc/cmdline"] = {"text": self.LAB_CMDLINE}
+
+        _, mac, _ = run(rec)
+
+        self.assertEqual([argv for argv in mac.commands_run if "cryptsetup" in argv], [])
+        self.assertIsNotNone(refusal(["sudo", "-n", "cryptsetup", "open", "--test-passphrase", "--key-file",
+                                      "/etc/cryptsetup-keys.d/root.key", "/dev/nvme0n1p5"]))
+
+    def test_an_extra_slot_without_lab_auto_unlock_still_fails(self):
+        chain = self.boot_check(dropin=None)
+
+        self.assertEqual(chain["status"], "fail")
+        self.assertEqual(len(chain["evidence"]), 1)
+
+    def test_a_slot_beyond_the_lab_auto_unlock_one_still_fails(self):
+        chain = self.boot_check(slots=3)
+
+        self.assertEqual(chain["status"], "fail")
+        self.assertEqual(chain["evidence"][1], "lab-only auto-unlock key slot present (scripts/lab-only-autounlock): it is one of the extra key slots, not all of them")
+
+    def test_a_boot_not_given_the_key_still_fails(self):
+        for cmdline in (f"root=UUID=5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9 rw rd.luks.name={self.UUID}=root quiet\n",
+                        self.LAB_CMDLINE.replace(f"rd.luks.name={self.UUID}=root", "rd.luks.name=9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a=root")):
+            with self.subTest(cmdline=cmdline):
+                self.assertEqual(self.boot_check(cmdline=cmdline)["status"], "fail")
 
 
 class ScriptFailureTest(unittest.TestCase):

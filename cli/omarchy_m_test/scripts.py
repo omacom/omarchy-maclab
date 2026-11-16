@@ -64,6 +64,20 @@ DISPLAY_CHECK = {
     "the ALS keyboard loop runs": "input.auto-keyboard-light",
 }
 
+# Lab-only auto-unlock (scripts/lab-only-autounlock, docs/encrypted-macs.md) adds one key slot for a key file
+# the initramfs carries, which omarchy-apple-silicon-boot-check counts as the throwaway provisioning slot. It is
+# on when its mkinitcpio drop-in carries /etc/cryptsetup-keys.d/<volume>.key and this boot's command line gave
+# the volume that key: rd.luks.name=<uuid>=<volume> and rd.luks.key=<uuid>=<that key>. That the key file really
+# opens the extra slot goes unchecked: that takes `cryptsetup open --test-passphrase`, and the tool runs cryptsetup
+# only for status and isLuks (safety.py), so the result says the slot wasn't verified.
+EXTRA_KEYSLOT = re.compile(r"throwaway LUKS keyslot still present after provisioning \((\d+) keyslots, expected (\d+)\)")
+AUTOUNLOCK_DROPIN = "/etc/mkinitcpio.conf.d/99-lab-only-autounlock.conf"
+AUTOUNLOCK_KEY = re.compile(r"FILES\+=\((/etc/cryptsetup-keys\.d/([A-Za-z0-9_-]+)\.key)\)")
+CMDLINE = "/proc/cmdline"
+AUTOUNLOCK_PRESENT = "lab-only auto-unlock key slot present (scripts/lab-only-autounlock)"
+AUTOUNLOCK_UNVERIFIED = ("the extra key slot wasn't verified as the lab's auto-unlock key: omarchy-m-test never opens"
+                         " the disk with a key, so only the drop-in and this boot's rd.luks.key= say it is")
+
 _MAC_CHECK_LINE = re.compile(r"^(PASS|FAIL|WARN|SKIP|INFO)\s+(\S+)\s+(.*?)\s*$")
 _AUDIO_LINE = re.compile(r"^(PASS|FAIL) (.+?)\s*$")
 _DISPLAY_LINE = re.compile(r"^(ok|FAIL) - (.+?)\s*$")
@@ -128,6 +142,44 @@ def _why_not(name: str, run) -> str:
     return f"{name} didn't run: {detail}"
 
 
+def _read(host: Host, path: str) -> str | None:
+    try:
+        return host.read_file(path).decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
+def _lab_autounlock(host: Host) -> bool:
+    """Lab-only auto-unlock is enabled and unlocked this boot's root volume."""
+    dropin = (_read(host, AUTOUNLOCK_DROPIN) or "").strip()
+    found = AUTOUNLOCK_KEY.fullmatch(dropin)
+    if not found:
+        return False
+    key, volume = found.groups()
+    words = (_read(host, CMDLINE) or "").split()
+    uuids = {word.split("=")[1] for word in words if re.fullmatch(rf"rd\.luks\.name=[^=]+={re.escape(volume)}", word)}
+    return any(f"rd.luks.key={uuid}={key}" in words for uuid in uuids)
+
+
+def _boot_check(host: Host, lines: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """boot-check's lines, with the one extra key slot lab-only auto-unlock adds skipped rather than failed.
+
+    The boot check stops at its first problem, so the rest of the boot chain goes unchecked: skipped, not passed.
+    Any other extra slot still fails.
+    """
+    for i, (status, raw) in enumerate(lines):
+        extra = EXTRA_KEYSLOT.search(raw) if status == "FAIL" else None
+        if extra and _lab_autounlock(host):
+            slots, expected = int(extra[1]), int(extra[2])
+            if slots == expected + 1:
+                return [*lines[:i], ("SKIP", raw), ("SKIP", f"{AUTOUNLOCK_PRESENT}: it is the extra key slot"),
+                        ("SKIP", AUTOUNLOCK_UNVERIFIED),
+                        ("SKIP", "the boot check stops there, so the rest of the boot chain wasn't checked"), *lines[i + 1:]]
+            if slots > expected + 1:
+                return [*lines[:i + 1], (status, f"{AUTOUNLOCK_PRESENT}: it is one of the extra key slots, not all of them"), *lines[i + 1:]]
+    return lines
+
+
 def mac_check(host: Host) -> ScriptResults:
     run = host.run_bundled("mac-check")
     found: dict[str, list[tuple[str, str]]] = {}
@@ -141,6 +193,8 @@ def mac_check(host: Host) -> ScriptResults:
             boot_loader = "limine" if detail.startswith("Limine") else "grub" if detail.startswith("GRUB") else "unknown"
         if key in MAC_CHECK:
             found.setdefault(key, []).append(_timed_out(status, raw, timeout))
+    if "boot-check" in found:
+        found["boot-check"] = _boot_check(host, found["boot-check"])
     ran = (bool(found) or run.returncode in (0, 1)) and not run.timed_out
     results = [
         _from_lines(check_id, found.get(key, []), f"mac-check reported nothing for {key}" if ran else _why_not("mac-check", run))
