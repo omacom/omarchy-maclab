@@ -166,6 +166,9 @@ type Config struct {
 }
 
 type Server struct {
+	// jobRead, which only a test sets, runs in updateJobByID between its
+	// read of the job and its save.
+	jobRead atomic.Pointer[func(id string)]
 	cfg     Config
 	store   *store
 	reports *reports.Store
@@ -226,6 +229,16 @@ type Server struct {
 	// releaseMu makes a verdict one step: whose turn it is depends on the
 	// history it is added to.
 	releaseMu sync.Mutex
+	// forgetting is held by a forgetting's sweep, and read by an Installed
+	// run's seal (installed.go).
+	forgetting sync.RWMutex
+	// auditWrite is read by every write to labd's copies of Audit logs, each
+	// under its Mac's auditMu, and held by a forgetting's sweep of them: a
+	// Mac that Joins during the sweep waits as an enrolled one does.
+	auditWrite sync.RWMutex
+	// retiredAudit is where labd's copy of each Mac retired since it started
+	// keeps its Audit log, under mu (access.go).
+	retiredAudit map[*dev]string
 	// cables are the Sightings: which Lab-owned Mac is on which of the
 	// Out-of-band controller's ports (see sighting.go).
 	cables *cables
@@ -383,6 +396,15 @@ func New(ctx context.Context, cfg Config, logger *log.Logger) (*Server, error) {
 		}
 	}
 	s.cables = newCables(cfg.OOB)
+	if cfg.OOB != nil {
+		kept, err := st.sightings()
+		if err != nil {
+			st.db.Close()
+			rep.Close()
+			return nil, fmt.Errorf("reading the Sightings: %w", err)
+		}
+		s.cables.kept, s.cables.saved = kept, kept
+	}
 	s.lines = newGroupLines(st, s.clock(), logger, cfg.Signal, cfg.SignalDir)
 	s.labGroup = labGroupLines{l: s.lines, link: s.pageAddress}
 	s.agents = agentsLines{s.lines}
@@ -608,15 +630,44 @@ func (s *Server) baselinePath(name string) string {
 
 var jobMu sync.Mutex
 
+// jobEnded, under jobMu, holds for a run's copy of a job the stored job a
+// cancel found done (updateJobUnlessDone). The run's own next save takes it:
+// only the run's goroutine writes the copy it reads without a lock.
+var jobEnded = map[*api.Job]*api.Job{}
+
 // updateJob changes j with f and saves it. Only lab exclude (hExclude)
 // changes a job's GateExclusion, through f; any other caller's copy of j may
 // be older than that, so j takes the stored one first.
 func (s *Server) updateJob(j *api.Job, f func(*api.Job)) {
 	jobMu.Lock()
 	defer jobMu.Unlock()
+	s.updateJobLocked(j, f)
+}
+
+// updateJobUnlessDone is updateJob, unless the stored job is done: then
+// nothing is saved, and j, a run's copy read before the job ended, takes the
+// stored one at the run's next save (jobEnded).
+func (s *Server) updateJobUnlessDone(j *api.Job, f func(*api.Job)) {
+	jobMu.Lock()
+	defer jobMu.Unlock()
+	if stored, err := s.store.job(j.ID); err == nil && stored.State == api.JobDone {
+		jobEnded[j] = stored
+		return
+	}
+	s.updateJobLocked(j, f)
+}
+
+// updateJobLocked is updateJob under jobMu.
+func (s *Server) updateJobLocked(j *api.Job, f func(*api.Job)) {
+	if stored, ok := jobEnded[j]; ok {
+		delete(jobEnded, j)
+		*j = *stored
+		s.forgottenLocked(j)
+		return
+	}
 	j.GateExclusion = s.store.gateExclusion(j.ID)
 	f(j)
-	s.inFlightLocked(j)
+	s.forgottenLocked(j)
 	if j.Result.OMT != nil {
 		// said when a job is read (withReport), never kept
 		j.Result.OMT.ReportState = ""
@@ -628,12 +679,17 @@ func (s *Server) updateJob(j *api.Job, f func(*api.Job)) {
 	s.hub.publish("job", j.Spec.Device, map[string]any{"id": j.ID, "device": j.Spec.Device, "state": j.State, "outcome": j.Outcome})
 }
 
+// updateJobByID is updateJob of the stored job, read and saved in one hold
+// of jobMu: no change between the two is lost.
 func (s *Server) updateJobByID(id string, f func(*api.Job)) {
 	jobMu.Lock()
+	defer jobMu.Unlock()
 	j, err := s.store.job(id)
-	jobMu.Unlock()
+	if h := s.jobRead.Load(); h != nil {
+		(*h)(id)
+	}
 	if err == nil {
-		s.updateJob(j, f)
+		s.updateJobLocked(j, f)
 	}
 }
 
@@ -660,7 +716,7 @@ func (s *Server) Handler() http.Handler {
 	for _, p := range pageRoutes {
 		m.HandleFunc(p.pattern, s.pageHandler(p))
 	}
-	return s.edge(s.capBodies(s.withPages(m)))
+	return bodyDeadlines(s.edge(s.answerCuts(s.capBodies(s.withPages(m)))))
 }
 
 // routes is every API route and who may reach it (see reach).
@@ -709,6 +765,7 @@ func (s *Server) routes() []route {
 		{"POST /api/devices/{name}/end-enrollment", maintainers, s.hEndEnrollment},
 		{"GET /api/retired", maintainers, s.hRetired},
 		{"POST /api/devices/{name}/lease", team, s.hLease},
+		{"POST /api/devices/{name}/window", macNamed, s.hWindow},
 		{"DELETE /api/devices/{name}/lease", team, s.hRelease},
 		{"GET /api/devices/{name}/leases", macNamed, s.hLeaseRecord},
 		{"POST /api/devices/{name}/reset", team, s.hReset},
@@ -727,6 +784,7 @@ func (s *Server) routes() []route {
 		{"POST /api/enroll-tokens", maintainers, s.hEnrollToken},
 		{"POST /api/volunteer", anyone, s.hVolunteerGone},
 		{"GET /api/volunteer/lab-agent", anyone, s.hVolunteerGone},
+		{"GET /join", anyone, s.hJoinScript},
 		{"GET /api/join/lab-agent", invited, s.hJoinAgent},
 		{"GET /api/join/lab-agent.sig", invited, s.hAgentSig},
 		{"GET /api/agent/lab-agent", ownMac, s.hJoinAgent},
@@ -902,8 +960,11 @@ func (s *Server) hEnrollToken(w http.ResponseWriter, r *http.Request) {
 	tok := "enr_" + randHex(16)
 	now := s.now()
 	exp := now.Add(joinCommandTTL)
-	if _, err := s.store.addJoinCommand(hashSecret(tok), req, by, now, exp); errors.Is(err, errNameHeld) {
+	if _, err := s.store.addJoinCommandAsked(hashSecret(tok), req, by, askerOf(r), now, exp); errors.Is(err, errNameHeld) {
 		httpErr(w, 409, "a Join command for a Mac called %s is waiting already: names are unique", req.Name)
+		return
+	} else if errors.Is(err, errAskerCut) {
+		s.refuse(w, r, 401, "%v", err)
 		return
 	} else if err != nil {
 		httpErr(w, 500, "%v", err)
@@ -1029,7 +1090,7 @@ const (
 func (s *Server) hEnroll(w http.ResponseWriter, r *http.Request) {
 	// Anyone may send this body, before labd knows who they are: it must
 	// arrive soon, not trickle in to hold the connection.
-	http.NewResponseController(w).SetReadDeadline(time.Now().Add(enrollBodyTimeout))
+	readBodyBy(w, r.Context(), time.Now().Add(enrollBodyTimeout))
 	var req api.EnrollRequest
 	if !decodeBody(w, r, enrollBodyMax, &req) {
 		return
@@ -1387,17 +1448,13 @@ func (s *Server) hForgetDevice(w http.ResponseWriter, r *http.Request) {
 // dropNamedState clears what labd keeps under a forgotten Mac's name, since
 // the name can be taken again by another Mac, or another person's: its
 // screens, serial log and baselines go; its Audit log is kept, renamed after
-// the enrollment (id), for Maintainers. Its jobs stay, for Maintainers only
-// (seesJob).
-func (s *Server) dropNamedState(name, id string) {
+// the enrollment as it leaves the fleet (retireAudit), for Maintainers. Its
+// jobs stay, for Maintainers only (seesJob).
+func (s *Server) dropNamedState(name string) {
 	for _, p := range []string{s.screenDir(name), s.serialPath(name), s.baselinePath(name), s.omtBaselinePath(name)} {
 		if err := os.RemoveAll(p); err != nil {
 			s.log.Printf("forget %s: %v", name, err)
 		}
-	}
-	a := s.auditPath(name)
-	if err := os.Rename(a, strings.TrimSuffix(a, ".jsonl")+"."+id+".jsonl"); err != nil && !os.IsNotExist(err) {
-		s.log.Printf("forget %s: audit log: %v", name, err)
 	}
 }
 
@@ -1416,7 +1473,7 @@ func (s *Server) forget(v *dev, by Person, holder string, force bool) (int, erro
 	case errors.Is(err, errMacGone):
 		return 404, fmt.Errorf("no device %q", v.snapshot().Name)
 	case err != nil:
-		return 500, err
+		return statusOr500(err), err
 	}
 	close(v.gone)
 	return 200, nil
@@ -1533,6 +1590,9 @@ func (s *Server) hardResetBy(ctx context.Context, v *dev, p Person) (said string
 	case v.goneWhy != "":
 		v.mu.Unlock()
 		return "", refuse(http.StatusNotFound, "no Hard reset was sent: %s", v.goneWhy)
+	case v.forgotten:
+		v.mu.Unlock()
+		return "", refuse(http.StatusNotFound, "no Hard reset was sent: %s is leaving the lab", name)
 	}
 	v.resetting = true
 	v.mu.Unlock()
@@ -1941,7 +2001,10 @@ func (s *Server) submit(by Person, spec api.JobSpec, retryOf string, notes ...st
 		j.Events = append(j.Events, api.JobEvent{Time: now, Msg: n})
 	}
 	j.EffectiveRecoveryMode = effectiveRecoveryMode(spec.RecoveryMode, d.EffectiveRecoveryMode)
-	if err := s.store.saveJob(j); err != nil {
+	jobMu.Lock()
+	err := s.saveJobLocked(j)
+	jobMu.Unlock()
+	if err != nil {
 		return nil, 500, err
 	}
 	// lab forget may have dropped the Mac since it was looked up, and then
@@ -2086,7 +2149,7 @@ func (s *Server) hCancel(w http.ResponseWriter, r *http.Request) {
 	why := ""
 	if j.AccountID != p.AccountID || j.AccountID == 0 && j.Maintainer != p.Handle {
 		why = "by @" + p.Handle
-		s.log.Printf("job %s (%s) of %s: canceled by @%s", j.ID, j.Spec.Device, orStr(j.Maintainer, "labd"), p.Handle)
+		s.log.Printf("job %s (%s) of %s: canceled by %s", j.ID, j.Spec.Device, accountOr(j.AccountID, orStr(j.Maintainer, "labd")), accountOr(p.AccountID, "someone"))
 	}
 	s.mu.Lock()
 	running := s.cancels[id] != nil

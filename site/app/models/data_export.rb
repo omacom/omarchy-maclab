@@ -5,7 +5,6 @@
 # the machine grouping key.
 module DataExport
   LICENSE = { id: "CC0-1.0", url: "https://creativecommons.org/publicdomain/zero/1.0/" }.freeze
-  ASAHI_NOTE = "Expected Asahi states come from the Asahi Linux feature-support tables, CC BY 3.0; see the catalogue's sources."
 
   REPORT_COLUMNS = %w[
     id url uploaded_at model board soc chip kernel stack omarchy_version distro boot_loader encryption candidate_set
@@ -27,7 +26,6 @@ module DataExport
   def self.json(url_for, filter = ReportFilter.new)
     {
       license: LICENSE,
-      note: ASAHI_NOTE,
       generated_at: Time.current.utc.iso8601,
       catalogue_version: Catalogue.version,
       filters: filter.values.presence,

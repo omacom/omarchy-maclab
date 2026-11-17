@@ -2,23 +2,36 @@
 # The Front door's test 4: a 1 GB upload in parts, cut mid-part, resumes,
 # and its checksum matches (spec section 16, Ready item 1).
 #
-#   fd04-upload-resume [--dry-run | --local | --lab] [--size BYTES] [--records DIR]
+#   fd04-upload-resume [--dry-run | --local | --lab --mini USER@HOST] [--size BYTES] [--records DIR]
 #
 # lab upload sends a file of random bytes in 32 MiB parts and says each part
-# as labd takes it (MACLAB_UPLOAD_PROGRESS=1). Once labd holds two, the test
-# waits half the time a part took and kills lab: the cut falls inside a
-# part. The same command, run again, must say that it resumes and that labd
-# still holds at least the parts it held, and not all; it is left to finish,
-# and the SHA-256 lab prints must be the file's. labd stores the file only
-# under the SHA-256 the upload named, so a wrong byte anywhere fails the
-# close.
+# as labd takes it (MACLAB_UPLOAD_PROGRESS=1), and once labd holds two it
+# stops one part halfway (MACLAB_UPLOAD_HOLD=1), as a fast machine would
+# otherwise send every part between two looks. Once lab says labd holds two
+# or more, and not all, lab is stopped and labd's upload folder is read:
+# labd writes a part into a file of its own there, which becomes the part
+# only when it is whole. lab is killed only while such a file holds some of a
+# part's bytes, and let go on otherwise, until it is: so the cut is inside a
+# part, and seen to be. What lab sent before the kill may still reach labd
+# and make that part whole: once labd receives no part, the folder is read
+# again, and a part seen partly received must not be whole (labd's file
+# keeps its inode when it becomes the part). The same command, run again,
+# must say that it resumes, that labd holds the parts the folder showed
+# whole then, at least the parts it held at the cut, and not all, so that
+# it sends the cut part again;
+# it is left to finish, and the SHA-256 lab prints must be the file's. labd
+# stores the file only under the SHA-256 the upload named, so a wrong byte
+# anywhere fails the close.
 #
-#   --size BYTES   the file's size: 1 GiB through the Lab address,
-#                  320 MiB (10 parts) against a local labd
+#   --size BYTES      the file's size: 1 GiB through the Lab address,
+#                     320 MiB (10 parts) against a local labd
+#   --mini USER@HOST  through the Lab address: the mini, where labd's upload
+#                     folder is read (ssh -t, sudo -u lab: the owner types
+#                     the password)
 set -euo pipefail
 # shellcheck source=scripts/cutover/front-door/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 fd_options "$@"
 no_rest
@@ -32,7 +45,7 @@ if [[ $MODE == dry ]]; then
   cat <<PLAN
 $ME: dry run. Through $ADDRESS, under the saved login, it would:
   1. make a file of $SIZE random bytes ($parts parts of 32 MiB) and take its SHA-256
-  2. run: lab upload FILE, and kill it inside a part once labd holds two
+  2. run: lab upload FILE; once labd holds two parts, stop it and read labd's upload folder (ssh -t MINI sudo -u lab find $MINI_DATA/artifacts/.upload-SHA256 ...), and kill it while labd holds part of a part
   3. run: lab upload FILE again, which must say "resuming: labd holds N of $parts parts" with 2 <= N < $parts
   4. let that run finish and compare the SHA-256 lab prints with the file's
   5. write docs/acceptance/$(TZ=Australia/Brisbane date +%Y-%m-%d)-front-door-04.md
@@ -40,6 +53,8 @@ Nothing was sent.
 PLAN
   exit 0
 fi
+
+[[ $MODE != lab || -n $MINI ]] || fail "--lab needs --mini USER@HOST: labd's upload folder is read there, to see the cut inside a part"
 
 workspace
 if [[ $MODE == local ]]; then local_lab; else logged_in; fi
@@ -60,37 +75,123 @@ rec "file: $SIZE bytes, $parts parts of 32 MiB"
 # held_now: how many parts lab last said labd holds.
 held_now() { sed -n 's/^lab: labd holds \([0-9]*\) of [0-9]* parts$/\1/p' "$err" | tail -n 1; }
 
+# labd_folder [SCRIPT]: labd's upload folder, one line for each file:
+# "whole INODE BYTES N" for part N, which labd holds, "under INODE BYTES
+# HEAD" for one it is receiving, HEAD its first 64 bytes in hex: labd's name
+# for such a file says no part, its bytes do. Through the Lab address it is
+# read on the mini. With SCRIPT, the folder is read once SCRIPT, run in it,
+# has ended.
+last_part=$(( SIZE - (parts - 1) * PART_BYTES ))
+# shellcheck disable=SC2016
+heads='for f in .part-*; do [ -f "$f" ] && printf "head %s %s\n" "$f" "$(head -c 64 "$f" 2> /dev/null | od -An -tx1 | tr -d " \n")"; done; true'
+labd_folder() {
+  local dir="artifacts/.upload-$want" first="${1:-:}"
+  {
+    if [[ $MODE == local ]]; then
+      (cd "$LOCAL_DATA/$dir" 2> /dev/null && eval "$first" && find . -maxdepth 1 -type f -exec ls -lin {} + 2> /dev/null && sh -c "$heads")
+    else
+      # shellcheck disable=SC2029
+      ssh -t "$MINI" sudo -u lab sh -c "'cd $MINI_DATA/$dir 2> /dev/null || exit 0; $first; find . -maxdepth 1 -type f -exec ls -lin {} +; $heads'" | tee /dev/stderr | tr -d '\r'
+    fi
+  } | awk '$1 == "head" { head[$2] = $3; next }
+      $NF ~ /\/[0-9]+$/ { n = $NF; sub(/.*\//, "", n); print "whole", $1, $6, n; next }
+      $NF ~ /\/\.part-[^\/]*$/ { name = $NF; sub(/.*\//, "", name); under[name] = $1 " " $6 }
+      END { for (name in under) print "under", under[name], head[name] }' || true
+}
+
+# part_of HEAD: the part whose first bytes begin with HEAD (16 bytes or
+# more, in hex), or nothing.
+part_heads=""
+part_of() {
+  local n
+  (( ${#1} >= 32 )) || return 0
+  if [[ -z $part_heads ]]; then
+    for (( n = 1; n <= parts; n++ )); do
+      part_heads+="$n $(dd if="$file" bs=64 skip=$(( (n - 1) * PART_BYTES / 64 )) count=1 2> /dev/null | od -An -tx1 | tr -d ' \n')"$'\n'
+    done
+  fi
+  awk -v h="$1" 'index($2, h) == 1 { print $1; exit }' <<<"$part_heads"
+}
+# whole_in LISTING N: the listing shows part N whole.
+whole_in() { awk -v n="$2" '$1 == "whole" && $4 == n { found = 1 } END { exit !found }' <<<"$1"; }
+
+# partly_held LISTING: the most bytes labd holds of a part it does not hold
+# whole, or nothing. A whole part not yet renamed is no part partly received.
+partly_held() {
+  awk -v whole="$PART_BYTES" -v last="$last_part" '$1 == "under" && $3 > 0 && $3 != whole && $3 != last && $3 > most { most = $3 } END { if (most > 0) print most }' <<<"$1"
+}
+
+# cut_files LISTING: "INODE HEAD" of each file of a part partly received.
+cut_files() {
+  awk -v whole="$PART_BYTES" -v last="$last_part" '$1 == "under" && $3 > 0 && $3 != whole && $3 != last { print $2, $4 }' <<<"$1"
+}
+
+# Until labd receives no part: at most a minute.
+# shellcheck disable=SC2016
+no_part_under_way='n=0; while [ $n -lt 120 ] && ls -a | grep -q "^[.]part-"; do sleep 0.5; n=$((n + 1)); done'
+
 # The first run, cut inside a part.
 : > "$err"
-MACLAB_UPLOAD_PROGRESS=1 "$LAB_CMD" upload "$file" > "$out" 2> "$err" &
+MACLAB_UPLOAD_PROGRESS=1 MACLAB_UPLOAD_HOLD=1 "$LAB_CMD" upload "$file" > "$out" 2> "$err" &
 pid=$!
-# A fast machine takes several parts between two looks: a part's time is
-# the time between the looks over the parts taken in it, and lab is held
-# still while that is worked out.
-first=""
-second=""
+HALTED_PIDS+=("$pid")
+# Parts may go four at a time and end in waves, so the time between two
+# looks says nothing about how long the parts under way still need: lab is
+# stopped the moment it is seen past one part, and labd is looked at then.
+stopped="" two="" cut=""
 while kill -0 "$pid" 2>/dev/null; do
   n="$(held_now)"
-  if [[ -z $first && ${n:-0} -ge 1 ]]; then first="$(now)" n1="$n"; fi
-  if [[ -n $first && ${n:-0} -ge 2 && $n -gt $n1 ]]; then
+  if [[ ${n:-0} -ge 2 ]]; then
+    two=1
+    (( n < parts )) || break
     kill -STOP "$pid" 2>/dev/null || break
-    second="$(now)" n2="$n"
-    break
+    look="$(labd_folder)"
+    cut="$(partly_held "$look")"
+    if [[ -n $cut ]]; then
+      stopped=1
+      break
+    fi
+    kill -CONT "$pid" 2>/dev/null || break
   fi
   sleep 0.02
 done
-if [[ -z $second ]]; then
-  wait "$pid" || give_up "lab upload failed before any cut: $(plain "$err")"
-  give_up "lab upload ended before labd was seen to hold two parts: no cut was made"
+if [[ -z $stopped ]]; then
+  kill -9 "$pid" 2>/dev/null || true
+  if ! wait "$pid" && [[ -z $two ]]; then
+    give_up "lab upload failed before any cut: $(plain "$err")"
+  fi
+  [[ -n $two ]] || give_up "lab upload ended before labd was seen to hold two parts: no cut was made"
+  give_up "lab upload was never stopped while labd held part of a part: no cut inside a part was made"
 fi
-half="$(calc "($second - $first) / ($n2 - $n1) / 2")"
-kill -CONT "$pid"
-sleep "$half"
-kill -STOP "$pid" 2>/dev/null || give_up "lab upload ended before the cut"
 before="$(held_now)"
 kill -9 "$pid" 2>/dev/null || give_up "lab upload ended before the cut"
 wait "$pid" 2>/dev/null || true
-rec "cut: lab upload killed while it sent, with $before of $parts parts taken by labd and the next under way"
+rec "cut: lab upload killed while it sent, with $before of $parts parts taken by labd and $cut bytes of another received"
+
+# What lab sent before the kill, once labd has it all.
+after="$(labd_folder "$no_part_under_way")"
+! grep -q '^under ' <<<"$after" || give_up "labd still received parts a minute after the kill: whether the cut part stayed cut is not known"
+# A cut part is one labd did not hold whole at the cut, nor after: a part
+# it held whole already and was sent again, a retry, is no cut of a part.
+kept="" retried=""
+while read -r inode head; do
+  [[ -n $inode ]] || continue
+  n="$(part_of "$head")"
+  [[ -n $n ]] || continue
+  if whole_in "$look" "$n"; then
+    retried="$n"
+    continue
+  fi
+  ! awk -v i="$inode" '$1 == "whole" && $2 == i { found = 1 } END { exit !found }' <<<"$after" || continue
+  ! whole_in "$after" "$n" || continue
+  kept+="${kept:+, }$n"
+done <<<"$(cut_files "$look")"
+if [[ -z $kept && -n $retried ]]; then
+  give_up "the part labd held $cut bytes of at the cut was part $retried, which it held whole already: a retry was cut, and no part was cut mid-way"
+fi
+[[ -n $kept ]] || give_up "what lab sent before the kill made the part labd held $cut bytes of whole: no part was cut mid-way"
+whole_after="$(grep -c '^whole ' <<<"$after" || true)"
+rec "after the kill: labd holds $whole_after parts whole, and part $kept, which it was receiving at the cut, stays cut"
 
 # The same command again.
 start="$(now)"
@@ -100,6 +201,7 @@ held="$(sed -n 's/^lab: resuming: labd holds \([0-9]*\) of \([0-9]*\) parts$/\1 
 [[ ${held#* } == "$parts" ]] || give_up "lab counts ${held#* } parts in a file of $parts"
 held="${held% *}"
 (( held >= before )) || give_up "labd held $before parts at the cut and only $held after it: parts were lost"
+(( held == whole_after )) || give_up "the run after the cut found labd holding $held parts, and its folder held $whole_after whole: it would not send the cut part again"
 (( held < parts )) || give_up "labd held every part after the cut: nothing was left to resume"
 rec "resume: labd held $held of $parts parts; the same command sent the other $((parts - held)) in $(calc "$(now) - $start") s"
 [[ $got == "$want" ]] || give_up "checksum: labd stored another SHA-256 than the file's"

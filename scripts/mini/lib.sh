@@ -40,7 +40,10 @@ TAP_FILES="https://raw.githubusercontent.com"
 CONTAINER_LABEL="org.omarchy-mac.lab.container"
 BUILDER_LABEL="org.omarchy-mac.lab.builder"
 BUILDER_VOLUMES="maclab-cache:40G maclab-pkgcache:120G"
-BUILDER_IMAGES="maclab-kbuild:1:builder maclab-pkgbuild:1:builder/pkg"
+# The two images: the name, lab-builder's option for it and the folder of
+# the build it is made from. Each is tagged by what it is made from
+# (builder_image), so a build whose builder/ is other has other images.
+BUILDER_IMAGES="maclab-kbuild:--image:builder maclab-pkgbuild:--pkg-image:builder/pkg"
 # The backup guest on pve2, by the name the set-up writes into /etc/hosts.
 BACKUP_GUEST="lab-backup"
 BACKUP_HOUSE="rest:https://$BACKUP_GUEST:8000/mini/"
@@ -144,6 +147,9 @@ BUILDER_IO="$LAB_ROOT/io"
 # builder/pkg.
 BUILDER_ROOTFS="ArchLinuxARM-aarch64-latest.tar.gz"
 BUILDER_PKG_CONTEXT="$LAB_ROOT/pkg-image"
+# The Builder's images the set-up made, one NAME:TAG a line, the last made
+# last: it removes all but the two last of each name.
+BUILDER_MADE="$LAB_ROOT/builder-images"
 # The lab's Signal sender: signal-cli from the copy of the Homebrew tools,
 # its account's keys and the two groups' ids as files of the lab account.
 SIGNAL_PLIST="$LAUNCHD_DIR/$SIGNAL_LABEL.plist"
@@ -255,6 +261,31 @@ leans() {
   done < <(grep -rlF --null /opt/homebrew "$new" 2>/dev/null || true)
 }
 
+# repoint DIR COPY: a script below DIR that runs a file of another copy of
+# the tools by its path ($LAB_TOOLS/<copy>/...) runs that file of COPY
+# instead. A wrapper the set-up pointed at its copy (rewrite_kegs) moves
+# with a tool into another copy, as a held tool does at the next copy and a
+# switch back does into the copy in use, and the copy it named is pruned.
+repoint() {
+  local dir="$1" to="$2" file d text changed from rep mode
+  while IFS= read -r -d '' file; do
+    [[ -f $file && ! -L $file && "$(head -c 2 "$file")" == '#!' ]] || continue
+    text="$(cat "$file"; printf x)"
+    text="${text%x}"
+    changed="$text"
+    for d in "$LAB_TOOLS"/*; do
+      [[ -d $d && ! -L $d ]] || continue
+      from="$LAB_TOOLS/$(basename "$d")/" rep="$to/"
+      [[ $from != "$rep" ]] || continue
+      # Unquoted: bash 3.2 would keep the quotes of a quoted replacement.
+      changed="${changed//"$from"/$rep}"
+    done
+    [[ $changed != "$text" ]] || continue
+    if [[ -x $file ]]; then mode=0555; else mode=0444; fi
+    { chmod u+w "$file" && printf '%s' "$changed" > "$file" && chmod "$mode" "$file"; } || return 1
+  done < <(grep -rlF --null "$LAB_TOOLS/" "$dir" 2>/dev/null || true)
+}
+
 # formulae: the Homebrew formulae of deploy/homebrew-formulae, one a line.
 # The script that sources this names the folder in $deploy.
 # shellcheck disable=SC2154
@@ -279,10 +310,35 @@ wired_address() {
 }
 
 # sshd_says: whether sshd takes a password after Unlock, as sshd itself
-# reads its configuration; SSHD_WANT is keys only. Empty without root.
+# reads its configuration; SSHD_WANT is keys only. Keywords are any case
+# (macOS 27's sshd -T prints PasswordAuthentication), and are said in
+# lowercase. Empty only when sshd -T printed nothing, as without root.
 SSHD_WANT="kbdinteractiveauthentication no passwordauthentication no"
 sshd_says() {
-  sys sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "kbdinteractiveauthentication" { print $1, $2 }' | sort | tr '\n' ' ' | sed 's/ $//' || true
+  sys sshd -T 2>/dev/null | awk '
+    { k = tolower($1) }
+    k == "passwordauthentication" || k == "kbdinteractiveauthentication" { print k, $2; n++ }
+    END { if (NR && !n) print "neither passwordauthentication nor kbdinteractiveauthentication" }' | sort | tr '\n' ' ' | sed 's/ $//' || true
+}
+
+# sshd_match: the first line of a Match block, in sshd_config or a file of
+# sshd_config.d, that lets SSH take a password again, as "FILE: line", or
+# nothing. sshd -T prints only what holds outside every Match block. A block
+# ends with its file.
+sshd_match() {
+  local f files=()
+  for f in "$SYSROOT/etc/ssh/sshd_config" "$SYSROOT/etc/ssh/sshd_config.d"/*; do
+    [[ ! -f $f ]] || files+=("$f")
+  done
+  (( ${#files[@]} )) || return 0
+  awk '
+    FNR == 1 { inside = 0 }
+    { line = $0; sub(/^[ \t]+/, "", line); split(line, w, /[ \t]*=[ \t]*|[ \t]+/); k = tolower(w[1]) }
+    k == "" || k ~ /^#/ { next }
+    k == "match" { inside = 1; next }
+    inside && (k == "passwordauthentication" || k == "kbdinteractiveauthentication" || k == "challengeresponseauthentication") && tolower(w[2]) != "no" {
+      print FILENAME ": " line; exit
+    }' "${files[@]}" 2>/dev/null || true
 }
 
 # power_value KEY: one of pmset's settings in use.
@@ -397,11 +453,27 @@ verified() {
 
 stop_sender() { stopped "$SIGNAL_LABEL" || fail "$SIGNAL_LABEL did not stop (20 s)"; }
 
+# sender_answers: signal-cli's daemon takes a connection on its socket.
+sender_answers() { nc -U -w 1 "$SIGNAL_SOCKET" </dev/null >/dev/null 2>&1; }
+
+# start_sender: the daemon started again, and waited for until its socket
+# answers, for LAB_SENDER_WAIT seconds (30): what is sent right after, the
+# test line or labd's own lines, finds it there. One that does not answer is
+# said, and not failed.
 start_sender() {
+  local waited=0 wait="${LAB_SENDER_WAIT:-30}"
   stop_sender
   launchctl enable "system/$SIGNAL_LABEL" || true
   launchctl bootstrap system "$SIGNAL_PLIST" || fail "launchd did not take $SIGNAL_PLIST"
   loaded "$SIGNAL_LABEL" || fail "$SIGNAL_LABEL is not loaded after its start: see $LAB_HOME/log/signal-cli.log"
+  until sender_answers; do
+    if (( waited >= wait )); then
+      say "$SIGNAL_LABEL started, but its socket $SIGNAL_SOCKET does not answer after $wait s: labd's lines and scripts/mini/signal test fail until it does. See $LAB_HOME/log/signal-cli.log"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
 }
 
 # notify TEXT: one operations line for "Agents". A line that cannot be sent
@@ -433,12 +505,33 @@ recovered() {
 # What follows is for the two scripts that restart labd: Deploy and the
 # Maintenance run. Both run as root and reach labd as the lab account.
 
-# tell TEXT: one line for "Agents", from a script that runs as root.
+# tell TEXT: one line for "Agents", from a script that runs as root. Deploy
+# runs from a checkout, often in an admin's home that the lab account cannot
+# read, so the lab account runs no script of it: it writes the line in
+# notify.log, as notify does, and hands it to labd on the ops socket with
+# curl. A labd that is loaded and does not take it yet, as one just started
+# again, is asked again each second for LAB_TELL_TRIES seconds (10).
 tell() {
-  local hook
-  hook="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/notify"
+  local log="$LAB_HOME/log/notify.log" line n kept=0
   say "$1"
-  as_lab "$hook" agents "$1" >/dev/null 2>&1 || say "that line did not reach \"Agents\": it is in $LAB_HOME/log/notify.log"
+  line="$(tr '\n' ' ' <<<"$1")"
+  line="${line% }"
+  # shellcheck disable=SC2016
+  if (no_link "$log") && as_lab /bin/sh -c 'printf "%s agents %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$2"' tell "$line" "$log" 2>/dev/null; then
+    kept=1
+  fi
+  for (( n = ${LAB_TELL_TRIES:-10}; n > 0; n-- )); do
+    if [[ -S $OPS_SOCKET ]] && printf '%s' "$line" | as_lab curl -fsS --max-time 10 --unix-socket "$OPS_SOCKET" -H 'Content-Type: text/plain' --data-binary @- http://labd/agents/line >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( n == 1 )) || ! loaded "$LABD_LABEL"; then break; fi
+    sleep 1
+  done
+  if (( kept )); then
+    say "that line did not reach \"Agents\": it is in $log"
+  else
+    say "that line did not reach \"Agents\", and could not be written to $log either"
+  fi
 }
 
 # ops METHOD PATH: labd's answer on its ops socket.
@@ -471,14 +564,20 @@ ops_socket_missing() {
 
 # drain_jobs MINUTES: labd starts no further job, and this waits until the
 # jobs and builds that run have ended. A job that waits stays queued and
-# starts after the restart. Only a labd too old to drain (404) is gone on
-# from with no drain. Returns 1, with the drain lifted, when some still run
-# after MINUTES or labd's drain fails or answers what is not understood;
-# NOT_DRAINED then says which, and STILL_RUNNING what still ran.
+# starts after the restart. Only a labd too old to drain (404, or a
+# LaunchDaemon file that names no ops socket) is gone on from with no drain.
+# Returns 1, with the drain lifted, when some still run after MINUTES, when
+# labd runs with no ops socket though its file names one, or when labd's
+# drain fails or answers what is not understood; NOT_DRAINED then says
+# which, and STILL_RUNNING what still ran.
 STILL_RUNNING=""
 NOT_DRAINED=""
 drain_jobs() {
   local limit=$(( $1 * 60 )) step="${LAB_DRAIN_STEP:-5}" waited=0 jobs builds
+  if loaded "$LABD_LABEL" && ops_socket_missing; then
+    NOT_DRAINED="labd runs with no ops socket at $OPS_SOCKET, though its LaunchDaemon file names one, so running jobs could not be kept whole. If labd is down for good, stop it (sudo launchctl bootout system/$LABD_LABEL) and run this again"
+    return 1
+  fi
   if [[ ! -S $OPS_SOCKET ]] || ! loaded "$LABD_LABEL"; then
     say "labd does not run: there is no job to drain"
     return 0
@@ -528,6 +627,49 @@ lift_drain() {
   (( DRAINING )) || return 0
   DRAINING=0
   ops DELETE /drain >/dev/null || true
+}
+
+# builder_image NAME DIR BUILD [ROOTFS]: NAME:TAG, the image of the Builder
+# made from BUILD's DIR. TAG is the first 12 hex of a sha256 over each
+# file's path and content in DIR, but the package image's folder inside
+# builder/; the package image's adds the root file system it is made from
+# (ROOTFS, or the one in its build context). Nothing when DIR, or that root
+# file system, is not there.
+builder_image() {
+  local name="$1" dir="$2" build="$3" rootfs="${4:-$BUILDER_PKG_CONTEXT/$BUILDER_ROOTFS}" sums
+  [[ -d $build/$dir ]] || return 0
+  if [[ $dir == builder/pkg ]]; then
+    [[ -s $rootfs ]] || return 0
+  else
+    rootfs=""
+  fi
+  sums="$(
+    cd "$build/$dir" || exit 1
+    find . -type f ! -path './pkg/*' | LC_ALL=C sort | while IFS= read -r file; do
+      echo "$(shasum -a 256 < "$file" | cut -c1-64) $file"
+    done
+    [[ -z $rootfs ]] || echo "$(shasum -a 256 < "$rootfs" | cut -c1-64) $BUILDER_ROOTFS"
+  )" || return 0
+  echo "$name:$(shasum -a 256 <<<"$sums" | cut -c1-12)"
+}
+
+# builder_runs OPTION: what the Builder's installed LaunchDaemon file gives
+# lab-builder for OPTION (--image, --pkg-image, --cpus); nothing without it.
+builder_runs() {
+  awk -v o="<string>$1</string><string>" 'index($0, o) { s = substr($0, index($0, o) + length(o)); sub(/<.*/, "", s); print s; exit }' "$LAUNCHD_DIR/$BUILDER_LABEL.plist" 2>/dev/null || true
+}
+
+# builder_behind BUILD: one line for each image the Builder does not run
+# that BUILD names, when the Builder is installed.
+builder_behind() {
+  local pair name option dir want runs
+  [[ -f $LAUNCHD_DIR/$BUILDER_LABEL.plist ]] || return 0
+  for pair in $BUILDER_IMAGES; do
+    IFS=: read -r name option dir <<<"$pair"
+    want="$(builder_image "$name" "$dir" "$1")"
+    runs="$(builder_runs "$option")"
+    [[ -z $want || $runs == "$want" ]] || echo "the Builder runs ${runs:-the image lab-builder names when it is given none}, not $want, the image of $dir in the Deployed build"
+  done
 }
 
 # parts_bad: what labd says is wrong with the Builder or the Out-of-band

@@ -524,10 +524,15 @@ volunteer_mac() {
 }
 
 # undo_own_token TAG: the owner's own Lab token named TAG, revoked on their
-# page, if it is there.
+# page, if it is there. Only a page that opened says it is not.
 undo_own_token() {
   local id
   "$PROBE" page --session "$OWNER_SESSION" --find "/me/tokens/([0-9]+)/revoke\"[^<]*<input[^>]*>[^<]*<button[^>]*data-sentence=\"[^\"]*$1" /me > "$WORK/undo-token.out" 2>&1 || true
+  if ! grep -qx 'status=200' "$WORK/undo-token.out"; then
+    id="$(fact undo-token status)"
+    rec "NOT UNDONE: the Lab token $1 may still be live: $ADDRESS/me did not open (${id:-no answer}): revoke it there"
+    return 0
+  fi
   id="$(sed -n 's/^found=//p' "$WORK/undo-token.out" | head -n 1)"
   if [[ -z $id ]]; then
     rec "undone: no Lab token $1 is left on $ADDRESS/me"

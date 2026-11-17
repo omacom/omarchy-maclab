@@ -77,6 +77,17 @@ WATCH_PID=""
 STREAM=""
 # The build asked for and not ended yet: a run that ends first cancels it.
 BUILD_ID=""
+# While lab asks for a build, before its id is read: what lab said, the
+# builds labd listed just before, and what was asked (ASKED_FOR: kind,
+# device, config name, recipe folder, as labd lists a build). A run that
+# ends then cancels the build lab named, or else each build queued or
+# running that was not listed before, asked under the run's own login
+# (ASKER) for what it asked: never another Maintainer's, nor one asked by
+# hand for something else. labd's builds carry no tag of the run.
+ASKING=""
+ASKED_BEFORE=""
+ASKED_FOR=""
+ASKER=""
 PROBE=""
 POLLER=""
 # lab upload says each part as labd takes it: the transfer's window opens at
@@ -146,6 +157,8 @@ fi
 ask_kernel=(build "$kernel")
 if [[ -n $config ]]; then ask_kernel+=(--config "$config"); else ask_kernel+=(--device "$MAC"); fi
 ask_package=(package "$recipe")
+# The recipe's folder as lab gives it to labd: absolute, links kept.
+recipe_abs="$(cd "$recipe" && pwd)"
 
 # The record, and the one line the Ready list reads.
 
@@ -162,17 +175,45 @@ fail() {
 }
 
 # cancel_build: the build the run asked for and did not see end, canceled
-# under the saved login.
+# under the saved login. With no id read, it is the one new build of the
+# run's login that matches what it asked for, kernel source included: with
+# two or more it cannot tell its own, and cancels none.
 cancel_build() {
-  local id="$BUILD_ID"
-  [[ -n $id ]] || return 0
+  local ids="$BUILD_ID" id
   BUILD_ID=""
-  "$PROBE" ask POST "/api/builds/$id/cancel" > "$WORK/cancel.out" 2>&1 || true
-  if grep -qxE 'status=(200|204)' "$WORK/cancel.out"; then
-    rec "build $id was canceled: the run ended before it did"
-  else
-    rec "NOT CANCELED: build $id may still be queued or running: cancel it on $ADDRESS/builds/$id ($(sed -n 's/^said=//p' "$WORK/cancel.out" | head -n 1))"
+  if [[ -z $ids && -n $ASKING ]]; then
+    ids="$(sed -n 's/^build \(b[0-9a-z-]*\)[: ].*/\1/p' "$ASKING" 2> /dev/null | head -n 1)"
+    if [[ -z $ids ]]; then
+      if ! builds_now "$WORK/builds.after"; then
+        ASKING=""
+        rec "NOT CANCELED: the run ended while it asked for a build, and labd's builds could not be read: cancel any build of the run's that is queued or running on $ADDRESS/builds"
+        return 0
+      fi
+      ids="$(awk -F'|' -v me="$ASKER" -v want="$ASKED_FOR" '
+        NR == FNR { if (sub(/^row=/, "")) seen[$1] = 1; next }
+        sub(/^row=/, "") && $1 ~ /^b[0-9a-z-]+$/ && !seen[$1] && ($2 == "queued" || $2 == "running") && $3 == me && ($4 "|" $5 "|" $6 "|" $7 "|" $8) == want { print $1 }' "$ASKED_BEFORE" "$WORK/builds.after")"
+      if [[ $ids == *$'\n'* ]]; then
+        ASKING=""
+        rec "NOT CANCELED: the run ended while it asked for a build, and these new builds of this login match it: ${ids//$'\n'/, }. Which is the run's is not known, so none was canceled: cancel the run's on $ADDRESS/builds"
+        return 0
+      fi
+    fi
   fi
+  ASKING=""
+  for id in $ids; do
+    "$PROBE" ask POST "/api/builds/$id/cancel" > "$WORK/cancel.out" 2>&1 || true
+    if grep -qxE 'status=(200|204)' "$WORK/cancel.out"; then
+      rec "build $id was canceled: the run ended before it did"
+    else
+      rec "NOT CANCELED: build $id may still be queued or running: cancel it on $ADDRESS/builds/$id ($(sed -n 's/^said=//p' "$WORK/cancel.out" | head -n 1))"
+    fi
+  done
+}
+
+# builds_now FILE: labd's newest builds, one row= line each: id, state,
+# who asked, kind, device, config name, recipe folder, source as given.
+builds_now() {
+  "$PROBE" ask --rows id,state,asked_by,kind,device,config_name,recipe_dir,source.input GET "/api/builds?limit=100" > "$1" 2>&1 && grep -qx 'status=200' "$1"
 }
 
 # gate_done WORD STATUS: pass, fail or stopped.
@@ -312,11 +353,22 @@ build() {
   local readings unread worst slow failed inflight peak
   shift 3
   t0="$(date +%s)"
+  ASKED_BEFORE="$WORK/builds.before.$k"
+  builds_now "$ASKED_BEFORE" || give_up "labd's builds could not be read before $title was asked for: $(sed -n 's/^said=//p' "$ASKED_BEFORE" | head -n 1)"
+  if [[ $1 == package ]]; then
+    ASKED_FOR="package|||$recipe_abs|"
+  elif [[ -n $config ]]; then
+    ASKED_FOR="||$(basename "$config")||$kernel"
+  else
+    ASKED_FOR="|$MAC|||$kernel"
+  fi
+  ASKING="$WORK/ask.$k"
   "$LAB_CMD" "$@" --force --no-wait > "$WORK/ask.$k" 2> "$WORK/ask.$k.err" \
     || give_up "$title could not be asked for: $(plain "$WORK/ask.$k.err")"
   id="$(sed -n 's/^build \(b[0-9a-z-]*\)[: ].*/\1/p' "$WORK/ask.$k" | head -n 1)"
   [[ -n $id ]] || give_up "lab did not name the build it asked for ($title)"
   BUILD_ID="$id"
+  ASKING=""
   say "$title: build $id asked for"
   while :; do
     state="$(build_state "$id")"
@@ -364,7 +416,7 @@ build() {
     # refused or an image that cannot read its input.
     case "$stage" in
       build | package) ;;
-      *) give_up "$title (build $id) $state after $seconds s in its ${stage:-first} stage, before it compiled anything: fewer cores do not mend that, so nothing was decided. lab build-log $id says why. A build that could not read its input at /in was built by an image older than the Deployed build: on the mini, sudo $MINI_SCRIPTS/container as \"\$(cat /usr/local/lab/container-user)\" image delete maclab-kbuild:1 maclab-pkgbuild:1, then sudo $MINI_SCRIPTS/setup, which builds both again" ;;
+      *) give_up "$title (build $id) $state after $seconds s in its ${stage:-first} stage, before it compiled anything: fewer cores do not mend that, so nothing was decided. lab build-log $id says why. A build that could not read its input at /in was built by an image older than the Deployed build: on the mini, sudo $MINI_SCRIPTS/setup builds the images the Deployed build names and starts the Builder with them" ;;
     esac
     rec "$title (build $id): $state after $seconds s, in its $stage stage"
     return 0
@@ -467,6 +519,9 @@ else
   PROBE="$WORK/hardening-probe"
   (cd "$REPO" && go build -o "$PROBE" ./tools/hardening-probe) || fail "hardening-probe did not build. Nothing was asked of the mini."
 fi
+"$PROBE" ask --out "$WORK/auth.json" GET /api/auth > "$WORK/auth.out" 2>&1 || true
+ASKER="$(sed -n 's/.*"login": *"\([^"]*\)".*/\1/p' "$WORK/auth.json" 2> /dev/null | head -n 1)"
+[[ -n $ASKER ]] || fail "labd did not say whose login this is (GET /api/auth): the run could not tell a build of its own from another's. Nothing was asked of the mini."
 
 RECORD="${RECORDS:-$REPO/docs/acceptance}"
 mkdir -p "$RECORD"

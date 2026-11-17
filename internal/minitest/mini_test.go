@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -105,7 +106,8 @@ type mini struct {
 // "loaded.<label>" for any other. The daemon is what the last argument names.
 // A test may write beside it the state and the count of starts print shows.
 // bootstrap.fails.<label> makes a bootstrap fail: a number is how many times,
-// anything else a text whose LaunchDaemon file is refused.
+// anything else a text whose LaunchDaemon file is refused. bootout.sticks.<label>
+// keeps a daemon loaded through every bootout.
 const launchctlStub = `#!/bin/bash
 echo "launchctl $*" >> "$STUB_LOG"
 label="$(basename "${!#}" .plist)"
@@ -117,7 +119,7 @@ case "$1" in
     echo "state = $(cat "$state.state" 2>/dev/null || echo running)"
     echo "runs = $(cat "$state.runs" 2>/dev/null || echo 1)"
     [[ ! -f $STUB_STATE/pid.$label ]] || echo "	pid = $(<"$STUB_STATE/pid.$label")" ;;
-  bootout) rm -f "$state" ;;
+  bootout) [[ -f $STUB_STATE/bootout.sticks.$label ]] || rm -f "$state" ;;
   bootstrap)
     [[ -f $3 ]] || exit 5
     f="$STUB_STATE/bootstrap.fails.$label"
@@ -156,9 +158,14 @@ echo "installer $*" >> "$STUB_LOG"
 `
 
 // as-lab stands in for sudo -u lab: it writes down what the lab account was
-// asked to run, and runs it.
+// asked to run, and runs it. A program under STUB_LAB_CANNOT_READ is one the
+// lab account cannot read, as in an admin's home, and does not run.
 const asLabStub = `#!/bin/bash
 echo "as-lab $*" >> "$STUB_LOG"
+if [[ -n ${STUB_LAB_CANNOT_READ:-} && $1 == "$STUB_LAB_CANNOT_READ"/* ]]; then
+  echo "bash: $1: Permission denied" >&2
+  exit 126
+fi
 exec "$@"
 `
 
@@ -249,16 +256,32 @@ func newMini(t *testing.T) *mini {
 		write(t, m.tree+"/deploy/"+f, read(t, filepath.Join(repo(t), "deploy", f)), 0o644)
 	}
 	write(t, m.tree+"/deploy/pins", "# none\n", 0o644)
-	m.env = append(os.Environ(),
+	m.env = append(minisEnviron(),
 		"LAB_SYSROOT="+m.root,
 		"PATH="+m.bin+":"+os.Getenv("PATH"),
 		"STUB_LOG="+m.log,
 		"STUB_STATE="+filepath.Join(root, "state"),
 		"LAB_VERIFY_TRIES=2",
+		"LAB_TELL_TRIES=2",
+		"LAB_SENDER_WAIT=0",
 		"LAB_AS_LAB="+m.bin+"/as-lab",
 	)
 	m.machine()
 	return m
+}
+
+// minisEnviron is this process's environment less what the mini's
+// programs never get: the scripts run under sudo and the daemons under
+// launchd, neither of which passes a JAVA_HOME. A runner's own JAVA_HOME
+// would have signal-cli's wrapper run that Java instead of its copy's.
+func minisEnviron() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "JAVA_HOME=") {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 // run starts one of the mini's scripts and returns what it printed and its exit status.
@@ -352,6 +375,12 @@ func (k key) sign(t *testing.T, file string) {
 // the made-up labd below reads.
 func bundle(t *testing.T, k key, dir, tag string, healthy bool, routes ...string) {
 	t.Helper()
+	bundleWith(t, k, dir, tag, healthy, nil, routes...)
+}
+
+// bundleWith is bundle with more files in it, by their path in the build.
+func bundleWith(t *testing.T, k key, dir, tag string, healthy bool, more map[string]string, routes ...string) {
+	t.Helper()
 	routes = append(routes, "the first routes")
 	labd := "#!/bin/sh\n[ \"$1\" = --version ] && echo " + tag + "\n"
 	if !healthy {
@@ -365,6 +394,17 @@ func bundle(t *testing.T, k key, dir, tag string, healthy bool, routes ...string
 		{"lab-server/bin/labd", labd, 0o755},
 		{"lab-server/deploy/" + labdLabel + ".plist", "<plist><!-- " + tag + " --></plist>\n", 0o664},
 		{"lab-server/deploy/cloudflared.yml", "# " + routes[0] + "\n", 0o644},
+	}
+	names := make([]string, 0, len(more))
+	for name := range more {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		files = append(files, struct {
+			name, text string
+			mode       int64
+		}{"lab-server/" + name, more[name], 0o644})
 	}
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)

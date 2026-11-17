@@ -3,7 +3,7 @@
 <article class="report terminal">
   <div class="terminal-bar">
     <span class="terminal-title">omarchy-m-test</span>
-    <span class="dim">report {{.PublicID}}</span>
+    <span class="dim">report {{template "copy" (copy "the report id" .PublicID)}}</span>
   </div>
   <div class="terminal-body">
     <p class="prompt-line"><span class="prompt">$</span> omarchy-m-test</p>
@@ -111,6 +111,6 @@
     {{- end}}
   </div>
 </article>
-<p class="credit dim">Asahi hardware states: <a href="https://asahilinux.org/docs/platform/feature-support/overview/">Asahi Linux feature support</a>, CC BY 3.0. <a href="{{.ModelHref}}">More on this Mac</a>.</p>
+<p class="credit dim"><a href="{{.ModelHref}}">More on this Mac</a>.</p>
 {{- end}}
 {{- end}}

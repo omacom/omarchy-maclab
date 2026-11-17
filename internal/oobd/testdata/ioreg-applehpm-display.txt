@@ -1,0 +1,225 @@
++-o AppleHPMARMSPMI  <class AppleHPMARMSPMI, id 0x100000530, registered, matched, active, busy 0 (1026 ms), retain 11>
+  | {
+  |   "IOClass" = "AppleHPMARMSPMI"
+  |   "RID" = 0
+  |   "IONameMatched" = "usbc,sn201202x,spmi"
+  | }
+  | 
+  +-o AppleHPMDeviceHALType3@C  <class AppleHPMDeviceHALType3, id 0x100000540, registered, matched, active, busy 0 (1019 ms), retain 9>
+  | | {
+  | |   "RID" = 0
+  | |   "Vendor ID" = 40
+  | |   "Product ID" = 0
+  | | }
+  | | 
+  | +-o Port-USB-C@1  <class AppleHPMInterfaceType10, id 0x1000007d0, registered, matched, active, busy 0 (980 ms), retain 55>
+  |   | {
+  |   |   "PortTypeDescription" = "USB-C"
+  |   |   "ConnectionCount" = 12
+  |   |   "SOPPID" = <9b80>
+  |   |   "Description" = "Port-USB-C@1"
+  |   |   "TransportsProvisioned" = ("CC","USB2","CIO")
+  |   |   "Metadata" = {}
+  |   |   "PortDescription" = "Port-USB-C@1"
+  |   |   "ConnectionActive" = Yes
+  |   |   "ConnectionUUID" = "5A0E1B7C-0000-4000-8000-00000000A001"
+  |   |   "PortType" = 2
+  |   |   "PortNumber" = 1
+  |   |   "TransportsActive" = ("CC","USB2")
+  |   |   "Plug Event Count" = 42
+  |   |   "IOAccessoryDetect" = Yes
+  |   | }
+  |   | 
+  |   +-o LDCM  <class AppleHPMLDCMType2, id 0x100000837, registered, matched, active, busy 0 (30 ms), retain 10>
+  |   | | {
+  |   | |   "Description" = "Port-USB-C@1/LDCM"
+  |   | | }
+  |   | | 
+  |   +-o CC  <class IOPortTransportStateCC, id 0x100000838, registered, matched, active, busy 0 (122 ms), retain 15>
+  |   | | {
+  |   | |   "Description" = "Port-USB-C@1/CC"
+  |   | | }
+  |   | | 
+  |   | +-o SOP'  <class IOPortTransportComponentCCUSBPDSOPp, id 0x1000199ce, registered, matched, active, busy 0 (2 ms), retain 8>
+  |   | |   {
+  |   | |     "Metadata" = {"VDOs"=(<7836601c>,<00000000>),"Product Type Description"="Passive Cable","Vendor ID"=13944,"Product ID"=0}
+  |   | |     "Product ID" = 0
+  |   | |     "Vendor ID" = 13944
+  |   | |   }
+  |   | |   
+  |   | +-o SOP  <class IOPortTransportComponentCCUSBPDSOP, id 0x1000199d0, registered, matched, active, busy 0 (2 ms), retain 8>
+  |   |     {
+  |   |       "Metadata" = {"Product ID"=29453,"Vendor ID"=1452,"VDO Count"=6,"bcdDevice"=274}
+  |   |       "Description" = "Port-USB-C@1/CC/SOP"
+  |   |       "Product ID" = 29453
+  |   |       "ParentPortNumber" = 1
+  |   |       "Vendor ID" = 1452
+  |   |     }
+  |   |     
+  |   +-o USB2  <class IOPortTransportStateUSB2, id 0x100019861, registered, matched, active, busy 0 (5 ms), retain 13>
+  |   |   {
+  |   |     "Vendor ID" = 7516
+  |   |     "Product ID" = 22529
+  |   |     "Plug Event Count" = 9
+  |   |     "ConnectionActive" = No
+  |   |   }
+  |   |   
+  +-o AppleHPMUserClient  <class AppleHPMUserClient, id 0x10001b46e, !registered, !matched, active, busy 0, retain 5>
+      {
+        "IOUserClientCreator" = "pid 392, powerd"
+      }
+      
++-o AppleHPMARMSPMI  <class AppleHPMARMSPMI, id 0x100000531, registered, matched, active, busy 0 (1026 ms), retain 11>
+  | {
+  |   "IOClass" = "AppleHPMARMSPMI"
+  |   "RID" = 1
+  |   "IONameMatched" = "usbc,sn201202x,spmi"
+  | }
+  | 
+  +-o AppleHPMDeviceHALType3@A  <class AppleHPMDeviceHALType3, id 0x100000541, registered, matched, active, busy 0 (1019 ms), retain 9>
+  | | {
+  | |   "RID" = 1
+  | |   "Vendor ID" = 40
+  | |   "Product ID" = 0
+  | | }
+  | | 
+  | +-o Port-USB-C@2  <class AppleHPMInterfaceType10, id 0x1000007d1, registered, matched, active, busy 0 (980 ms), retain 55>
+  |   | {
+  |   |   "PortTypeDescription" = "USB-C"
+  |   |   "ConnectionCount" = 0
+  |   |   "SOPPID" = <9b80>
+  |   |   "Description" = "Port-USB-C@2"
+  |   |   "TransportsProvisioned" = ("CC","USB2","CIO")
+  |   |   "Metadata" = {}
+  |   |   "PortDescription" = "Port-USB-C@2"
+  |   |   "ConnectionActive" = Yes
+  |   |   "ConnectionUUID" = "5A0E1B7C-0000-4000-8000-00000000B002"
+  |   |   "PortType" = 2
+  |   |   "PortNumber" = 2
+  |   |   "TransportsActive" = ("CC")
+  |   |   "Plug Event Count" = 2
+  |   |   "IOAccessoryDetect" = Yes
+  |   | }
+  |   | 
+  |   +-o LDCM  <class AppleHPMLDCMType2, id 0x100000837, registered, matched, active, busy 0 (30 ms), retain 10>
+  |   | | {
+  |   | |   "Description" = "Port-USB-C@2/LDCM"
+  |   | | }
+  |   | | 
+  +-o AppleHPMUserClient  <class AppleHPMUserClient, id 0x10001b46e, !registered, !matched, active, busy 0, retain 5>
+      {
+        "IOUserClientCreator" = "pid 392, powerd"
+      }
+      
++-o AppleHPMARMSPMI  <class AppleHPMARMSPMI, id 0x100000535, registered, matched, active, busy 0 (1026 ms), retain 11>
+  | {
+  |   "IOClass" = "AppleHPMARMSPMI"
+  |   "RID" = 5
+  |   "IONameMatched" = "usbc,sn201202x,spmi"
+  | }
+  | 
+  +-o AppleHPMDeviceHALType3@8  <class AppleHPMDeviceHALType3, id 0x100000545, registered, matched, active, busy 0 (1019 ms), retain 9>
+  | | {
+  | |   "RID" = 5
+  | |   "Vendor ID" = 40
+  | |   "Product ID" = 0
+  | | }
+  | | 
+  | +-o Port-MagSafe 3@1  <class AppleHPMInterfaceType10, id 0x1000007d5, registered, matched, active, busy 0 (980 ms), retain 55>
+  |   | {
+  |   |   "PortTypeDescription" = "USB-C"
+  |   |   "ConnectionCount" = 0
+  |   |   "SOPPID" = <9b80>
+  |   |   "Description" = "Port-MagSafe 3@1"
+  |   |   "TransportsProvisioned" = ("CC","USB2","CIO")
+  |   |   "Metadata" = {}
+  |   |   "PortDescription" = "Port-MagSafe 3@1"
+  |   |   "ConnectionActive" = No
+  |   |   "PortType" = 2
+  |   |   "PortNumber" = 1
+  |   |   "TransportsActive" = ()
+  |   |   "Plug Event Count" = 1
+  |   |   "IOAccessoryDetect" = No
+  |   | }
+  |   | 
+  |   +-o LDCM  <class AppleHPMLDCMType2, id 0x100000837, registered, matched, active, busy 0 (30 ms), retain 10>
+  |   | | {
+  |   | |   "Description" = "Port-MagSafe 3@1/LDCM"
+  |   | | }
+  |   | | 
+  +-o AppleHPMUserClient  <class AppleHPMUserClient, id 0x10001b46e, !registered, !matched, active, busy 0, retain 5>
+      {
+        "IOUserClientCreator" = "pid 392, powerd"
+      }
+      
++-o AppleHPMARMSPMI  <class AppleHPMARMSPMI, id 0x100000532, registered, matched, active, busy 0 (1026 ms), retain 11>
+  | {
+  |   "IOClass" = "AppleHPMARMSPMI"
+  |   "RID" = 2
+  |   "IONameMatched" = "usbc,sn201202x,spmi"
+  | }
+  | 
+  +-o AppleHPMDeviceHALType3@C  <class AppleHPMDeviceHALType3, id 0x100000542, registered, matched, active, busy 0 (1019 ms), retain 9>
+  | | {
+  | |   "RID" = 2
+  | |   "Vendor ID" = 40
+  | |   "Product ID" = 0
+  | | }
+  | | 
+  | +-o Port-USB-C@3  <class AppleHPMInterfaceType10, id 0x1000007d2, registered, matched, active, busy 0 (980 ms), retain 55>
+  |   | {
+  |   |   "PortTypeDescription" = "USB-C"
+  |   |   "ConnectionCount" = 11
+  |   |   "SOPPID" = <9b80>
+  |   |   "Description" = "Port-USB-C@3"
+  |   |   "TransportsProvisioned" = ("CC","USB2","CIO")
+  |   |   "Metadata" = {}
+  |   |   "PortDescription" = "Port-USB-C@3"
+  |   |   "ConnectionActive" = Yes
+  |   |   "ConnectionUUID" = "5A0E1B7C-0000-4000-8000-00000000A003"
+  |   |   "PortType" = 2
+  |   |   "PortNumber" = 3
+  |   |   "TransportsActive" = ("CC","USB2","CIO")
+  |   |   "Plug Event Count" = 40
+  |   |   "IOAccessoryDetect" = Yes
+  |   | }
+  |   | 
+  |   +-o LDCM  <class AppleHPMLDCMType2, id 0x100000837, registered, matched, active, busy 0 (30 ms), retain 10>
+  |   | | {
+  |   | |   "Description" = "Port-USB-C@3/LDCM"
+  |   | | }
+  |   | | 
+  |   +-o CC  <class IOPortTransportStateCC, id 0x100000838, registered, matched, active, busy 0 (122 ms), retain 15>
+  |   | | {
+  |   | |   "Description" = "Port-USB-C@3/CC"
+  |   | | }
+  |   | | 
+  |   | +-o SOP'  <class IOPortTransportComponentCCUSBPDSOPp, id 0x1000199ce, registered, matched, active, busy 0 (2 ms), retain 8>
+  |   | |   {
+  |   | |     "Metadata" = {"VDOs"=(<7836601c>,<00000000>),"Product Type Description"="Passive Cable","Vendor ID"=13944,"Product ID"=0}
+  |   | |     "Product ID" = 0
+  |   | |     "Vendor ID" = 13944
+  |   | |   }
+  |   | |   
+  |   | +-o SOP  <class IOPortTransportComponentCCUSBPDSOP, id 0x1000199d0, registered, matched, active, busy 0 (2 ms), retain 8>
+  |   |     {
+  |   |       "Metadata" = {"Product ID"=29448,"Vendor ID"=1452,"VDO Count"=6,"bcdDevice"=274}
+  |   |       "Description" = "Port-USB-C@3/CC/SOP"
+  |   |       "Product ID" = 29448
+  |   |       "ParentPortNumber" = 3
+  |   |       "Vendor ID" = 1452
+  |   |     }
+  |   |     
+  |   +-o USB2  <class IOPortTransportStateUSB2, id 0x100019861, registered, matched, active, busy 0 (5 ms), retain 13>
+  |   |   {
+  |   |     "Vendor ID" = 7516
+  |   |     "Product ID" = 22529
+  |   |     "Plug Event Count" = 9
+  |   |     "ConnectionActive" = No
+  |   |   }
+  |   |   
+  +-o AppleHPMUserClient  <class AppleHPMUserClient, id 0x10001b46e, !registered, !matched, active, busy 0, retain 5>
+      {
+        "IOUserClientCreator" = "pid 392, powerd"
+      }
+      

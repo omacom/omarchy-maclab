@@ -1,15 +1,21 @@
 #!/bin/bash
 # The lab's Signal sender: its number, its two groups, a test line.
 #
+#   sudo scripts/mini/signal [--dry-run] link
 #   sudo scripts/mini/signal [--dry-run] register
 #   sudo scripts/mini/signal [--dry-run] groups
 #   sudo scripts/mini/signal [--dry-run] accept GROUP-ID
 #   sudo scripts/mini/signal [--dry-run] group lab|agents GROUP-ID
 #   sudo scripts/mini/signal [--dry-run] test
 #
-# register  asks for the sender's number, the captcha link and the code
-#           Signal sends by SMS, and registers the number with signal-cli.
-#           The number is the lab's own, linked to nobody's phone.
+# link      links the sender to the owner's own number as a device named
+#           "Omarchy Mac Lab": it shows the link only as a QR code, drawn by
+#           the Deployed labd (labd qr), to scan in Signal on his phone, under
+#           Settings, Linked devices. Lines then come from his own number.
+#           It needs a build after v0.2.0-rc.0 Deployed and a terminal of at
+#           least 24 rows and 45 columns, and refuses before stopping anything.
+# register  or: asks for a number of the sender's own, the captcha link and
+#           the code Signal sends by SMS, and registers it with signal-cli.
 # groups    lists the groups the sender was added to, with their ids. What
 #           members wrote there is fetched and thrown away, never shown.
 # accept    accepts the invitation to a group, when the sender was invited
@@ -21,7 +27,7 @@
 #
 # signal-cli runs as the lab account, from the copy of the Homebrew tools
 # that only root can write; the account's keys are files of the lab account.
-# The sender's daemon is stopped while register, groups and accept run, and
+# The sender's daemon is stopped while link, register, groups and accept run, and
 # started again after.
 #
 #   --dry-run  say what would be asked and run, and change nothing
@@ -31,7 +37,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/mini/lib.sh
 . "$here/lib.sh"
 
-usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 while [[ ${1:-} == --dry-run ]]; do
   DRY=1
@@ -71,6 +77,14 @@ alone() {
   trap back EXIT
 }
 back() {
+  if [[ -n $LINK_PID ]]; then
+    local pids
+    pids="$(family "$LINK_PID")"
+    # shellcheck disable=SC2086 # one pid a word
+    kill $pids 2>/dev/null || true
+    wait "$LINK_PID" 2>/dev/null || true
+  fi
+  [[ -z $LINK_DIR ]] || rm -rf "$LINK_DIR"
   if (( WAS_LOADED )); then
     say "starting $SIGNAL_LABEL again"
     start_sender
@@ -93,6 +107,86 @@ register() {
   cli -a "$number" verify "$code" || fail "signal-cli did not verify the number"
   cli -a "$number" updateProfile --given-name "Omarchy Mac Lab" || say "the profile name was not set: members see the number alone"
   say "registered. Add the number to \"Agents\" and to the group \"Omarchy Mac Lab\", then: scripts/mini/signal groups"
+}
+
+DEVICE_NAME="Omarchy Mac Lab"
+
+# signal-cli link, run in the background with its output on a pipe in
+# LINK_DIR: it waits for a scan, with the sender stopped, until it is ended.
+LINK_PID=""
+LINK_DIR=""
+
+# family PID: PID and every process under it (sudo, signal-cli).
+family() {
+  local child
+  echo "$1"
+  for child in $(pgrep -P "$1" 2>/dev/null || true); do family "$child"; done
+}
+
+# show_link LABD: signal-cli link's output and errors, with the link shown
+# only as a QR code that labd draws from its input, so the link is on the
+# terminal as text nowhere and no command line holds it. A line holding the
+# link anywhere is not shown; the link, up to the first space, is drawn.
+# printf is bash's own. It fails when labd draws nothing.
+show_link() {
+  local line link
+  while IFS= read -r line; do
+    if [[ $line == *sgnl://* ]]; then
+      link="sgnl://${line#*sgnl://}"
+      link="${link%%[[:space:]]*}"
+      echo "In Signal on your phone: Settings, Linked devices, Link a new device, and scan this (good for a few minutes):" >&2
+      printf '%s\n' "$link" | as_lab "$1" qr >&2 || return 1
+    else
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
+# draws VERSION: whether the build numbered VERSION has labd qr. It came
+# after v0.2.0-rc.0, whose labd starts a lab when given qr, so an older labd
+# is never run with it.
+draws() {
+  [[ $1 =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-rc\.([0-9]+))?$ ]] || return 1
+  local major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]} rc=${BASH_REMATCH[5]}
+  (( major > 0 || minor > 2 )) && return 0
+  (( minor == 2 )) || return 1
+  (( patch > 0 )) || [[ -z $rc ]] || (( rc > 0 ))
+}
+
+# labd qr draws a device link in 23 lines of 45 columns (cmd/labd/qr_test.go),
+# below one line that says what to do with it.
+QR_ROWS=24
+QR_COLUMNS=45
+
+# fits: refuse, before anything is stopped, a terminal the code does not fit
+# in, where its top would scroll away before the phone could scan it.
+fits() {
+  local size rows columns
+  size="$(stty -f /dev/tty size 2>/dev/null)" || fail "link needs a terminal to draw the QR code in: run it in Terminal (ssh -t for the mini). Nothing was changed"
+  read -r rows columns <<<"$size"
+  [[ $rows =~ ^[0-9]+$ && $columns =~ ^[0-9]+$ ]] || fail "the terminal's size is unknown, so the QR code may not fit: run it in Terminal (ssh -t for the mini). Nothing was changed"
+  (( rows >= QR_ROWS )) || fail "this terminal window has $rows rows and the QR code needs $QR_ROWS: make the window taller, then run link again. Nothing was changed"
+  (( columns >= QR_COLUMNS )) || fail "this terminal window has $columns columns and the QR code needs $QR_COLUMNS: make the window wider, then run link again. Nothing was changed"
+}
+
+# The link is never traced, written down, shown as text or an argument of
+# anything: whoever has it can link a device.
+link() {
+  local labd="$LAB_CURRENT/bin/labd" version
+  set +x
+  [[ -x $labd ]] || fail "no build is Deployed: the QR code for your phone is drawn by labd. Deploy first, then run link again. Nothing was changed"
+  version="$(cat "$LAB_CURRENT/VERSION" 2>/dev/null || true)"
+  draws "$version" || fail "the Deployed build is ${version:-of no version}, whose labd cannot draw the QR code for your phone. Deploy a Release candidate cut from build at or after e61152eb (v0.2.0-rc.1 or later), then run link again. Nothing was changed"
+  fits
+  alone
+  LINK_DIR="$(mktemp -d)"
+  mkfifo "$LINK_DIR/out"
+  cli link -n "$DEVICE_NAME" >"$LINK_DIR/out" 2>&1 &
+  LINK_PID=$!
+  show_link "$labd" <"$LINK_DIR/out" || fail "labd did not draw the QR code, and the link is not shown: signal-cli link was ended. Run link again for a new link"
+  wait "$LINK_PID" || { LINK_PID=""; fail "signal-cli did not link: run link again for a new link"; }
+  LINK_PID=""
+  say "linked as \"$DEVICE_NAME\", a device of your number: lines come from your own number. Then: scripts/mini/signal groups"
 }
 
 groups() {
@@ -131,9 +225,10 @@ test_line() {
 }
 
 case "$verb" in
-  register | groups | accept | test)
+  link | register | groups | accept | test)
     if (( DRY )); then
       case "$verb" in
+        link) say "would stop $SIGNAL_LABEL, link signal-cli as $LAB_OWNER to your number as the device \"$DEVICE_NAME\" by a QR code that the Deployed labd draws and you scan on your phone, and start $SIGNAL_LABEL again" ;;
         register) say "would stop $SIGNAL_LABEL, ask for the number, the captcha link and the SMS code, register the number with signal-cli as $LAB_OWNER, and start $SIGNAL_LABEL again" ;;
         groups) say "would stop $SIGNAL_LABEL, fetch and throw away what waits for the sender, list its groups with their ids, and start $SIGNAL_LABEL again" ;;
         accept) say "would stop $SIGNAL_LABEL, accept the invitation to the group, and start $SIGNAL_LABEL again" ;;
@@ -143,6 +238,7 @@ case "$verb" in
     fi
     ready
     case "$verb" in
+      link) link ;;
       register) register ;;
       groups) groups ;;
       accept) accept "$@" ;;

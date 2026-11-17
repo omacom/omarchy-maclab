@@ -332,7 +332,8 @@ func TestAnAnswerThatSetsACookieIsNeverKept(t *testing.T) {
 // labd and the edge's cache rules name the same paths: the pages and
 // exports labd lets the edge keep are the ones the first rule makes
 // cacheable, and the exports are the only paths under /api/ the second
-// rule does not bypass.
+// rule does not bypass. The third bypasses cache for any request labd
+// never lets the edge keep: one with a Lab token or the session cookie.
 func TestTheEdgesCacheRulesNameThePathsLabdKeeps(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "scripts", "cloud", "edge.json"))
 	if err != nil {
@@ -352,14 +353,18 @@ func TestTheEdgesCacheRulesNameThePathsLabdKeeps(t *testing.T) {
 	if err := json.Unmarshal(data, &edge); err != nil {
 		t.Fatal(err)
 	}
-	var public, bypass string
+	var public, bypass, guard string
 	for _, r := range edge.Rules {
-		if r.Phase == "http_request_cache_settings" && len(r.Want) == 2 && r.Want[0].Parameters.Cache && !r.Want[1].Parameters.Cache {
-			public, bypass = r.Want[0].Expression, r.Want[1].Expression
+		if r.Phase == "http_request_cache_settings" && len(r.Want) == 3 && r.Want[0].Parameters.Cache && !r.Want[1].Parameters.Cache && !r.Want[2].Parameters.Cache {
+			public, bypass, guard = r.Want[0].Expression, r.Want[1].Expression, r.Want[2].Expression
 		}
 	}
 	if public == "" {
-		t.Fatal("edge.json has no pair of cache rules: the public paths, then the bypass under /api/")
+		t.Fatal("edge.json has no three cache rules: the public paths, the bypass under /api/, then the bypass for a Lab token or the session cookie")
+	}
+	const token = `any(lower(http.request.headers.names[*])[*] eq "authorization")`
+	if guard != `(`+token+` or http.cookie contains "lab_session=")` {
+		t.Errorf("the last cache rule is not a request with a Lab token or the session cookie: %s", guard)
 	}
 	set := func(x string) []string {
 		m := regexp.MustCompile(`http\.request\.uri\.path in \{([^}]*)\}`).FindStringSubmatch(x)
@@ -388,7 +393,7 @@ func TestTheEdgesCacheRulesNameThePathsLabdKeeps(t *testing.T) {
 	if !reflect.DeepEqual(prefixes, under) {
 		t.Errorf("the edge's rule names the prefixes %q; labd keeps %q", prefixes, under)
 	}
-	for _, guard := range []string{`not http.cookie contains "lab_session="`, `not ends_with(http.request.uri.path, "` + neverKeptEnd + `")`} {
+	for _, guard := range []string{`not http.cookie contains "lab_session="`, `not ` + token, `not ends_with(http.request.uri.path, "` + neverKeptEnd + `")`} {
 		if !strings.Contains(public, guard) {
 			t.Errorf("the edge's rule for public paths lacks %s", guard)
 		}
@@ -406,7 +411,7 @@ func TestTheEdgesCacheRulesNameThePathsLabdKeeps(t *testing.T) {
 			t.Errorf("labd does not keep the export %s", p)
 		}
 	}
-	for _, p := range []string{"/api/", "/api/auth", "/api/devices", "/api/v1/tester_requests", "/api/v1/reports/x", "/status", "/me", "/sign-in", "/healthz", "/reports/x/deletion", "/installer", "/assets/app.css"} {
+	for _, p := range []string{"/api/", "/api/auth", "/api/devices", "/api/v1/tester_requests", "/api/v1/reports/x", "/status", "/me", "/sign-in", "/healthz", "/reports/x/deletion", "/installer", "/assets/app.css", "/join"} {
 		if edgeKeeps(p) {
 			t.Errorf("labd keeps %s", p)
 		}

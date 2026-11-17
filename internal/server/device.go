@@ -61,6 +61,28 @@ type dev struct {
 	oobCallCancel context.CancelFunc
 	// resetting: a person's Hard reset is on its way to the controller.
 	resetting bool
+	// proving: a Proving reset of the Mac was admitted and has not ended.
+	proving bool
+	// updating: lab agent-update holds the Mac (agent_software.go).
+	updating *agentUpdating
+	// agentStart is the api.Checkin.AgentStart labd last heard, and
+	// factsStart the one its d.Facts came with.
+	agentStart, factsStart string
+	// heardSinceStart: the Mac has checked in since labd started.
+	heardSinceStart bool
+	// cleaning: the idle clean-up is on its way to the Mac or running there.
+	cleaning bool
+	// cleanupCmd is the idle clean-up last handed to the Mac, and
+	// cleanupAway that labd's wait for it ended with no result: cleaning
+	// then holds until a check-in no longer lists it as running.
+	cleanupCmd  string
+	cleanupAway bool
+	// cleanupWait is how long labd waits for the idle clean-up's result; 0
+	// is two minutes. Only a test sets it, under mu.
+	cleanupWait time.Duration
+	// updateHold is how long lab agent-update still holds the Mac after its
+	// call ends; 0 is agentUpdateWait. Only a test sets it, under mu.
+	updateHold time.Duration
 	// beforeSend, which only a test sets (under mu), runs once a job's wait
 	// is over and before labd gives it the Mac.
 	beforeSend func()
@@ -156,6 +178,13 @@ func (v *dev) leaving() string {
 	return fmt.Sprintf("%s left the lab (%s)", v.d.Name, orStr(v.leftBy, "lab-agent uninstall"))
 }
 
+// heardAt is when labd last heard the Mac itself (see heard).
+func (v *dev) heardAt() time.Time {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.heard
+}
+
 func (v *dev) aliveLocked() bool {
 	return !v.d.LastSeen.IsZero() && v.s.since(v.d.LastSeen) < v.s.aliveWindow()
 }
@@ -175,9 +204,22 @@ func (v *dev) setStateLocked(st api.DeviceState, reason string) {
 	if v.d.State == api.StateLeft {
 		return
 	}
+	was := v.d.State
 	v.d.State, v.d.StateReason = st, reason
 	if st != api.StateNeedsHands {
 		v.d.Action = nil
+	}
+	if !v.d.IsVolunteer() && v.s.lines != nil {
+		key := v.d.ID
+		if key == "" {
+			key = v.d.Name
+		}
+		switch {
+		case st == api.StateNeedsHands && was != st:
+			v.s.agents.NeedsHands(key, v.d.Name, reason)
+		case was == api.StateNeedsHands && st != was:
+			v.s.agents.NoLongerNeedsHands(key, v.d.Name, st)
+		}
 	}
 	v.saveLocked()
 	v.publishLocked()
@@ -300,9 +342,15 @@ func (s *Server) firstBaselineEnded(v *dev, job, outcome string) {
 // heartbeat records a check-in. Commands are handed out separately by deliver.
 func (v *dev) heartbeat(ci api.Checkin) {
 	defer v.s.decideTerms(v) // after the unlock below
+	// When the check-in came, not when it got the lock: one from the old
+	// boot queued behind a slow save must not count as heard after a
+	// reboot's grace (recover.go), nor a later one be stamped earlier.
+	now := v.s.now()
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	now := v.s.now()
+	if v.heard.After(now) {
+		now = v.heard
+	}
 	rebooted := v.d.BootID != "" && ci.BootID != v.d.BootID
 	if v.d.BootID == "" {
 		if err := v.s.store.spendTokens(v.d.Name); err != nil {
@@ -338,9 +386,11 @@ func (v *dev) heartbeat(ci api.Checkin) {
 		v.d.JobNotices = *ci.JobNotices
 		persist = true
 	}
+	v.agentStart, v.heardSinceStart = ci.AgentStart, true
 	if ci.Facts != nil {
-		v.d.Facts = *ci.Facts
+		v.d.Facts, v.factsStart = *ci.Facts, ci.AgentStart
 	}
+	v.heardAgentLocked()
 	if v.noticeUpdateLocked() {
 		persist = true
 	}
@@ -383,6 +433,11 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	for _, id := range ci.Running {
 		running[id] = true
 	}
+	if v.cleanupAway && !running[v.cleanupCmd] {
+		// The agent says the clean-up labd stopped waiting for has ended
+		// (or its run or boot did).
+		v.cleaning, v.cleanupAway, v.cleanupCmd = false, false, ""
+	}
 	for id, at := range v.inflight {
 		if !running[id] && now.Sub(at) > 15*time.Second {
 			if c, ok := v.sent[id]; ok {
@@ -393,6 +448,10 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	}
 	if persist {
 		v.saveLocked()
+		// The write can take seconds on a busy disk, with mu held. The Mac is
+		// heard as of its end: a look at its silence taken next must not count
+		// labd's own wait.
+		v.d.LastSeen = v.s.now()
 	}
 	v.bump()
 	v.publishLocked()
@@ -403,6 +462,9 @@ func (v *dev) deliver(bootID string) api.CheckinResponse {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	resp := api.CheckinResponse{IntervalMS: int(v.s.cfg.Interval / time.Millisecond), Kind: v.d.Kind, Held: v.heldLocked()}
+	if v.d.IsVolunteer() {
+		resp.Window = v.d.WindowWanted
+	}
 	if bootID != v.d.BootID {
 		return resp
 	}
@@ -415,6 +477,22 @@ func (v *dev) deliver(bootID string) api.CheckinResponse {
 			v.results[c.ID] = api.CommandResult{ID: c.ID, Error: errDeviceLost.Error()}
 			delete(v.target, c.ID)
 			continue
+		}
+		// The idle clean-up, decided or queued before the Mac came to wait
+		// for its Volunteer, is not delivered while it waits: it stays dirty.
+		if v.termsWait && c.Kind == api.CmdCleanup && c.JobID == "" && v.d.ActiveJob == "" {
+			v.results[c.ID] = api.CommandResult{ID: c.ID, Error: termsWaitingLine(v.d.Name)}
+			delete(v.target, c.ID)
+			continue
+		}
+		// Nor while lab agent-update holds it: the agent's restart would cut it.
+		if v.updating != nil && c.Kind == api.CmdCleanup && c.JobID == "" && v.d.ActiveJob == "" {
+			v.results[c.ID] = api.CommandResult{ID: c.ID, Error: v.d.Name + ": " + agentBeingUpdated + ", so the idle clean-up waits"}
+			delete(v.target, c.ID)
+			continue
+		}
+		if c.Kind == api.CmdCleanup && c.JobID == "" {
+			v.cleanupCmd = c.ID
 		}
 		v.inflight[c.ID] = now
 		v.sent[c.ID] = c

@@ -13,16 +13,22 @@
 #   4. stops labd and copies both databases as they are then;
 #   5. switches to the build and restarts the lab's services, never the
 #      mini: labd, and the Out-of-band controller and the Builder where the
-#      set-up has started them;
+#      set-up has started them; a controller the set-up installed but could
+#      not start yet, with no build to run it from, is started;
 #   6. verifies labd on this machine and, once the tunnel is installed here,
 #      through the Front door; and that the Builder asks labd for work and
 #      the Out-of-band controller answers it;
-#   7. reports in "Agents".
+#   7. reports in "Agents", and says to run the set-up when the build names
+#      other images for the Builder than those it runs: the set-up builds
+#      them, which takes a while, and starts the Builder with them.
 #
-# When the check fails it Deploys the previous version by itself. Going back
+# When the check fails it Deploys the previous version by itself; with none
+# before it, labd and the controller, loaded here or at boot, stay stopped. Going back
 # from a release that says "No way back." (its build carries
 # deploy/no-way-back) also puts the databases back as step 4 copied them:
-# what arrived since is lost. The last three builds are kept. It names an
+# what arrived since is lost. So does a Deploy of an older version over a
+# running release that says it: the databases go back as they were before
+# that release, after step 4. The last three builds are kept. It names an
 # exact version: never "latest". It touches no tool and never calls
 # Homebrew: tools, container and macOS change in a Maintenance run; the
 # tunnel is restarted only when the build brings other routes. Needs only
@@ -39,7 +45,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/mini/lib.sh
 . "$here/lib.sh"
 
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 from=""
 tag=""
@@ -71,9 +77,15 @@ announced=0
 # Set while labd is stopped for a switch whose check has not passed: an exit
 # then, whatever failed, puts the previous build back.
 switching=0
+# Set once this Deploy, of an older version over a release that says "No
+# way back.", began to put the databases back: going back from it puts the
+# marked release's own databases back too.
+went_back=0
+# Set when Litestream ran as the Deploy began.
+litestream_ran=0
 # shellcheck disable=SC2317,SC2329
 cleanup() {
-  local status=$?
+  local status=$? name
   trap - EXIT
   if (( switching )); then
     say "the Deploy of $tag stopped part-way (exit $status)"
@@ -82,11 +94,34 @@ cleanup() {
     (set +e; lift_drain; rm -rf "${LAB_BUILDS:?}/$tag"; tell "Deploy of $tag on the mini stopped before anything was switched: ${previous:-nothing} runs as before.") || true
   fi
   (set +e; lift_drain) || true
+  # A copy put beside a database and never renamed into place goes, whatever
+  # stopped the restore: it is a whole database the backup would carry.
+  if [[ -n $lock ]]; then
+    for name in $LAB_DATABASES; do
+      [[ ! -e $LAB_DATA/$name.restored && ! -L $LAB_DATA/$name.restored ]] || (set +e; as_lab rm -f "$LAB_DATA/$name.restored") || true
+    done
+  fi
+  # However it ended, a restore stopped part-way leaves Litestream as the
+  # Deploy found it. One that does not run again fails the Deploy: the
+  # databases are not replicated.
+  if ! (set +e; litestream_up); then
+    status=1
+    (set +e; tell "Litestream did not start again after the Deploy of $tag on the mini: the databases are not replicated until it runs (sudo launchctl bootstrap system $LAUNCHD_DIR/$LITESTREAM_LABEL.plist).") || true
+    echo "$ME: Litestream did not start again: the databases are not replicated until it runs. Start it: sudo launchctl bootstrap system $LAUNCHD_DIR/$LITESTREAM_LABEL.plist" >&2
+  fi
   rm -rf "$work"
   [[ -z $stage ]] || rm -rf "$stage"
   [[ -z $lock ]] || rmdir "$lock" 2>/dev/null || true
+  exit "$status"
 }
 trap cleanup EXIT
+# A Deploy cut off (the owner's terminal closes, Ctrl-C, a kill) exits
+# through cleanup by a trap of its own: left to bash, a signal taken while it
+# waits on a command around the switch can end it with no EXIT trap run, and
+# cleanup read the last command's 0 as the status.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # running: the tag of the build labd runs from, or nothing.
 running() {
@@ -121,41 +156,80 @@ snapshot() {
   done
 }
 
-# restore_snapshot: the databases as they were before the Deploy of $tag.
-# Litestream is stopped meanwhile and starts on the restored files with
-# nothing of its own kept, so that it sends them whole.
+# litestream_down [WHY]: Litestream has let go of the databases, or nothing
+# is put back under it; WHY is said then.
 # shellcheck disable=SC2317,SC2329
-restore_snapshot() {
-  local dir="$BEFORE_DEPLOY/$tag" name litestream=0
+litestream_down() {
+  stopped "$LITESTREAM_LABEL" || fail "Litestream did not stop (20 s), so no database was put back${1:+: $1}"
+}
+
+# litestream_up: Litestream runs again if it ran when the Deploy began;
+# false when launchd does not have it loaded after that.
+# shellcheck disable=SC2317,SC2329
+litestream_up() {
+  (( litestream_ran )) || return 0
+  loaded "$LITESTREAM_LABEL" || launchctl bootstrap system "$LAUNCHD_DIR/$LITESTREAM_LABEL.plist" || true
+  loaded "$LITESTREAM_LABEL" || { say "launchd did not start Litestream again"; return 1; }
+}
+
+# restore_beside BUILD [WHY]: the databases as they were before the Deploy
+# of BUILD, copied beside the ones in use, with Litestream stopped. Nothing
+# in use changes here: when a copy fails, a disk that fills among them, the
+# copies go and it fails, saying WHY.
+# shellcheck disable=SC2317,SC2329
+restore_beside() {
+  local dir="$BEFORE_DEPLOY/$1" name n
   no_link "$BEFORE_DEPLOY" "$dir"
-  if loaded "$LITESTREAM_LABEL"; then
-    stopped "$LITESTREAM_LABEL" || say "Litestream did not stop (20 s)"
-    litestream=1
-  fi
+  for name in $LAB_DATABASES; do no_link "$LAB_DATA/$name" "$LAB_DATA/$name.restored" "$dir/$name"; done
+  litestream_down "${2:-}"
   for name in $LAB_DATABASES; do
-    no_link "$LAB_DATA/$name" "$dir/$name"
-    if [[ -f $dir/$name ]]; then
-      # shellcheck disable=SC2016
-      as_lab /bin/sh -c 'set -e; cp "$1" "$2.restored"; rm -rf "$2-wal" "$2-shm" "$3"; mv -f "$2.restored" "$2"' restore "$dir/$name" "$LAB_DATA/$name" "$LAB_DATA/.$name-litestream" ||
-        fail "$name could not be put back from $dir: the lab is Dark, with $tag's databases in place"
-      say "put $name back as it was before the Deploy of $tag"
-    elif [[ -e $LAB_DATA/$name ]]; then
-      as_lab rm -rf "$LAB_DATA/$name" "$LAB_DATA/$name-wal" "$LAB_DATA/$name-shm" "$LAB_DATA/.$name-litestream"
-      say "removed $name: there was none before the Deploy of $tag"
+    as_lab rm -f "$LAB_DATA/$name.restored"
+    [[ -f $dir/$name ]] || continue
+    if ! as_lab cp "$dir/$name" "$LAB_DATA/$name.restored"; then
+      for n in $LAB_DATABASES; do as_lab rm -f "$LAB_DATA/$n.restored"; done
+      fail "$name could not be copied beside the databases from $dir, so none was put back${2:+: $2}"
     fi
   done
-  if (( litestream )); then
-    launchctl bootstrap system "$LAUNCHD_DIR/$LITESTREAM_LABEL.plist" || say "launchd did not start Litestream again"
-  fi
+}
+
+# into_place FROM NAME: FROM, a whole database, is NAME of the lab's data by
+# a rename, which needs no room, with nothing kept of the one it replaces:
+# its WAL, its SHM, Litestream's own files of it. With no FROM, NAME goes.
+# shellcheck disable=SC2317,SC2329
+into_place() {
+  no_link "$1" "$LAB_DATA/$2"
+  # shellcheck disable=SC2016
+  as_lab /bin/sh -c 'set -e; rm -rf "$2-wal" "$2-shm" "$3"; if [ -f "$1" ]; then mv -f "$1" "$2"; else rm -f "$2"; fi' into-place "$1" "$LAB_DATA/$2" "$LAB_DATA/.$2-litestream"
+}
+
+# restore_in_place BUILD [WHY]: the copies restore_beside made take the
+# place of the databases, both renamed; Litestream starts on them with
+# nothing of its own kept, so that it sends them whole.
+# shellcheck disable=SC2317,SC2329
+restore_in_place() {
+  local name
+  for name in $LAB_DATABASES; do
+    into_place "$LAB_DATA/$name.restored" "$name" || fail "$name could not be put in place${2:+: $2}"
+    if [[ -f $BEFORE_DEPLOY/$1/$name ]]; then
+      say "put $name back as it was before the Deploy of $1"
+    else
+      say "removed $name: there was none before the Deploy of $1"
+    fi
+  done
+  # A Litestream that does not start again fails the Deploy on its way out.
+  litestream_up || true
 }
 
 # switch_to TAG: stop labd, point the mini at that build, start labd from it
 # under the build's own LaunchDaemon file, and have what else runs from the
 # build start again: the Out-of-band controller and the Builder, which the
-# set-up installs. cloudflared reads its routes from the build when it
-# starts, so it is restarted when they are other routes.
+# set-up installs. The controller's file is in place before the first
+# Deploy, with no build to run it from: then it is started here, so that
+# labd, which holds its token, finds it answering. cloudflared reads its
+# routes from the build when it starts, so it is restarted when they are
+# other routes.
 switch_to() {
-  local routes=0 label
+  local routes=0 label fresh=""
   if tunnel_installed && ! cmp -s "$LAB_CURRENT/deploy/cloudflared.yml" "$LAB_BUILDS/$1/deploy/cloudflared.yml"; then routes=1; fi
   stop_labd
   ln -sfn "builds/$1" "$LAB_CURRENT"
@@ -165,7 +239,17 @@ switch_to() {
   chmod 0644 "$plist"
   launchctl enable "system/$LABD_LABEL" || true
   launchctl bootstrap system "$plist" || say "launchd did not take $plist"
+  if ! loaded "$OOBD_LABEL" && [[ -f $OOBD_PLIST ]]; then
+    fresh="$OOBD_LABEL"
+    launchctl enable "system/$OOBD_LABEL" || true
+    if launchctl bootstrap system "$OOBD_PLIST" && loaded "$OOBD_LABEL"; then
+      say "started $OOBD_LABEL from the build of $1"
+    else
+      say "launchd did not start $OOBD_LABEL from $OOBD_PLIST: see /var/log/oobd.log"
+    fi
+  fi
   for label in "$OOBD_LABEL" "$BUILDER_LABEL"; do
+    [[ $label != "$fresh" ]] || continue
     loaded "$label" || continue
     if launchctl kickstart -k "system/$label"; then
       say "restarted $label from the build of $1"
@@ -230,12 +314,26 @@ verify() {
 # back with it. It always ends the Deploy as failed.
 # shellcheck disable=SC2317,SC2329
 way_back() {
-  local lost=""
+  local lost="" name
   switching=0 announced=0
-  if [[ -f $LAB_BUILDS/$tag/deploy/no-way-back && -d $BEFORE_DEPLOY/$tag && "$(running)" == "$tag" ]]; then
+  if (( went_back )) && [[ -d $BEFORE_DEPLOY/$tag ]]; then
+    # The copy this Deploy made of them is renamed back, not copied: a disk
+    # that filled on the way does not stop it.
+    went_back=0
+    stop_labd
+    say "the databases go back as $previous had them"
+    no_link "$BEFORE_DEPLOY" "$BEFORE_DEPLOY/$tag"
+    litestream_down "the lab is Dark"
+    for name in $LAB_DATABASES; do
+      into_place "$BEFORE_DEPLOY/$tag/$name" "$name" || fail "$name could not be put back from $BEFORE_DEPLOY/$tag: the lab is Dark"
+    done
+    litestream_up || true
+    lost=" The databases are as $previous had them."
+  elif [[ -f $LAB_BUILDS/$tag/deploy/no-way-back && -d $BEFORE_DEPLOY/$tag && "$(running)" == "$tag" ]]; then
     stop_labd
     say "$tag says \"No way back.\": the databases go back as they were before it"
-    restore_snapshot
+    restore_beside "$tag" "the lab is Dark, with $tag's databases in place"
+    restore_in_place "$tag" "the lab is Dark"
     lost=" The databases are as they were before it: what arrived since is lost."
   fi
   if [[ -n $previous ]]; then
@@ -249,6 +347,15 @@ way_back() {
     fail "$tag was not Deployed: $previous is back and answers"
   fi
   stop_labd
+  # The controller runs from the build, whoever loaded it: this Deploy, or
+  # launchd at boot from the file the set-up installed. While it runs, the
+  # build stays.
+  if ! stopped "$OOBD_LABEL"; then
+    say "$OOBD_LABEL did not stop (20 s)"
+    rm -f "$plist"
+    tell "Deploy of $tag on the mini failed its check. There was no build before it, so labd is stopped; $OOBD_LABEL did not stop, so its build stays at $LAB_BUILDS/$tag: the way back is incomplete.$lost"
+    fail "$tag was not Deployed, and $OOBD_LABEL did not stop: the way back is incomplete. Stop it (sudo launchctl bootout system/$OOBD_LABEL), then remove $LAB_CURRENT and $LAB_BUILDS/$tag"
+  fi
   rm -f "$LAB_CURRENT" "$plist"
   rm -rf "${LAB_BUILDS:?}/$tag"
   tell "Deploy of $tag on the mini failed its check. There was no build before it, so labd is stopped.$lost"
@@ -276,7 +383,37 @@ prune() {
   done
 }
 
-previous="$(running)"
+# older A B: release A comes before release B; an rc before its release.
+older() {
+  local a b i x y
+  IFS=.- read -r -a a <<<"${1#v}"
+  IFS=.- read -r -a b <<<"${2#v}"
+  for i in 0 1 2; do
+    x="${a[i]}" y="${b[i]}"
+    (( 10#$x == 10#$y )) || { (( 10#$x < 10#$y )); return; }
+  done
+  x="${a[4]:-}" y="${b[4]:-}"
+  [[ -n $x ]] || return 1
+  [[ -n $y ]] || return 0
+  (( 10#$x < 10#$y ))
+}
+
+# Set when this Deploy goes back from a running release that says "No way
+# back." and the databases from before it are kept.
+going_back=0
+# decide: what runs now, and whether this Deploy goes back from it.
+decide() {
+  previous="$(running)"
+  going_back=0
+  if [[ -n $previous && -f $LAB_BUILDS/$previous/deploy/no-way-back ]] && older "$tag" "$previous"; then
+    # Without that copy the older labd would start on databases only the
+    # marked release reads: refused while labd still runs.
+    [[ -d $BEFORE_DEPLOY/$previous && ! -L $BEFORE_DEPLOY/$previous ]] ||
+      fail "$previous says \"No way back.\", and there is no copy of the databases from before it ($BEFORE_DEPLOY/$previous): $tag would start on databases only $previous reads. Nothing was changed, and $previous still runs"
+    going_back=1
+  fi
+}
+decide
 if [[ $previous == "$tag" ]]; then
   if verify; then
     say "$tag is already the running build, and labd answers"
@@ -298,6 +435,10 @@ else
   mkdir -p "$LAB_BUILDS"
   mkdir "$LAB_ROOT/.deploying" 2>/dev/null || fail "another Deploy is running ($LAB_ROOT/.deploying)"
   lock="$LAB_ROOT/.deploying"
+  # Another Deploy may have ended since the first look.
+  decide
+  [[ $previous != "$tag" ]] || fail "$tag became the running build while this Deploy downloaded it: nothing was changed"
+  if loaded "$LITESTREAM_LABEL"; then litestream_ran=1; fi
   rm -rf "$LAB_BUILDS"/.incoming.*
   stage="$LAB_BUILDS/.incoming.$$"
 fi
@@ -321,7 +462,7 @@ if (( DRY )); then
   say "would tell \"Agents\" and drain jobs, waiting up to $wait minutes for those that run"
   say "would stop labd and copy $LAB_DATABASES to $BEFORE_DEPLOY/$tag"
   say "would switch $LAB_CURRENT from ${previous:-nothing} to $tag"
-  say "would restart $LABD_LABEL under $plist, and $OOBD_LABEL and $BUILDER_LABEL where they are loaded: never the mini, and no tool"
+  say "would restart $LABD_LABEL under $plist, $OOBD_LABEL and $BUILDER_LABEL where they are loaded, and start $OOBD_LABEL where it is installed and not loaded: never the mini, and no tool"
   say "would verify labd at http://$LABD_LISTEN/healthz and on $LABD_SOCKET, and put ${previous:-nothing} back if it does not answer"
   if tunnel_installed; then
     say "would verify labd through the Front door at $FRONT_DOOR/healthz as well"
@@ -331,6 +472,9 @@ if (( DRY )); then
   say "would ask labd whether the Builder asks it for work and the Out-of-band controller answers"
   if [[ -f $new/deploy/no-way-back ]]; then
     say "$tag says \"No way back.\": going back from it would put the databases back as they were before it"
+  fi
+  if (( going_back )); then
+    say "$previous says \"No way back.\": would put the databases back as they were before $previous, after the copy; what arrived since would be lost"
   fi
   exit 0
 fi
@@ -353,12 +497,26 @@ fi
 switching=1
 stop_labd
 snapshot
+lost=""
+if (( going_back )); then
+  say "$previous says \"No way back.\": the databases go back as they were before it"
+  restore_beside "$previous"
+  went_back=1
+  restore_in_place "$previous"
+  lost=" $previous says \"No way back.\": the databases are as they were before $previous, and what arrived since is lost."
+fi
 switch_to "$tag"
 if verify; then
   switching=0
+  went_back=0
   DRAINING=0
   prune
-  tell "Deployed $tag on the mini: labd answers $where; the Builder and the Out-of-band controller are as labd expects.${previous:+ $previous is kept as the way back.}"
+  behind=""
+  if [[ -n "$(builder_behind "$LAB_CURRENT")" ]]; then
+    behind=" The Builder still runs the images it had: run sudo $LAB_CURRENT/scripts/mini/setup to build the Builder's new images and start it with them."
+    builder_behind "$LAB_CURRENT" | while IFS= read -r line; do say "$line"; done
+  fi
+  tell "Deployed $tag on the mini: labd answers $where; the Builder and the Out-of-band controller are as labd expects.${previous:+ $previous is kept as the way back.}$lost$behind"
   exit 0
 fi
 

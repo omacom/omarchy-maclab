@@ -28,7 +28,7 @@ class PagesTest < ActionDispatch::IntegrationTest
     assert_select "th.config-head a[title=?][href=?]", label, "#configuration-1", "#1"
     assert_select ".configuration-key li#configuration-1", label
     assert_select "tr.report-row", 2
-    assert_select ".credit", /CC BY 3\.0/
+    assert_no_match "CC BY", response.body
   end
 
   test "a model without visible reports is not found" do
@@ -55,7 +55,7 @@ class PagesTest < ActionDispatch::IntegrationTest
     assert_equal 2, details.uniq.size
     assert details.all? { |title| title.include?("linux-aurora") }
     assert_select "tr.feature-row", Catalogue.features.size
-    assert_select ".credit", /CC BY 3\.0/
+    assert_no_match "CC BY", response.body
   end
 
   test "a feature page shows per-chip expectations and results per Mac" do
@@ -110,7 +110,7 @@ class PagesTest < ActionDispatch::IntegrationTest
     assert_select "#reported tr.gap-row", 5
     assert_select %(#unverified-in-aurora tr.gap-row[data-feature="video-decoder"] td), /M3/
     assert_select "#missing-in-aurora", /nothing Asahi supports that Aurora is known to lack/
-    assert_select ".credit", /CC BY 3\.0/
+    assert_no_match "CC BY", response.body
   end
 
   test "the reports page lists every visible report, newest first" do

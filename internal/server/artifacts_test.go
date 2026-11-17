@@ -94,7 +94,13 @@ func artifactSHA(data []byte) string {
 }
 
 func TestArtifactBoundedDurableStore(t *testing.T) {
-	for _, size := range []int{0, 2*artifactChunkBytes + 19} {
+	// A sync on macOS is a full flush of the drive: one for each megabyte
+	// made an upload's close take 5 s a GiB on the mini; one for each
+	// 32 MiB still leaves no more than a part's bytes unwritten.
+	if artifactSyncBytes != 32<<20 {
+		t.Fatalf("a sync every %d bytes, not every 32 MiB", artifactSyncBytes)
+	}
+	for _, size := range []int{0, 19, 2*artifactSyncBytes + 19} {
 		dir := t.TempDir()
 		body := bytes.Repeat([]byte{0x5a}, size)
 		disk, file := artifactTestDisk(t, "")
@@ -104,7 +110,7 @@ func TestArtifactBoundedDurableStore(t *testing.T) {
 		if err != nil || sha != artifactSHA(body) || gotSize != int64(size) {
 			t.Fatalf("size %d: sha=%s bytes=%d err=%v", size, sha, gotSize, err)
 		}
-		wantSyncs := max(1, (size+artifactChunkBytes-1)/artifactChunkBytes)
+		wantSyncs := max(1, (size+artifactSyncBytes-1)/artifactSyncBytes)
 		if (*file).maxWrite > artifactChunkBytes || (*file).syncs != wantSyncs || (*file).closes != 1 {
 			t.Fatalf("size %d: file %+v", size, *file)
 		}
@@ -119,7 +125,7 @@ func TestArtifactStorageFailuresNeverCommit(t *testing.T) {
 	for _, fault := range []string{"write", "short-write", "sync", "second-sync", "close", "seek", "read", "drop", "hash-mismatch", "size-mismatch"} {
 		t.Run(fault, func(t *testing.T) {
 			dir := t.TempDir()
-			body := bytes.Repeat([]byte{0x42}, artifactChunkBytes+7)
+			body := bytes.Repeat([]byte{0x42}, artifactSyncBytes+7)
 			disk, file := artifactTestDisk(t, fault)
 			drop := disk.drop
 			disk.drop = func(f artifactTemp) error {

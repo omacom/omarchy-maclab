@@ -381,8 +381,9 @@ EOF
        sudo launchctl bootout system /Library/LaunchDaemons/<file>.plist && sudo rm /Library/LaunchDaemons/<file>.plist
   2. Delete the standing Cloudflare token from the Keychain (Keychain Access > login > the item > Delete).
      The copy in Bitwarden stays, for emergencies, with no expiry.
-  3. At Porkbun: make an API key without "purchase", limited to omarchy-mac.org; put it in the Keychain in place
-     of the "full" key; delete the "full" key. Drop the dead CLOUDFLARE_KEY line where it is kept.
+  3. At Porkbun: make an API key without "purchase", limited to omarchy-mac.org; put it in
+     ~/.config/omarchy-mac-lab/porkbun.keys (API key, then secret key, chmod 600) in place of the "full" key;
+     delete the "full" key. Drop the dead CLOUDFLARE_KEY line where it is kept.
   Then: $0 --run --done 31
 EOF
       ;;

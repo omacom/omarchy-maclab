@@ -87,10 +87,10 @@ func changeWindow(cfg *Config, f func(s *window.Settings, now time.Time) error) 
 	return saveWindow(cfg, s)
 }
 
-// windowCmd is `window show`, `window add <days> <HH:MM-HH:MM>` and
-// `window remove <days> <HH:MM-HH:MM>`.
+// windowCmd is `window show`, `window add <days> <HH:MM-HH:MM>|always` and
+// `window remove <days> <HH:MM-HH:MM>|always`.
 func windowCmd(ctx context.Context, cfg *Config, sys System, args []string, out io.Writer) error {
-	usage := errors.New("usage: window show | window add <days> <HH:MM-HH:MM> | window remove <days> <HH:MM-HH:MM>, e.g. window add mon-fri 19:00-07:00")
+	usage := errors.New("usage: window show | window add <days> <HH:MM-HH:MM>|always | window remove <days> <HH:MM-HH:MM>|always, e.g. window add mon-fri 19:00-07:00")
 	if len(args) == 0 {
 		return usage
 	}
@@ -112,10 +112,10 @@ func windowCmd(ctx context.Context, cfg *Config, sys System, args []string, out 
 		fmt.Fprintln(out, "Window: "+describeWindow(s, cfg.clock().Now()))
 		return nil
 	case "add", "remove":
-		if len(args) != 3 {
+		if len(args) != 3 && (len(args) != 2 || args[1] != "always") {
 			return usage
 		}
-		r, err := window.ParseRule(args[1] + " " + args[2])
+		r, err := window.ParseRule(strings.Join(args[1:], " "))
 		if err != nil {
 			return err
 		}
@@ -125,12 +125,12 @@ func windowCmd(ctx context.Context, cfg *Config, sys System, args []string, out 
 			case args[0] == "add" && i >= 0:
 				fmt.Fprintf(out, "%s is already a window\n", r)
 			case args[0] == "add":
-				s.Rules = append(s.Rules, r)
+				s.Rules, s.RulesAt = append(s.Rules, r), now
 				fmt.Fprintf(out, "added %s (in this Mac's local time)\n", r)
 			case i < 0:
 				return fmt.Errorf("%s is not one of this Mac's windows (see window show)", r)
 			default:
-				s.Rules = slices.Delete(s.Rules, i, i+1)
+				s.Rules, s.RulesAt = slices.Delete(s.Rules, i, i+1), now
 				fmt.Fprintf(out, "removed %s\n", r)
 			}
 			fmt.Fprintln(out, "Window: "+describeWindow(*s, now))
@@ -138,6 +138,34 @@ func windowCmd(ctx context.Context, cfg *Config, sys System, args []string, out 
 		})
 	}
 	return usage
+}
+
+// errWindowKept is takeWindow keeping the Mac's own weekly windows.
+var errWindowKept = errors.New("kept")
+
+// takeWindow takes the weekly windows the Mac's Volunteer set on My Macs,
+// which labd hands over in its check-in answers until a check-in carries
+// them; unless the Mac's own changed since: the last change wins. Pause and
+// Open now stay the Mac's.
+func (a *Agent) takeWindow(w api.WindowWanted) {
+	var words string
+	err := changeWindow(a.cfg, func(s *window.Settings, now time.Time) error {
+		if s.RulesAt.After(w.At) || s.Schedule() == (window.Settings{Rules: w.Rules}).Schedule() {
+			return errWindowKept
+		}
+		s.Rules, s.RulesAt = slices.Clone(w.Rules), w.At
+		words = s.Schedule()
+		return nil
+	})
+	switch {
+	case errors.Is(err, errWindowKept):
+	case err != nil:
+		a.log.Printf("Availability window set on My Macs: %v", err)
+	case words == "":
+		a.log.Printf("Availability window: none, as set on My Macs")
+	default:
+		a.log.Printf("Availability window: %s, as set on My Macs", words)
+	}
 }
 
 // untilArg reads the one flag pause and open take: --until VALUE.
@@ -176,6 +204,9 @@ func pause(ctx context.Context, cfg *Config, sys System, args []string, out io.W
 			if !st.Open {
 				fmt.Fprintln(out, "The window is closed already; nothing to pause.")
 				return nil
+			}
+			if st.Always {
+				return errors.New("this Mac's window has no end to pause until: pause --until YYYY-MM-DD closes it until that date")
 			}
 			if st.End.After(s.PausedUntil) {
 				s.PausedUntil = st.End
@@ -222,6 +253,8 @@ func describeWindow(s window.Settings, now time.Time) string {
 	when := func(t time.Time) string { return t.In(s.Location()).Format("Mon 2 Jan 15:04") }
 	var b strings.Builder
 	switch {
+	case st.Always:
+		b.WriteString("open always")
 	case st.Open && st.Attended:
 		fmt.Fprintf(&b, "open (attended) until %s", when(st.End))
 	case st.Open:

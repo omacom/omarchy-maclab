@@ -780,6 +780,9 @@ func (b *builder) uploadPackages(ctx context.Context, bd api.Build, out *outputs
 // (os.Root), never through a symlink, and only as a regular file.
 type outputs struct{ root *os.Root }
 
+// beforeOpen, when set by a test, runs between an output's Lstat and its open.
+var beforeOpen func(name string)
+
 func (o *outputs) Close() error { return o.root.Close() }
 
 // regular opens name for reading if it is a regular file, reached through no
@@ -795,7 +798,11 @@ func (o *outputs) regular(name string) (*os.File, fs.FileInfo, error) {
 	if !st.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("build output %s is not a regular file (%s)", name, st.Mode().Type())
 	}
-	f, err := o.root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if beforeOpen != nil {
+		beforeOpen(name)
+	}
+	// O_NONBLOCK: a FIFO swapped in after the Lstat must not hold the open.
+	f, err := o.root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -866,11 +873,18 @@ func (o *outputs) list(name string) ([]fs.DirEntry, error) {
 	if err := o.noLinks(name + "/x"); err != nil {
 		return nil, err
 	}
-	d, err := o.root.Open(name)
+	if beforeOpen != nil {
+		beforeOpen(name)
+	}
+	d, err := o.root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer d.Close()
+	dst, err := d.Stat()
+	if err != nil || !dst.IsDir() || !os.SameFile(st, dst) {
+		return nil, fmt.Errorf("build output %s changed while it was opened", name)
+	}
 	return d.ReadDir(-1)
 }
 

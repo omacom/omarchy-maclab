@@ -77,7 +77,7 @@ func (f *fake) oldName(w http.ResponseWriter, r *http.Request, path string, in m
 // registrar answers as Porkbun does for the old name's records.
 func (f *fake) registrar(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Content-Type", "application/json")
-	if path != "dns/retrieve/"+oldDomain || r.Method != "POST" || r.Header.Get("X-API-Key") != "pk1_made_up" || r.Header.Get("X-Secret-API-Key") != "sk1_made_up" {
+	if path != "dns/retrieve/"+oldDomain || r.Method != "POST" || r.Header.Get("X-API-Key") != porkbunKey || r.Header.Get("X-Secret-API-Key") != porkbunSecret {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{"status": "ERROR", "message": "Invalid API key."})
 		return
@@ -101,9 +101,9 @@ func atPorkbun() []map[string]any {
 // old runs old-name.sh with the fake's token and made-up keys for Porkbun.
 func (f *fake) oldRun(args ...string) (string, int) {
 	f.t.Helper()
-	env := []string{"LAB_PORKBUN_API=" + f.srv.URL + "/client/v4/porkbun", "PORKBUN_API_KEY=pk1_made_up", "PORKBUN_SECRET_KEY=sk1_made_up", "CLOUDFLARE_ACCOUNT_ID=" + accountID}
-	out, code := script(f.t, f, env, oldScript, append(args, "--token-file", f.tokenFile())...)
-	for _, secret := range []string{f.token, "pk1_made_up", "sk1_made_up"} {
+	env := []string{"LAB_PORKBUN_API=" + f.srv.URL + "/client/v4/porkbun", "CLOUDFLARE_ACCOUNT_ID=" + accountID}
+	out, code := script(f.t, f, env, oldScript, append(args, "--token-file", f.tokenFile(), "--porkbun-keys", porkbunKeys(f.t, 0o600))...)
+	for _, secret := range []string{f.token, porkbunKey, porkbunSecret} {
 		if strings.Contains(out, secret) {
 			f.t.Errorf("%s printed a credential", oldScript)
 		}

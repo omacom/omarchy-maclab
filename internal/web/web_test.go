@@ -168,7 +168,9 @@ func TestEveryPagesFooterLinksTheTwoTexts(t *testing.T) {
 
 func TestATextShowsItsDateAndIsTheShippedFile(t *testing.T) {
 	s := site(t, "")
+	dates := map[string]string{"terms.txt": "2026-11-14", "privacy.txt": "2026-11-16"}
 	for file, text := range map[string]Text{"terms.txt": Terms(), "privacy.txt": Privacy()} {
+		date := dates[file]
 		shipped, err := os.ReadFile("texts/" + file)
 		if err != nil {
 			t.Fatal(err)
@@ -177,7 +179,7 @@ func TestATextShowsItsDateAndIsTheShippedFile(t *testing.T) {
 		if text.SHA256 != hex.EncodeToString(sum[:]) || text.Body != string(shipped) {
 			t.Errorf("%s: labd carries a text that is not the file", file)
 		}
-		if text.Date != "2026-11-14" {
+		if text.Date != date {
 			t.Errorf("%s: its date is %q", file, text.Date)
 		}
 		body, _ := page(t, s, "text", viewer(SignedOut), Page{Title: "Terms", Data: text})
@@ -185,14 +187,18 @@ func TestATextShowsItsDateAndIsTheShippedFile(t *testing.T) {
 		if hex.EncodeToString(served[:]) != text.SHA256 {
 			t.Errorf("%s: the page's text is not the shipped file's", file)
 		}
-		for _, piece := range []string{`<time datetime="2026-11-14">2026-11-14</time>`, `<code>` + text.SHA256 + `</code>`} {
+		for _, piece := range []string{`<time datetime="` + date + `">` + date + `</time>`, `<code data-copy>` + text.SHA256 + `</code>`} {
 			if !strings.Contains(body, piece) {
 				t.Errorf("%s: the page lacks %s", file, piece)
 			}
 		}
 	}
-	if !strings.HasPrefix(Terms().Body, "OMARCHY MAC LAB: LENDING A MAC\nTerms of 2026-11-14\n") || !strings.HasPrefix(Privacy().Body, "PRIVACY\nStatement of 2026-11-14\n") {
+	if !strings.HasPrefix(Terms().Body, "OMARCHY MAC LAB: LENDING A MAC\nTerms of 2026-11-14\n") || !strings.HasPrefix(Privacy().Body, "PRIVACY\nStatement of 2026-11-16\n") {
 		t.Error("the two texts do not open as the spec's do")
+	}
+	// What a forgetting leaves, as the spec's Forgetting table has it.
+	if said := strings.Join(strings.Fields(Privacy().Body), " "); !strings.Contains(said, "the approver's handle in a Release frozen before 2026-11-16") {
+		t.Error("the privacy statement does not name the approver's handle in a Release frozen before 2026-11-16 as kept")
 	}
 }
 
@@ -402,4 +408,80 @@ func TestAPageThatIsNotThereIsAnError(t *testing.T) {
 	if _, err := s.Asset("nope.css"); err == nil {
 		t.Error("a file static/ does not hold has an address")
 	}
+}
+
+// A value to copy has its Copy button beside it in one .copyable: a real
+// button, hidden until app.js shows it, naming what it copies.
+func TestAValueToCopyHasItsCopyButtonBesideIt(t *testing.T) {
+	s := site(t, "")
+	button := `<button class="button button-small button-plain copy-button" type="button" aria-label="Copy the Join command" hidden>Copy</button>`
+	for piece, want := range map[string]string{
+		"copy":       `<span class="copyable"><code data-copy>sudo lab-agent &lt;update&gt;</code> ` + strings.Replace(button, "the Join command", "the update command", 1) + `</span>`,
+		"copy-block": `<div class="copyable copyable-block"><pre class="command"><span class="prompt" aria-hidden="true">$ </span><code data-copy>curl -fsSL x | bash</code></pre> ` + button + `</div>`,
+		"copy-title": `<div class="copyable copyable-title"><h1 data-copy>j-1</h1> ` + strings.Replace(button, "the Join command", "the job id", 1) + `</div>`,
+	} {
+		c := map[string]Copyable{
+			"copy":       copyOf("the update command", "sudo lab-agent <update>"),
+			"copy-block": copyOf("the Join command", "curl -fsSL x | bash"),
+			"copy-title": copyOf("the job id", "j-1"),
+		}[piece]
+		var buf bytes.Buffer
+		if err := s.pages["home"].ExecuteTemplate(&buf, piece, c); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != want {
+			t.Errorf("%s:\n%s\nwant:\n%s", piece, buf.String(), want)
+		}
+	}
+	if c := copyOf("the install command", "curl", "install"); c.ID != "install" {
+		t.Errorf("copy with an id: %+v", c)
+	}
+}
+
+// The Copy buttons work from app.js, the lab's own file: served as
+// JavaScript, kept a year, loaded by every page under a policy that refuses
+// inline script, with no handler written into the page.
+func TestTheCopyButtonsWorkFromTheLabsOwnScript(t *testing.T) {
+	s := site(t, "")
+	body, w := page(t, s, "text", viewer(SignedOut), Page{Title: "Terms", Data: Terms()})
+	addr, err := s.Asset("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body, `<script src="`+addr+`" defer></script>`) {
+		t.Errorf("the page does not load %s", addr)
+	}
+	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") || strings.Contains(csp, "unsafe") {
+		t.Errorf("the page's policy: %q", csp)
+	}
+	if !strings.Contains(body, `aria-label="Copy the sha256 of this text" hidden>Copy</button>`) {
+		t.Error("the text's sha256 has no Copy button")
+	}
+	if regexp.MustCompile(`<script(>| [^>]*[^c]>)[^<]`).MatchString(body) || regexp.MustCompile(`\son[a-z]+="`).MatchString(body) || strings.Contains(body, ` style="`) {
+		t.Error("the page carries inline script, a handler or inline style, which its policy refuses")
+	}
+	js := get(s, addr)
+	if js.Code != 200 || js.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {
+		t.Errorf("GET %s: %d %q", addr, js.Code, js.Header().Get("Content-Type"))
+	}
+	for _, piece := range []string{`"button.copy-button"`, `.closest(".copyable")`, `"[data-copy]"`, "hidden = false", "navigator.clipboard.writeText", "selectNodeContents", `"aria-live"`, `"Copied"`, "2000"} {
+		if !strings.Contains(js.Body.String(), piece) {
+			t.Errorf("app.js lacks %q: a Copy button would not show, copy, fall back to selecting or say so", piece)
+		}
+	}
+	css := get(s, mustAsset(t, s, "app.css")).Body.String()
+	for _, piece := range []string{".copy-button[hidden] { display: none; }", ".copyable-block", ".visually-hidden"} {
+		if !strings.Contains(css, piece) {
+			t.Errorf("app.css lacks %q", piece)
+		}
+	}
+}
+
+func mustAsset(t *testing.T, s *Site, name string) string {
+	t.Helper()
+	addr, err := s.Asset(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }

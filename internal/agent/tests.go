@@ -137,7 +137,7 @@ func (l *Linux) RunTest(ctx context.Context, job string, t api.TestSpec, fetch F
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.WaitDelay = 5 * time.Second
 	start := time.Now()
-	err = cmd.Run()
+	err = runGroup(cmd)
 	logf.Close()
 	res.Seconds = time.Since(start).Seconds()
 	res.Tail = tail(logPath, 40)

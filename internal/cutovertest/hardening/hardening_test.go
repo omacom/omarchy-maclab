@@ -7,11 +7,14 @@ package hardening
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +38,9 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if binDir != "" {
 		os.RemoveAll(binDir)
+	}
+	if probePath != "" {
+		os.RemoveAll(filepath.Dir(probePath))
 	}
 	exit(code)
 }
@@ -152,7 +158,7 @@ func stubs(t *testing.T, text map[string]string) (dir, calls string) {
 func TestEveryDryRunSaysItsStepsAndSendsNothing(t *testing.T) {
 	dir, calls := stubs(t, nil)
 	env := []string{"PATH=" + dir + ":" + os.Getenv("PATH")}
-	byHand := map[string]int{"h07-cuts": 1, "h09-notice-topic": 3, "h10-browser": 1}
+	byHand := map[string]int{"h07-cuts": 1, "h09-notice-topic": 4, "h10-browser": 1}
 	for _, name := range tests {
 		for _, option := range [][]string{nil, {"--dry-run"}} {
 			out, code := run(t, env, script(t, name), option...)
@@ -206,6 +212,8 @@ func TestEveryDryRunSaysItsStepsAndSendsNothing(t *testing.T) {
 func TestTheFourteenRunLocally(t *testing.T) {
 	t.Parallel()
 	bins(t)
+	// Records of real runs are committed there; a local run adds none.
+	kept, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*hardening*"))
 	for name, wants := range map[string][]string{
 		"h01-console": {"GET /api/devices/m1-pro/console: 410, The serial console is not part of Omarchy Mac Lab.", "POST /api/devices/m1-pro/console/arm: 410",
 			"GET /api/devices/m1-pro/serial: 410", "serial-assisted: 410", "lab shell m1-pro: exit 1", "off the network, under the caller's Lease: 409",
@@ -223,7 +231,7 @@ func TestTheFourteenRunLocally(t *testing.T) {
 		"h07-cuts": {"the revoked token's next request: 401", "its stream ended: ", "a Maintainer used \"End all access\" on @member, on People",
 			"the next request after \"End all access\": 401", "the stream ended: ", "@member's browser is signed out", "the Lease on m1-pro ended with it"},
 		"h08-agents-lines": {"owner marked member as M team.", "owner made the Lab token \"h08-", "owner revoked member's Lab token \"h08-",
-			"owner used \"End all access\" on member.", "owner removed the M team mark from member."},
+			"owner used \"End all access\" on member.", "owner removed the M team mark from member.", "People's record shows @owner marked @member"},
 		"h10-browser": {"a signed-in browser's form from a page at https://elsewhere.example: 403", "Sec-Fetch-Site: cross-site: 403", "no Lab token was made by either",
 			"a signed-out browser's upload from a page at https://elsewhere.example: 403", "sign-in asked to return to https://elsewhere.example/ landed on the home page",
 			"sign-in asked to return to //elsewhere.example/ landed on the home page", "it landed there", "/api/themes/default/theme.css: 404",
@@ -264,7 +272,8 @@ func TestTheFourteenRunLocally(t *testing.T) {
 		})
 	}
 	t.Cleanup(func() {
-		if left, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*hardening*")); len(left) != 0 {
+		all, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*hardening*"))
+		if left := slices.DeleteFunc(all, func(f string) bool { return slices.Contains(kept, f) }); len(left) != 0 {
 			t.Errorf("a local run left a record in docs/acceptance: %v", left)
 		}
 	})
@@ -315,7 +324,7 @@ func TestH06FindsASecretShown(t *testing.T) {
 }
 
 // probeArgs is the start of a stand-in for the probe: out is its --out file.
-const probeArgs = `out=""; prev=""; for a in "$@"; do [[ $prev != --out ]] || out="$a"; prev="$a"; done
+const probeArgs = `out=""; prev=""; for a in "$@"; do [ "$prev" != --out ] || out="$a"; prev="$a"; done
 `
 
 // labRun runs a test through a made-up Lab address: lab says it is logged
@@ -324,39 +333,258 @@ const probeArgs = `out=""; prev=""; for a in "$@"; do [[ $prev != --out ]] || ou
 // record and how the probe and lab were called.
 func labRun(t *testing.T, name, lab, probe, stdin string, env []string, args ...string) (out string, code int, record, calls string) {
 	t.Helper()
-	if lab == "" {
-		lab = `case "$1" in status) echo "NAME STATE" ;; *) exit 9 ;; esac`
-	}
-	dir, callsFile := stubs(t, map[string]string{"lab": lab, "hardening-probe": probeArgs + probe})
-	records := t.TempDir()
-	cmd := exec.Command(script(t, name), append([]string{"--lab", "--bin", dir, "--records", records}, args...)...)
-	cmd.Env = append(append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "LAB_ADDRESS=https://lab.example"), env...)
-	cmd.Stdin = strings.NewReader(stdin)
-	b, err := cmd.CombinedOutput()
+	l := labCommand(t, name, lab, probe, stdin, env, args...)
+	b, err := l.cmd.CombinedOutput()
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
 	} else if err != nil {
 		t.Fatal(err)
 	}
-	if files, _ := filepath.Glob(filepath.Join(records, "*-hardening-"+name[1:3]+".md")); len(files) == 1 {
-		record = read(t, files[0])
+	return string(b), code, l.record(), l.calls()
+}
+
+// labTest is a test made ready to run through a made-up Lab address.
+type labTest struct {
+	t                    *testing.T
+	cmd                  *exec.Cmd
+	stubs, name, records string
+}
+
+func labCommand(t *testing.T, name, lab, probe, stdin string, env []string, args ...string) *labTest {
+	t.Helper()
+	if lab == "" {
+		lab = `case "$1" in status) echo "NAME STATE" ;; *) exit 9 ;; esac`
 	}
-	c, _ := os.ReadFile(callsFile)
-	return string(b), code, record, string(c)
+	dir, _ := stubs(t, map[string]string{"lab": lab, "hardening-probe": probeArgs + probe})
+	records := t.TempDir()
+	cmd := exec.Command(script(t, name), append([]string{"--lab", "--bin", dir, "--records", records}, args...)...)
+	cmd.Env = append(append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "LAB_ADDRESS=https://lab.example"), env...)
+	cmd.Stdin = strings.NewReader(stdin)
+	return &labTest{t: t, cmd: cmd, stubs: dir, name: name, records: records}
+}
+
+func (l *labTest) record() string {
+	if files, _ := filepath.Glob(filepath.Join(l.records, "*-hardening-"+l.name[1:3]+".md")); len(files) == 1 {
+		return read(l.t, files[0])
+	}
+	return ""
+}
+
+func (l *labTest) calls() string {
+	c, _ := os.ReadFile(filepath.Join(l.stubs, "calls"))
+	return string(c)
 }
 
 // H 8 through the Lab address: the owner's browser makes a token and marks
-// a person M team. A "no" at a question leaves the lab as it was.
-const h08Probe = `case "$*" in
-  "page "*"--find /me/tokens/"*) echo status=200; echo found=7 ;;
+// a person M team. A "no" at a question leaves the lab as it was. Once the
+// mark is posted People shows the person as H08_KIND_AFTER (M team), and
+// the newest mark in their record is H08_MARKED_BY's (the owner's).
+const h08Probe = `S="$(dirname "$0")"
+case "$*" in
+  "page "*'data-label="Kind"'*)
+    echo status=200
+    if [ -f "$S/marked" ]; then kind="${H08_KIND_AFTER-M team}"; else kind="${H08_KIND:-}"; fi
+    [ -z "$kind" ] || echo "found=$kind" ;;
+  "page "*"marked as M team"*" /people?open=42")
+    [ -z "${H08_RECORD_AT:-}" ] || LAB_ADDRESS="$H08_RECORD_AT" exec "$H08_REAL_PROBE" "$@"
+    by="${H08_MARKED_BY-owner}"
+    [ ! -f "$S/cut" ] || by="${H08_MARKED_AFTER_CUT:-$by}"
+    echo status=200; [ -z "$by" ] || echo "found=$by" ;;
+  "page "*"--find /me/tokens/"*) [ -z "${H08_ME_FAILS:-}" ] || { echo status=500; exit 0; }; echo status=200; echo found=7 ;;
   "page "*"--find /people/"*"end-all-access"*) echo status=200; echo found=42 ;;
+  "page "*"<h1>@"*" /me") echo status=200; echo found=owner ;;
   "page "*" /me") echo status=200 ;;
   "form "*" /me/tokens name="*) echo lab_0123456789012345678901234567890123456789 > "$out"; echo status=200 ;;
   "form "*" /me/tokens/7/revoke sure=yes") echo status=303 ;;
-  "form "*" /people/mark handle=someone as=m-team") echo status=303 ;;
+  "form "*" /people/mark handle=someone as=m-team")
+    if [ -n "${H08_MARK_HANGS:-}" ]; then
+      # labd answers once the test writes the answer: 303 with the mark
+      # written, or the post's own deadline (0) with the write still to land.
+      touch "$S/posted"
+      until [ -f "$S/answer" ]; do sleep 0.05; done
+      a="$(cat "$S/answer")"
+      if [ "$a" = 0 ]; then (sleep 1; touch "$S/marked") & else touch "$S/marked"; fi
+      echo "status=$a"
+      exit 0
+    fi
+    touch "$S/marked"
+    echo "status=${H08_MARK:-303}" ;;
+  "form "*" /people/42/end-all-access sure=yes") touch "$S/cut"; echo status=303 ;;
   "form "*" /people/42/m-team/remove sure=yes") echo status=303 ;;
   *) echo status=500 ;;
 esac`
+
+// At its normal end H 8 looks at the mark again right before it takes it
+// off: one another Maintainer gave in its place while the owner answered a
+// question stays theirs.
+func TestH08sNormalEndTakesOffOnlyItsOwnMark(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		env     []string
+		code    int
+		removed bool
+		want    string
+	}{
+		"its own mark":                        {nil, 0, true, "the owner took the M team mark off someone again"},
+		"a mark replaced while it was asking": {[]string{"H08_MARKED_AFTER_CUT=maint"}, 3, false, "left: @maint marked someone as M team, not this test"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, code, record, calls := labRun(t, "h08-agents-lines", "", h08Probe, "session\nyes\nyes\nyes\nyes\n", c.env, "--other", "someone")
+			if code != c.code || !strings.Contains(record, c.want) {
+				t.Fatalf("exit %d, want %d and %q\n%s\n%s", code, c.code, c.want, out, record)
+			}
+			if got := strings.Contains(calls, "/people/42/m-team/remove"); got != c.removed {
+				t.Errorf("the mark taken off: %v, want %v:\n%s", got, c.removed, calls)
+			}
+		})
+	}
+}
+
+// A mark whose answer was lost is taken off only when People's record shows
+// it is the owner's, whose browser H 8 is: another Maintainer's mark made
+// after H 8's look stays. With no answer and no mark the write may still
+// land: that is not undone.
+func TestH08TakesOffOnlyAMarkOfItsOwnWhoseAnswerWasLost(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		mark    string
+		env     []string
+		removed bool
+		want    string
+	}{
+		"a lost 409 over another Maintainer's mark": {"0", []string{"H08_MARKED_BY=maint"}, false, "left: @maint marked someone as M team, not this test"},
+		"no answer and no mark yet":                 {"0", []string{"H08_KIND_AFTER=", "H08_MARKED_BY="}, false, "NOT UNDONE: the post that marks someone as M team had no answer"},
+		"an answer and no mark made":                {"502", []string{"H08_KIND_AFTER=", "H08_MARKED_BY="}, false, "undone: People shows no M team mark on someone"},
+		"the test's own mark":                       {"0", nil, true, "undone: the M team mark was taken off someone"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, code, record, calls := labRun(t, "h08-agents-lines", "", h08Probe, "session\nyes\n", append(c.env, "H08_MARK="+c.mark), "--other", "someone")
+			if code != 1 || !strings.Contains(record, "FAILED: someone was not marked M team: "+c.mark) {
+				t.Fatalf("exit %d\n%s\n%s", code, out, record)
+			}
+			if got := strings.Contains(calls, "/people/42/m-team/remove"); got != c.removed {
+				t.Errorf("the mark taken off: %v, want %v:\n%s", got, c.removed, calls)
+			}
+			if !strings.Contains(record, c.want) {
+				t.Errorf("the record lacks %q:\n%s", c.want, record)
+			}
+		})
+	}
+}
+
+var (
+	probeOnce sync.Once
+	probePath string
+	probeErr  error
+)
+
+// realProbe is tools/hardening-probe, built once.
+func realProbe(t *testing.T) string {
+	t.Helper()
+	probeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "hardening-probe")
+		if probeErr = err; err != nil {
+			return
+		}
+		probePath = filepath.Join(dir, "hardening-probe")
+		cmd := exec.Command("go", "build", "-o", probePath, "./tools/hardening-probe")
+		cmd.Dir = repo(t)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			probeErr = fmt.Errorf("go build: %v\n%s", err, out)
+		}
+	})
+	if probeErr != nil {
+		t.Fatal(probeErr)
+	}
+	return probePath
+}
+
+// Who gave the newest mark is read from the person's record on People in
+// its order, newest first, through the real probe: an older mark by the
+// owner under a newer one by another Maintainer is the other's, and stays.
+func TestH08ReadsWhoGaveTheNewestMarkInThePagesOrder(t *testing.T) {
+	t.Parallel()
+	probe := realProbe(t)
+	people := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/people" || r.URL.Query().Get("open") != "42" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `<ol class="record">
+<li><span class="when">2026-11-16 04:10</span> @zed marked as M team @someone</li>
+<li><span class="when">2026-11-16 04:02</span> @zed removed the M team mark from @someone</li>
+<li><span class="when">2026-11-15 21:40</span> @owner marked as M team @someone</li>
+</ol>`)
+	}))
+	defer people.Close()
+	out, code, record, calls := labRun(t, "h08-agents-lines", "", h08Probe, "session\nyes\n",
+		[]string{"H08_MARK=0", "H08_RECORD_AT=" + people.URL, "H08_REAL_PROBE=" + probe}, "--other", "someone")
+	if code != 1 || !strings.Contains(record, "FAILED: someone was not marked M team: 0") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, record)
+	}
+	if strings.Contains(calls, "/people/42/m-team/remove") || !strings.Contains(record, "left: @zed marked someone as M team, not this test") {
+		t.Errorf("a newer mark by another Maintainer was not left as theirs:\n%s\n%s", calls, record)
+	}
+}
+
+// A Ctrl-C while the mark's post is out checks the mark once labd's request
+// has ended: a mark written just before labd answers is the test's own and
+// is taken off; with no answer by the post's deadline and no mark yet, the
+// write may still land after, and the record says NOT UNDONE.
+func TestACtrlCWhileH08MarksChecksTheMarkOnceLabdAnswered(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		answer  string
+		removed bool
+		want    string
+	}{
+		"labd marks and answers after the Ctrl-C": {"303", true, "undone: the M team mark was taken off someone"},
+		"the mark lands after the post gave up":   {"0", false, "NOT UNDONE: the post that marks someone as M team had no answer"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			l := labCommand(t, "h08-agents-lines", "", h08Probe, "session\nyes\n", []string{"H08_MARK_HANGS=1"}, "--other", "someone")
+			l.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := l.cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.Kill(-l.cmd.Process.Pid, syscall.SIGKILL)
+			for end := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+				if _, err := os.Stat(filepath.Join(l.stubs, "posted")); err == nil {
+					break
+				}
+				if time.Now().After(end) {
+					t.Fatalf("the mark was not posted:\n%s\n%s", l.calls(), l.record())
+				}
+			}
+			syscall.Kill(-l.cmd.Process.Pid, syscall.SIGINT)
+			done := make(chan error, 1)
+			go func() { done <- l.cmd.Wait() }()
+			select {
+			case <-done:
+				t.Fatalf("the run ended before labd answered the mark:\n%s\n%s", l.calls(), l.record())
+			case <-time.After(time.Second):
+			}
+			if err := os.WriteFile(filepath.Join(l.stubs, "answer"), []byte(c.answer), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the run did not end after labd answered")
+			}
+			record := l.record()
+			if got := strings.Contains(l.calls(), "/people/42/m-team/remove sure=yes"); got != c.removed {
+				t.Errorf("the mark taken off: %v, want %v:\n%s", got, c.removed, l.calls())
+			}
+			if !strings.Contains(record, c.want) || !strings.Contains(record, "Result: stopped") || strings.Contains(record, "undone: People shows no M team mark") {
+				t.Errorf("the record lacks %q:\n%s", c.want, record)
+			}
+		})
+	}
+}
 
 func TestANoAtH08sQuestionLeavesTheLabAsItWas(t *testing.T) {
 	t.Parallel()
@@ -377,6 +605,50 @@ func TestANoAtH08sQuestionLeavesTheLabAsItWas(t *testing.T) {
 				t.Errorf("the record does not say it was undone before its result:\n%s", record)
 			}
 		})
+	}
+}
+
+// H 8 never takes away a mark it did not give: a person already on the M
+// team is refused before anything is changed, and a mark the lab refused
+// is not undone.
+func TestH08LeavesAnExistingMemberMarked(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		env   []string
+		stdin string
+		code  int
+		want  string
+	}{
+		"People shows them on the M team": {[]string{"H08_KIND=M team"}, "session\n", 3, "STOPPED: @someone is on the M team already (M team)"},
+		"People shows them a Maintainer":  {[]string{"H08_KIND=Maintainer"}, "session\n", 3, "STOPPED: @someone is on the M team already (Maintainer)"},
+		"the lab refuses the mark":        {[]string{"H08_MARK=409"}, "session\nyes\n", 1, "FAILED: someone was not marked M team: 409"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, code, record, calls := labRun(t, "h08-agents-lines", "", h08Probe, c.stdin, c.env, "--other", "someone")
+			if code != c.code || !strings.Contains(record, c.want) {
+				t.Fatalf("exit %d, want %d and %q\n%s\n%s", code, c.code, c.want, out, record)
+			}
+			if strings.Contains(calls, "/m-team/remove") || strings.Contains(record, "the M team mark was taken off") {
+				t.Errorf("the mark was taken off a person the test did not mark:\n%s\n%s", calls, record)
+			}
+			if c.code == 3 && (strings.Contains(calls, "/people/mark") || strings.Contains(calls, "/me/tokens name=")) {
+				t.Errorf("the run changed the lab before it refused:\n%s", calls)
+			}
+		})
+	}
+}
+
+// The token's undo says it is done only once it has read the owner's page:
+// a /me that does not open says nothing of the token, which may be live.
+func TestATokenUndoThatCannotReadMeSaysNotUndone(t *testing.T) {
+	t.Parallel()
+	out, code, record, _ := labRun(t, "h08-agents-lines", "", h08Probe, "session\nno\n", []string{"H08_ME_FAILS=1"}, "--other", "someone")
+	if code != 1 || !strings.Contains(record, "Result: fail") {
+		t.Fatalf("exit %d\n%s\n%s", code, out, record)
+	}
+	if strings.Contains(record, "undone: no Lab token") || !strings.Contains(record, "NOT UNDONE: the Lab token h08-") || !strings.Contains(record, "(500)") {
+		t.Errorf("the record does not say the token may still be live:\n%s", record)
 	}
 }
 
@@ -497,29 +769,49 @@ func TestARunThatStartsTakesItsOldPassOutOfTheResults(t *testing.T) {
 const h09Lab = `S="$(dirname "$0")"
 case "$1" in
   status) echo "NAME STATE"; [ -z "${2:-}" ] || touch "$S/reported" ;;
-  run) touch "$S/job"; echo "job j-1 queued on $2" ;;
-  cancel) echo "canceled" ;;
+  run)
+    echo "$MACLAB_HOLDER" > "$S/holder"; touch "$S/job"
+    [ -z "${H09_RUN_HANGS:-}" ] || { touch "$S/posted"; exec sleep 30; }
+    echo "job j-1 queued on $2" ;;
+  cancel) echo "$2" >> "$S/canceled"; echo "canceled" ;;
   *) exit 9 ;;
 esac`
+
+// h09Jobs: the Mac's jobs as labd lists them: another person's, queued, and
+// once lab run was called the run's own, under the holder it was given.
+const h09Jobs = `  "ask "*"GET /api/jobs?device=m2-max&limit=50")
+    echo status=200
+    {
+      printf '[{"id":"j-0","spec":{"device":"m2-max","tests":[{"name":"boot-health"}],"holder":"someone@laptop"},"state":"queued","events":[{"state":"queued"}]}'
+      [ ! -f "$S/job" ] || printf ',{"id":"j-1","spec":{"device":"m2-max","tests":[{"name":"boot-health"}],"holder":"%s"},"state":"queued","events":[{"state":"queued"}]}' "$(cat "$S/holder")"
+      echo ']'
+    } > "$out" ;;
+`
 
 const h09Probe = `S="$(dirname "$0")"
 card() {
   echo '<section class="card mac-card" id="mac-other"><span class="flash">Your own topic is refused: it answers with a redirect, which labd does not follow.</span></section>'
   echo '<section class="card mac-card" id="mac-m2-max">'
-  echo "<dt>Notices</dt><dd>$1</dd>"
+  echo "<dt>Notices</dt><dd><span class=\"copyable\"><code data-copy>$1</code> <button class=\"button button-small button-plain copy-button\" type=\"button\" aria-label=\"Copy the Notices topic\" hidden>Copy</button></span> <span class=\"nowrap\">job Notices $2</span>$3</dd>"
   echo '</section>'
 }
 case "$*" in
-  "page "*" /me") echo status=200 ;;
+` + h09Jobs + `  "page "*" /me") echo status=200 ;;
   "page "*" /my-macs") echo status=303; echo "location=/macs?show=mine" ;;
   "page "*" /macs?show=mine")
     echo status=200
-    if [ -f "$S/job" ] && [ -z "${H09_NO_REDIRECT:-}" ]; then
-      card '<span class="flash">Your own topic is refused: it answers with a redirect, which labd does not follow.</span>' > "$out"
+    if [ ! -f "$S/before-read" ]; then
+      touch "$S/before-read"
+      card https://ntfy.example/mine-h09 off '' > "$out"
+    elif [ -f "$S/canceled" ]; then
+      # Put back at the Mac: labd keeps a topic the Mac no longer reports.
+      if [ -n "${H09_TOPIC_STAYS:-}" ]; then card https://redirect.example/h09 off '' > "$out"; else card https://ntfy.example/mine-h09 off '' > "$out"; fi
+    elif [ -f "$S/job" ] && [ -z "${H09_NO_REDIRECT:-}" ]; then
+      card https://redirect.example/h09 on '<span class="flash">Your own topic is refused: it answers with a redirect, which labd does not follow.</span>' > "$out"
     elif [ -f "$S/reported" ]; then
-      card 'job Notices on' > "$out"
+      card https://redirect.example/h09 on '' > "$out"
     else
-      card '<span class="flash">Your own topic is refused: its host 192.168.0.1 is at 192.168.0.1, not a public address.</span>' > "$out"
+      card https://192.168.0.1/h09 off '<span class="flash">Your own topic is refused: its host 192.168.0.1 is at 192.168.0.1, not a public address.</span>' > "$out"
     fi ;;
   *) echo status=500 ;;
 esac`
@@ -527,12 +819,13 @@ esac`
 func TestH09ReadsTheMacsCardAsAnAdmin(t *testing.T) {
 	t.Parallel()
 	args := []string{"--volunteers-mac", "m2-max", "--redirect", "https://redirect.example/h09"}
-	out, code, record, calls := labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\nyes\nyes\n\n", []string{"H09_WAIT=10"}, args...)
+	out, code, record, calls := labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\n\nyes\nyes\n\n", []string{"H09_WAIT=10"}, args...)
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, out, record)
 	}
 	for _, want := range []string{"the topic at a private address: m2-max's card says: Your own topic is refused: its host 192.168.0.1",
-		"job j-1 on m2-max made a Notice to the topic behind a redirect, and was canceled", "the topic behind a redirect: m2-max's card says: Your own topic is refused: it answers with a redirect"} {
+		"job j-1 on m2-max made a Notice to the topic behind a redirect, and was canceled", "the topic behind a redirect: m2-max's card says: Your own topic is refused: it answers with a redirect",
+		"undone: m2-max's topic and job Notices are as they were before the test, as its card shows"} {
 		if !strings.Contains(record, want) {
 			t.Errorf("the record lacks %q:\n%s", want, record)
 		}
@@ -540,15 +833,128 @@ func TestH09ReadsTheMacsCardAsAnAdmin(t *testing.T) {
 	if !strings.Contains(calls, "lab run m2-max --no-wait") || !strings.Contains(calls, "lab cancel j-1") {
 		t.Errorf("no job made the Notice, or it was not canceled:\n%s", calls)
 	}
-
-	// The redirect never refused: the job is canceled, the owner told how to
-	// put the topic back.
-	out, code, record, calls = labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\nyes\n", []string{"H09_WAIT=4", "H09_NO_REDIRECT=1"}, args...)
-	if code != 1 || !strings.Contains(record, "FAILED: m2-max's card does not show the topic behind a redirect refused") {
-		t.Fatalf("exit %d\n%s\n%s", code, out, record)
+	// The Mac's own topic is its only secret: it is read, and never written.
+	if strings.Contains(out, "ntfy.example/mine-h09") || strings.Contains(record, "ntfy.example/mine-h09") {
+		t.Errorf("the Mac's topic was shown:\n%s\n%s", out, record)
 	}
-	if !strings.Contains(calls, "lab cancel j-1") || !strings.Contains(record, "BY HAND: at m2-max, put its topic back") {
-		t.Errorf("the job was left, or the topic not named:\n%s\n%s", calls, record)
+}
+
+// H 9 copies the Mac's Notice settings aside before it changes them, and
+// sees them back on the card at its end; what it cannot see back, or did not
+// put back, the record names NOT UNDONE.
+func TestH09PutsTheMacsNoticeSettingsBack(t *testing.T) {
+	t.Parallel()
+	args := []string{"--volunteers-mac", "m2-max", "--redirect", "https://redirect.example/h09"}
+	t.Run("the topic stays the test's", func(t *testing.T) {
+		t.Parallel()
+		out, code, record, _ := labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\n\nyes\nyes\n\n", []string{"H09_WAIT=4", "H09_TOPIC_STAYS=1"}, args...)
+		if code != 0 {
+			t.Fatalf("exit %d\n%s\n%s", code, out, record)
+		}
+		if !strings.Contains(record, "NOT UNDONE: m2-max's Notices still go to another topic than before the test") || strings.Contains(record, "undone: m2-max's topic") {
+			t.Errorf("a topic not back was not named:\n%s", record)
+		}
+		if strings.Contains(record, "job Notices are") {
+			t.Errorf("job Notices that came back were named:\n%s", record)
+		}
+	})
+	t.Run("the run ends first", func(t *testing.T) {
+		t.Parallel()
+		out, code, record, calls := labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\n\nyes\n", []string{"H09_WAIT=4", "H09_NO_REDIRECT=1"}, args...)
+		if code != 1 || !strings.Contains(record, "FAILED: m2-max's card does not show the topic behind a redirect refused") {
+			t.Fatalf("exit %d\n%s\n%s", code, out, record)
+		}
+		if !strings.Contains(calls, "lab cancel j-1") {
+			t.Errorf("the job was left:\n%s", calls)
+		}
+		if !strings.Contains(record, "NOT UNDONE: m2-max's topic and job Notices are still the test's: at m2-max, put them back: sudo sh -c 'set -e; cd /var/lib/maclab-h09") {
+			t.Errorf("the record does not say how to put the settings back:\n%s", record)
+		}
+	})
+	t.Run("nobody there to copy them aside", func(t *testing.T) {
+		t.Parallel()
+		out, code, record, _ := labRun(t, "h09-notice-topic", h09Lab, h09Probe, "session\n", []string{"H09_WAIT=4"}, args...)
+		if code != 3 || !strings.Contains(out, "sudo sh -c 'set -e; mkdir -m 700 /var/lib/maclab-h09") || strings.Contains(record, "UNDONE") {
+			t.Errorf("exit %d\n%s\n%s", code, out, record)
+		}
+	})
+}
+
+// H 9's restore command, run as root at the Mac, stops at the first step
+// that fails and keeps the copy aside: a topic that could not be copied
+// back is not lost with it.
+func TestH09sRestoreKeepsTheCopyWhenAStepFails(t *testing.T) {
+	t.Parallel()
+	out, code := run(t, nil, script(t, "h09-notice-topic"), "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	m := regexp.MustCompile(`put its Notice settings back, as root: sudo sh -c '([^']*)'`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("the dry run does not say the restore command:\n%s", out)
+	}
+	root := t.TempDir()
+	agent, saved := filepath.Join(root, "maclab"), filepath.Join(root, "maclab-h09")
+	for _, d := range []string{agent, saved} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(saved, "ntfy-topic"), []byte("https://ntfy.example/mine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The topic cannot be copied back: the agent's folder takes no file.
+	if err := os.Chmod(agent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(agent, 0o700) })
+	restore := strings.NewReplacer("/var/lib/maclab-h09", saved, "/var/lib/maclab", agent).Replace(m[1])
+	if _, err := exec.Command("sh", "-c", restore).CombinedOutput(); err == nil {
+		t.Error("the restore said it worked")
+	}
+	if got, err := os.ReadFile(filepath.Join(saved, "ntfy-topic")); err != nil || !strings.Contains(string(got), "ntfy.example/mine") {
+		t.Errorf("the copy aside was not kept: %q, %v", got, err)
+	}
+}
+
+// H 9's job is armed by the holder it is asked under before it is asked
+// for: a Ctrl-C while lab run is still out cancels it, and nobody else's.
+func TestACtrlCRightAfterH09sPostCancelsTheJob(t *testing.T) {
+	t.Parallel()
+	l := labCommand(t, "h09-notice-topic", h09Lab, h09Probe, "session\n\n\n\nyes\n", []string{"H09_WAIT=10", "H09_RUN_HANGS=1"},
+		"--volunteers-mac", "m2-max", "--redirect", "https://redirect.example/h09")
+	l.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := l.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Kill(-l.cmd.Process.Pid, syscall.SIGKILL)
+	for end := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(l.stubs, "posted")); err == nil {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("lab run was not called:\n%s\n%s", l.calls(), l.record())
+		}
+	}
+	// Ctrl-C at the owner's terminal: the whole group gets it.
+	syscall.Kill(-l.cmd.Process.Pid, syscall.SIGINT)
+	done := make(chan error, 1)
+	go func() { done <- l.cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the run did not end after Ctrl-C")
+	}
+	canceled, _ := os.ReadFile(filepath.Join(l.stubs, "canceled"))
+	if string(canceled) != "j-1\n" {
+		t.Errorf("canceled %q, want the run's own job j-1 alone:\n%s", canceled, l.calls())
+	}
+	record := l.record()
+	if !strings.Contains(record, "undone: job j-1 on m2-max was canceled") || !strings.Contains(record, "Result: stopped") {
+		t.Errorf("the record:\n%s", record)
+	}
+	if holder := read(t, filepath.Join(l.stubs, "holder")); !strings.HasPrefix(holder, "hardening-tests-h09-") {
+		t.Errorf("lab run was given the holder %q, not the run's own tag", holder)
 	}
 }
 

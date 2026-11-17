@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"unicode/utf16"
 )
@@ -45,7 +44,7 @@ func readEfivar(name, guid string) (uint32, []byte, error) {
 func writeEfivar(name, guid string, attrs uint32, data []byte) error {
 	p := efivarPath(name, guid)
 	if _, err := os.Stat(p); err == nil {
-		exec.Command("chattr", "-i", p).Run()
+		tool(nil, nil, "chattr", "-i", p)
 	}
 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
@@ -67,7 +66,7 @@ func deleteEfivar(name, guid string) error {
 	if _, err := os.Stat(p); os.IsNotExist(err) {
 		return nil
 	}
-	exec.Command("chattr", "-i", p).Run()
+	tool(nil, nil, "chattr", "-i", p)
 	return os.Remove(p)
 }
 

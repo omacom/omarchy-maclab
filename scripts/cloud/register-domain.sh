@@ -8,7 +8,7 @@
 #
 # A registration cannot be undone. --cost is the price the owner agreed to;
 # the script refuses when the live price is another. Porkbun's two keys come
-# from the login Keychain (omarchy-mac-lab).
+# from --porkbun-keys FILE (see lib.sh).
 
 # shellcheck source=scripts/cloud/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

@@ -83,15 +83,28 @@ step 4) to carry exactly one matching `rd.luks.name=<uuid>=<volume>`, which
    and `mkinitcpio -P` first when `/boot` holds initramfs images);
 6. checks that every UKI holds the current key file's exact contents and the
    `rd.luks.key=` argument, that every `/boot/initramfs-*.img` holds the same
-   current key (a matching filename alone is not enough), that every
-   `limine.conf` entry booting those UKIs (snapshot entries and the maclab
-   block aside) has the argument on its own `cmdline:` line, and that the key
-   opens the volume. On an Omarchy Mac each entry carries its own `cmdline:`,
-   and that, not the UKI's embedded command line, is what boots.
+   current key (a matching filename alone is not enough), that the key opens
+   the volume, and that every entry in `limine.conf` boots without the
+   passphrase: the image it boots (a UKI, or a `linux` entry's initramfs)
+   holds the current key, and the command line it boots has the argument. An
+   entry's own `cmdline:` wins over the UKI's embedded one; on an Omarchy Mac
+   each entry carries its own. The default entry above all: `default_entry`
+   resolved as Limine does (unset is 1; a number counts the entries as the
+   menu first shows them, from 1, directories included and a directory's
+   entries only when it opens by default, `/+name`; or a `Dir/Entry` path).
+   Snapshot entries (booted by hand) and lab-agent's maclab block are
+   reported, not required, unless one is the default.
 
 All of `enable`'s refusals come before it asks you to confirm and before it
-adds the key slot, so a refused `enable` leaves nothing behind. Besides the
-layout above, it refuses a crypttab entry for the volume that the initramfs
+adds the key slot, so a refused `enable` leaves nothing behind. It refuses a
+boot menu that would still stop at boot whatever its rebuild does: a default
+entry, or any other menu entry, that boots an image the rebuild doesn't make
+(only the Limine tools' own UKIs in `EFI/Linux`) and asks for the passphrase,
+such as a test kernel's entry left in `limine.conf` from earlier work; a
+default entry that boots no Linux; a `default_entry` that names a directory or
+nothing. The refusal names the entry: remove it from `limine.conf` (or rebuild
+its image with the key file and the argument), then run `enable` again.
+Besides the layout above, it refuses a crypttab entry for the volume that the initramfs
 gets (`/etc/crypttab.initramfs`, or an `/etc/crypttab` line with
 `x-initrd.attach`),
 another `rd.luks.key=` for it on the command line, a command line that isn't
@@ -109,7 +122,8 @@ unattended.
 
 `status` reports each piece: the key slots, the key file and which slot it
 opens (or that it is **dead**, opening none), the drop-in, the command-line
-argument in the file and in the running boot, each boot image and boot entry,
+argument in the file and in the running boot, each boot image, every boot
+entry (the default first) and whether it boots without the passphrase or why not,
 and any boot image holding the key that users other than root can read. On
 an Omarchy Mac with `/boot/omarchy/encrypt.state`, the owner's and recovery
 key slots are never touched, and any other slot is listed. With or without
@@ -176,6 +190,11 @@ argument, and rebuild the boot images.
   key whose slot is gone is reported as dead).
 - Snapshot boot entries and any UKI the check reports as missing the key still
   ask for the passphrase.
+- A test kernel lab-agent stages comes back unattended too: its UKI's
+  initramfs is built by mkinitcpio with this script's drop-in, so it holds the
+  key file, and its command line keeps the known-good boot's `rd.luks.*`
+  (setup records it from a boot that had them) whatever cmdline base or
+  strip the job asks for.
 - On an Omarchy Mac, `omarchy-apple-silicon-boot-check` (full mode) reports
   the extra key slot as a failure while auto-unlock is enabled.
 - If a boot goes wrong, pick the Limine fallback or a snapshot entry, or type

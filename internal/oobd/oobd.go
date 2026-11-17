@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/oob"
@@ -55,10 +54,25 @@ type Server struct {
 	cfg Config
 	log *log.Logger
 
-	// toolMu is held for every tool run, and across a reset's last look at
-	// its port, so that one run happens at a time over all ports.
-	toolMu sync.Mutex
+	// tool is the tool's one turn, held for every tool run and across a
+	// reset's last look at its port, so that one run happens at a time over
+	// all ports. A channel and not a mutex: a reset whose caller leaves
+	// while it waits stops waiting.
+	tool chan struct{}
 }
+
+// takeTool waits for the tool's turn until ctx ends, and says whether it
+// got it; dropTool gives the turn back.
+func (s *Server) takeTool(ctx context.Context) bool {
+	select {
+	case s.tool <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Server) dropTool() { <-s.tool }
 
 func New(cfg Config, logger *log.Logger) (*Server, error) {
 	if cfg.Token == "" {
@@ -70,7 +84,7 @@ func New(cfg Config, logger *log.Logger) (*Server, error) {
 	if len(cfg.RIDs) == 0 {
 		cfg.RIDs = MiniRIDs
 	}
-	return &Server{cfg: cfg, log: logger}, nil
+	return &Server{cfg: cfg, log: logger, tool: make(chan struct{}, 1)}, nil
 }
 
 // Loopback reports whether addr is a loopback address and a port, which is
@@ -138,6 +152,9 @@ func (s *Server) run(ctx context.Context, rid int, command string) (string, erro
 	return out, err
 }
 
+// noConnection is the reset tool's answer on a port with no Mac at its far end.
+const noConnection = "No connection detected"
+
 func lastLine(s string) string {
 	l := strings.Split(strings.TrimSpace(s), "\n")
 	return l[len(l)-1]
@@ -151,10 +168,14 @@ func (s *Server) hStatus(w http.ResponseWriter, r *http.Request, rid int) {
 	}
 	p.RID = rid
 	if r.URL.Query().Get("probe") == "1" {
-		s.toolMu.Lock()
+		s.tool <- struct{}{}
 		out, err := s.run(r.Context(), rid, "nop")
-		s.toolMu.Unlock()
+		s.dropTool()
 		p.Tool, p.ToolFailed = strings.TrimSpace(out), err != nil
+		// On a display or power the tool finds no Mac, which is its answer.
+		if p.NoMac && strings.Contains(out, noConnection) {
+			p.ToolFailed = false
+		}
 		if p.Tool == "" && err != nil {
 			p.Tool = err.Error()
 		}
@@ -193,8 +214,12 @@ func (s *Server) hReset(w http.ResponseWriter, r *http.Request, rid int) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.toolMu.Lock()
-	defer s.toolMu.Unlock()
+	// The turn can be taken in the moment its caller left: look once more.
+	if !s.takeTool(r.Context()) {
+		s.log.Printf("RID %d reset: its caller left while it waited; nothing was sent", rid)
+		return
+	}
+	defer s.dropTool()
 	if r.Context().Err() != nil {
 		s.log.Printf("RID %d reset: its caller left while it waited; nothing was sent", rid)
 		return

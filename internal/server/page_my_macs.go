@@ -7,9 +7,11 @@ package server
 // as My Macs; an M team member or a Maintainer has the same cards under
 // "Mine" on Macs. Nobody is shown a Mac they do not lend.
 //
-// The card only takes away: Pause, Limit and Leave are its buttons (see
-// mac_controls.go), and Delete beside each report the lab published from
-// the Mac. What only the Mac can give is shown as the command to type there.
+// The card gives the weekly window, which the Mac takes at its next
+// check-in; otherwise it only takes away: Pause, Limit and Leave are its
+// buttons (see mac_controls.go), and Delete beside each report the lab
+// published from the Mac. What only the Mac can give is shown as the
+// command to type there.
 
 import (
 	"errors"
@@ -22,6 +24,7 @@ import (
 	"github.com/omacom/omarchy-maclab/internal/api"
 	"github.com/omacom/omarchy-maclab/internal/reports"
 	"github.com/omacom/omarchy-maclab/internal/web"
+	"github.com/omacom/omarchy-maclab/internal/window"
 )
 
 func init() {
@@ -73,9 +76,13 @@ type macCard struct {
 	// to it; Hands the steps of a Mac that Needs hands.
 	State, Reason string
 	Hands         *cardHands
-	// Schedule is the weekly window as its Volunteer typed it at the Mac,
-	// Zone the Mac's own time zone and Window what holds now.
+	// Schedule is the weekly window as the Mac holds it, Zone the Mac's own
+	// time zone and Window what holds now. Rules are the windows to remove
+	// on the card, and Pending the schedule set here that the Mac does not
+	// hold yet ("none" for no window).
 	Schedule, Zone, Window string
+	Rules                  []string
+	Pending                string
 	// PausedHere and Limited are what the site took and can give back.
 	PausedHere, Limited bool
 	AccessLevel         string
@@ -140,7 +147,7 @@ const (
 
 // onlyAtTheMac are the commands for what only the Mac can give.
 var onlyAtTheMac = []cardCommand{
-	{"sudo lab-agent window add mon-fri 19:00-07:00", "the weekly Availability window: when the lab may use this Mac (window show lists it, window remove takes one away)"},
+	{"sudo lab-agent window add mon-fri 19:00-07:00", "the weekly Availability window at the Mac, as the form above sets it here, or window add always (window show lists it, window remove takes one away)"},
 	{"sudo lab-agent open --until 23:00", "Open now: open to the lab from this moment until that time"},
 	{"sudo lab-agent access full", "raise the Access level to Full: also commands and scripts as root (access qualification lowers it)"},
 	{"sudo lab-agent publish on", "let the lab publish this Mac's reports; it lists each one's deletion link (publish off stops it)"},
@@ -257,6 +264,7 @@ func (s *Server) macCard(v *dev, p Person) macCard {
 		c.AccessLevel = "Qualification"
 	}
 	c.Schedule, c.Zone, c.Window, c.PausedHere = s.cardWindow(v)
+	c.Rules, c.Pending = cardRules(d.Device)
 
 	jobs, err := s.store.jobs(d.Name, 1000, false)
 	if err != nil {
@@ -320,6 +328,8 @@ func (s *Server) cardWindow(v *dev) (schedule, zone, now string, pausedHere bool
 		return schedule, zone, "Paused here until you Resume", true
 	case p.Active(at):
 		return schedule, zone, "Paused here until " + when(p.Until), true
+	case st.Always:
+		now = "open always"
 	case st.Open:
 		now = "open until " + when(st.End)
 	case settings.PausedUntil.After(at):
@@ -335,6 +345,26 @@ func (s *Server) cardWindow(v *dev) (schedule, zone, now string, pausedHere bool
 		now += ", on battery: jobs start only on AC power"
 	}
 	return schedule, zone, now, false
+}
+
+// cardRules are the weekly windows the card offers to remove, what waits
+// for the Mac when there is a change set here, else what the Mac holds; and
+// that change in words.
+func cardRules(d api.Device) (rules []string, pending string) {
+	var rs []window.Rule
+	switch {
+	case d.WindowWanted != nil:
+		rs = d.WindowWanted.Rules
+		if pending = (window.Settings{Rules: rs}).Schedule(); pending == "" {
+			pending = "none"
+		}
+	case d.Window != nil:
+		rs = d.Window.Rules
+	}
+	for _, r := range rs {
+		rules = append(rules, r.String())
+	}
+	return rules, pending
 }
 
 func (s *Server) pMyMacs(w http.ResponseWriter, r *http.Request) {

@@ -8,8 +8,9 @@
      folder a build inside it.
      It reaches labd on the loopback port. Nothing here is a secret: the
      builder's token is in the file named, which only root reads.
-     scripts/mini/setup writes the account and the cores in and installs
-     this file. -->
+     scripts/mini/setup writes the account, the cores and the two images in
+     and installs this file: the images are tagged by what they are made
+     from, so a Deploy whose builder/ is other needs the set-up again. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -26,6 +27,8 @@
     <string>--as-user</string><string>CONTAINER_USER</string>
     <string>--io</string><string>/usr/local/lab/io</string>
     <string>--cpus</string><string>BUILDER_CPUS</string>
+    <string>--image</string><string>BUILDER_IMAGE</string>
+    <string>--pkg-image</string><string>BUILDER_PKG_IMAGE</string>
   </array>
   <key>WorkingDirectory</key><string>/var/empty</string>
   <key>Umask</key><integer>63</integer>

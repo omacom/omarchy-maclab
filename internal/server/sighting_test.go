@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,6 +79,8 @@ func TestANameOnAPortOfExactlyOneLabOwnedMacMakesASighting(t *testing.T) {
 func TestAHardResetGoesOutOnlyWhileThePortIsAsItWasSighted(t *testing.T) {
 	l := sightLab(t, labConfig{})
 	l.baseline()
+	// The look labd takes every 15 s: it knows the boot the baseline left.
+	l.sight()
 	refused := func(why, state string, saying ...string) {
 		t.Helper()
 		r, body := l.resetAs(harnessToken, l.name, "")
@@ -102,9 +106,15 @@ func TestAHardResetGoesOutOnlyWhileThePortIsAsItWasSighted(t *testing.T) {
 		}
 	}
 
-	// Its cable pulled and plugged back in.
+	// Its cable pulled and plugged back in with the Mac up: no reset until
+	// the lab can tell that from a restart, and the name it shows sights it
+	// again.
 	l.oob.plug(portRight, l.sim, l.name, productM1Pro)
-	refused("the plug count moved", api.CableNotSighted, "the right port has plug count 42, not the 41 it was seen with")
+	if r, body := l.resetAs(harnessToken, l.name, ""); r.StatusCode != http.StatusConflict ||
+		!strings.Contains(body, "the right port has plug count 42, not the 41 it was seen with, and "+l.name+" is up on the boot it had") {
+		t.Fatalf("the plug count moved: %s %s", r.Status, body)
+	}
+	l.wantResets("the plug count moved")
 	sighted()
 
 	// Another model at the end of the cable.
@@ -195,8 +205,10 @@ func TestAnyConflictDropsTheSightingsInvolved(t *testing.T) {
 	l.wantResets("conflicts")
 }
 
-// After a restart labd holds no Sighting and rebuilds them unaided.
-func TestAfterARestartLabdHoldsNoSightingAndRebuildsThemUnaided(t *testing.T) {
+// After a restart labd holds no Sighting until it has looked at the ports,
+// with the controller starting after it, as after an Unlock; then it keeps
+// the one its data held, on a port that did not change.
+func TestAfterARestartLabdHoldsNoSightingUntilItHasLookedAtThePorts(t *testing.T) {
 	l := newLabWith(t, labConfig{oob: true})
 	l.baseline()
 	if _, ok := l.s.cables.of(l.name); !ok {
@@ -224,7 +236,7 @@ func TestAfterARestartLabdHoldsNoSightingAndRebuildsThemUnaided(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("labd did not sight the Mac again by itself")
+			t.Fatal("labd did not sight the Mac again")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -440,9 +452,13 @@ func TestAProvingResetCountsOnlyIfThatMacReturnsAndEveryOtherKeepsItsBootID(t *t
 	}
 	l.wantResets("the placed Mac", portLeft, portMiddle, portMiddle, portMiddle)
 	l.waitDeviceJSON("m2-max", func(m map[string]any) bool { return m["boot_id"] != boot && m["alive"] == true })
+	l.sight()
 
-	// Its cable pulled: the placing is gone with it.
+	// Its cable pulled while it stayed up: once it is heard on its boot
+	// again, the placing is gone with it.
 	l.oob.plug(portMiddle, max, "", productM2Max)
+	l.sight()
+	l.heardAgain("m2-max")
 	l.sight()
 	l.wantCable("m2-max", api.CableNotSighted, "its Sighting was dropped", "plug count")
 }
@@ -905,6 +921,9 @@ func TestAResetThatMayHaveGoneOutAndDidNotEndsWithTheMacUp(t *testing.T) {
 	if r.StatusCode == http.StatusOK || !strings.Contains(body, "no Hard reset was sent") {
 		t.Fatalf("a reset whose turn did not come: %s %s", r.Status, body)
 	}
+	// The controller learns its caller left when it sees the connection
+	// close, a moment after labd let go: the reset ends without its turn.
+	l.oob.waitResetCalls(t, "the Hard reset labd let go still waits at the controller", func(asked, ended int) bool { return asked > 0 && ended == asked })
 	release()
 	if err := <-probed; err != nil {
 		t.Fatal(err)
@@ -917,4 +936,430 @@ func TestAResetThatMayHaveGoneOutAndDidNotEndsWithTheMacUp(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	l.wantResets("no reset went out")
+}
+
+// A look at the ports that began before the controller stopped, and ends
+// after a Hard reset found it not answering, does not make it healthy again:
+// the newer news stands until a look that began after it answers.
+func TestALookBegunBeforeTheControllerStoppedDoesNotUndoItsTrouble(t *testing.T) {
+	l := newLabWith(t, labConfig{oob: true, config: func(c *Config) { c.SightEvery = time.Hour }})
+	l.baseline()
+	l.sight()
+	if _, ok := l.s.cables.of(l.name); !ok {
+		t.Fatal("the Mac is not sighted")
+	}
+	last := oob.RIDs[len(oob.RIDs)-1]
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	l.oob.onRead(func(rid int) {
+		if rid == last {
+			once.Do(func() { close(reached); <-release })
+		}
+	})
+	done := make(chan struct{})
+	go func() { l.sight(); close(done) }()
+	<-reached
+	l.oob.stop(true)
+	if _, err := l.s.hardReset(l.ctx, l.s.dev(l.name)); err == nil || !strings.Contains(err.Error(), "not healthy") {
+		t.Fatalf("a Hard reset with the controller stopped: %v", err)
+	}
+	close(release)
+	<-done
+	if why := l.s.dev(l.name).noHardReset(); !strings.Contains(why, "not healthy") {
+		t.Fatalf("after the look that began before the stop, the Mac's Hard reset: %q", why)
+	}
+	l.oob.stop(false)
+	l.sight()
+	if why := l.s.dev(l.name).noHardReset(); why != "" {
+		t.Fatalf("after a look once the controller answers again: %q", why)
+	}
+}
+
+// A Mac retired while its Proving reset waits its turn at the controller
+// gets no reset: the retirement calls the reset off, as it does the
+// ladder's, and the Proving reset says it was not sent.
+func TestARetirementDuringAWaitingProvingResetSendsNoReset(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	max := l.addMac("m2-max")
+	l.oob.plug(portMiddle, max, "", productM2Max)
+	l.sight()
+	l.wantCable("m2-max", api.CableNotSighted, "--prove")
+	probing, release := l.oob.holdProbes(t)
+	probed := make(chan error, 1)
+	go func() { _, err := l.oob.client.Probe(context.Background(), portLeft); probed <- err }()
+	<-probing
+	v := l.s.dev("m2-max")
+	proved := make(chan error, 1)
+	go func() { _, err := l.s.prove(v, portMiddle, harnessMaintainer); proved <- err }()
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		l.oob.mu.Lock()
+		asked := l.oob.resetsAsked
+		l.oob.mu.Unlock()
+		if asked > 0 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("the Proving reset never reached the controller")
+		}
+	}
+	retired := make(chan error, 1)
+	go func() {
+		retired <- l.s.endEnrollment(v, leaving{how: leftByMaintainer, by: Person{Handle: harnessMaintainer}})
+	}()
+	select {
+	case err := <-proved:
+		if err == nil || !strings.Contains(err.Error(), "no Proving reset") {
+			t.Errorf("the Proving reset of a Mac retired while it waited: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the Proving reset still waits at the controller after the Mac was retired")
+	}
+	// The controller sees the call off before its turn comes free.
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(time.Millisecond) {
+		l.oob.mu.Lock()
+		ended := l.oob.resetsEnded == l.oob.resetsAsked
+		l.oob.mu.Unlock()
+		if ended {
+			break
+		}
+	}
+	release()
+	if err := <-probed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-retired; err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	l.wantResets("the Mac was retired while its Proving reset waited")
+}
+
+// A Proving reset holds the Mac from the moment it is admitted: a job that
+// comes while the reset reads the controller waits for it, and is never the
+// one the reset cuts.
+func TestAJobQueuedWhileAProvingResetReadsThePortsWaitsForIt(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	max := l.addMac("m2-max")
+	l.oob.plug(portMiddle, max, "", productM2Max)
+	l.sight()
+	reached, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	l.oob.onRead(func(rid int) {
+		if rid == portMiddle {
+			once.Do(func() { close(reached); <-release })
+		}
+	})
+	v := l.s.dev("m2-max")
+	proved := make(chan error, 1)
+	go func() { _, err := l.s.prove(v, portMiddle, harnessMaintainer); proved <- err }()
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Proving reset never read the ports")
+	}
+	j, _, err := l.s.Submit(api.JobSpec{Device: "m2-max", Baseline: true})
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if d := v.snapshot(); d.ActiveJob != "" {
+			close(release)
+			t.Fatalf("job %s was given the Mac while its Proving reset read the ports", d.ActiveJob)
+		}
+	}
+	close(release)
+	if err := <-proved; err != nil {
+		t.Fatalf("the Proving reset: %v", err)
+	}
+	l.wantResets("the Proving reset", portMiddle)
+	if got := l.wait(j.ID, 60*time.Second); got.Outcome != api.OutcomePass {
+		t.Errorf("the job that waited for the Proving reset: %s %s", got.Outcome, got.Summary)
+	}
+}
+
+// placeOnMiddle enrolls a Lab-owned Mac on the middle port that shows the
+// mini no name, and places it there by a Proving reset.
+func (l *lab) placeOnMiddle(name string) *agent.Sim {
+	l.t.Helper()
+	sim := l.addMac(name)
+	l.oob.plug(portMiddle, sim, "", productM2Max)
+	l.sight()
+	if r, body := l.resetAs(harnessToken, name, "middle"); r.StatusCode != http.StatusOK {
+		l.t.Fatalf("the Proving reset of %s: %s %s", name, r.Status, body)
+	}
+	l.waitDeviceJSON(name, func(m map[string]any) bool { return m["alive"] == true && m["state"] != string(api.StateRecovering) })
+	return sim
+}
+
+// heardAgain waits for a check-in from the Mac named name after now.
+func (l *lab) heardAgain(name string) {
+	l.t.Helper()
+	since := l.s.now()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if l.s.dev(name).heardAt().After(since) {
+			return
+		}
+	}
+	l.t.Fatalf("%s was not heard again", name)
+}
+
+// A Mac's own restarts move its port's plug count (the M2 Max's went from 21
+// to 25 across a job's two reboots) and do not end its Sighting: a Mac placed
+// by a Proving reset still gets a Hard reset after a job.
+func TestASightingHoldsAcrossTheMacsOwnRestarts(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	l.oob.countResets(2)
+	max := l.placeOnMiddle("m2-max")
+	sg, _ := l.s.cables.of("m2-max")
+	placed := sg.seen.PlugCount
+	held := func(why string, plugs int) {
+		t.Helper()
+		sg, ok := l.s.cables.of("m2-max")
+		if !ok || sg.rid != portMiddle || !sg.proved || sg.seen != (oob.Seen{ProductID: productM2Max, PlugCount: plugs}) {
+			t.Fatalf("%s: the Sighting is %+v %v, want the middle port at plug count %d", why, sg, ok, plugs)
+		}
+		l.wantCable("m2-max", api.CableSighted)
+	}
+
+	// A job reboots it into its kernel and back: two restarts.
+	boot := l.bootOf("m2-max")
+	j, _, err := l.s.Submit(api.JobSpec{Device: "m2-max", Baseline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.wait(j.ID, 60*time.Second); got.Outcome != api.OutcomePass {
+		t.Fatalf("the job: %s %s", got.Outcome, got.Summary)
+	}
+	if l.bootOf("m2-max") == boot {
+		t.Fatal("the job did not restart the Mac")
+	}
+	l.oob.restarted(portMiddle, 4)
+	l.sight()
+	held("after a job", placed+4)
+
+	// Looked at while it is down for a restart, then once it is back.
+	boot = l.bootOf("m2-max")
+	l.oob.restarted(portMiddle, 2)
+	if err := max.Reboot(); err != nil {
+		t.Fatal(err)
+	}
+	l.sight()
+	held("while it restarts", placed+4)
+	l.waitDeviceJSON("m2-max", func(m map[string]any) bool { return m["boot_id"] != boot && m["alive"] == true })
+	l.sight()
+	held("back from its restart", placed+6)
+
+	// A Hard reset reaches it, and the plugs the reset counts do not end the
+	// Sighting either.
+	boot = l.bootOf("m2-max")
+	if r, body := l.resetAs(harnessToken, "m2-max", ""); r.StatusCode != http.StatusOK || !strings.Contains(body, "through the middle port") {
+		t.Fatalf("a Hard reset after the Mac's own restarts: %s %s", r.Status, body)
+	}
+	l.wantResets("the Proving reset and the Hard reset", portMiddle, portMiddle)
+	l.waitDeviceJSON("m2-max", func(m map[string]any) bool { return m["boot_id"] != boot && m["alive"] == true })
+	l.sight()
+	held("back from its Hard reset", placed+8)
+}
+
+// A Mac that restarted into a hang shows its port's new plug count and is
+// never heard on a new boot: its Sighting holds, and the Hard reset that
+// brings it back goes out.
+func TestAMacHungAfterItsRestartStillGetsItsHardReset(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	max := l.placeOnMiddle("m2-max")
+	boot := l.bootOf("m2-max")
+	l.oob.restarted(portMiddle, 2)
+	go max.Quiet(10 * time.Second)
+	l.waitDeviceJSON("m2-max", func(m map[string]any) bool { return m["alive"] == false })
+	l.sight()
+	if _, ok := l.s.cables.of("m2-max"); !ok {
+		t.Fatal("the look dropped the Sighting of a Mac that restarted and went silent")
+	}
+	if r, body := l.resetAs(harnessToken, "m2-max", ""); r.StatusCode != http.StatusOK || !strings.Contains(body, "through the middle port") {
+		t.Fatalf("a Hard reset of the hung Mac: %s %s", r.Status, body)
+	}
+	l.wantResets("the Proving reset and the Hard reset", portMiddle, portMiddle)
+	l.waitDeviceJSON("m2-max", func(m map[string]any) bool { return m["boot_id"] != boot && m["alive"] == true })
+	l.sight()
+	if sg, ok := l.s.cables.of("m2-max"); !ok || sg.rid != portMiddle {
+		t.Fatalf("after the Hard reset: %+v %v", sg, ok)
+	}
+}
+
+// Early in boot a Mac's Thunderbolt link announces a placeholder name
+// before its hostname is set (m1-pro's port showed "unknown_xd_device" for
+// 30 s during a job's reboot on 2026-11-16): that is no other Mac. It
+// neither ends nor places a Sighting, a Mac hung there still gets its Hard
+// reset, and a Proving reset takes it as a port that shows no name.
+func TestAPlaceholderNameIsNoOtherMac(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	l.sight()
+	for _, name := range []string{"unknown_xd_device", "(none)", "localhost", "archlinux", ""} {
+		l.oob.shows(portRight, name)
+		l.sight()
+		if sg, ok := l.s.cables.of(l.name); !ok || sg.rid != portRight {
+			t.Fatalf("the right port shows %q: the Sighting %+v %v, want it kept", name, sg, ok)
+		}
+		l.wantCable(l.name, api.CableSighted)
+	}
+	l.oob.shows(portRight, "unknown_xd_device")
+	boot := l.bootOf(l.name)
+	if r, body := l.resetAs(harnessToken, l.name, ""); r.StatusCode != http.StatusOK || !strings.Contains(body, "through the right port") {
+		t.Fatalf("a Hard reset of a Mac showing a placeholder name: %s %s", r.Status, body)
+	}
+	l.wantResets("the Mac showing a placeholder name", portRight)
+	l.waitDevice(func(d api.Device) bool { return d.BootID != boot && d.State == api.StateReady })
+
+	// A placeholder places nothing, and a Proving reset is for that port.
+	max := l.addMac("m2-max")
+	l.oob.plug(portMiddle, max, "unknown_xd_device", productM2Max)
+	l.sight()
+	l.wantCable("m2-max", api.CableNotSighted, "`lab reset m2-max --prove middle`")
+	if r, body := l.resetAs(harnessToken, "m2-max", "middle"); r.StatusCode != http.StatusOK {
+		t.Fatalf("the Proving reset of a port showing a placeholder name: %s %s", r.Status, body)
+	}
+	l.wantResets("the Hard reset and the Proving reset", portRight, portMiddle)
+	if sg, ok := l.s.cables.of("m2-max"); !ok || sg.rid != portMiddle {
+		t.Fatalf("after the Proving reset: %+v %v", sg, ok)
+	}
+
+	// A real name of no Lab-owned Mac still ends the Sighting.
+	l.oob.shows(portRight, "somebody-elses-mac")
+	l.sight()
+	if _, ok := l.s.cables.of(l.name); ok {
+		t.Fatal("the Sighting outlived another Mac's name on its port")
+	}
+	l.wantCable(l.name, api.CableNotSighted, `the right port shows the name "somebody-elses-mac", which is not its own`)
+}
+
+// A cable pulled and put back while its Mac stays up moves the plug count
+// as a restart does, but the Mac is heard again on the boot it had: that
+// ends the Sighting. Until the lab knows, no Hard reset goes out.
+func TestACablePulledWhileItsMacStaysUpEndsItsSighting(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	max := l.placeOnMiddle("m2-max")
+	boot := l.bootOf("m2-max")
+	sg, _ := l.s.cables.of("m2-max")
+	l.oob.plug(portMiddle, max, "", productM2Max)
+	r, body := l.resetAs(harnessToken, "m2-max", "")
+	if r.StatusCode != http.StatusConflict || !strings.Contains(body, "no Hard reset was sent") ||
+		!strings.Contains(body, fmt.Sprintf("the middle port has plug count %d, not the %d it was seen with", sg.seen.PlugCount+1, sg.seen.PlugCount)) ||
+		!strings.Contains(body, "m2-max is up on the boot it had") {
+		t.Fatalf("a Hard reset of a Mac up while its plug count moved: %s %s", r.Status, body)
+	}
+	l.wantResets("the Proving reset alone", portMiddle)
+	l.heardAgain("m2-max")
+	l.sight()
+	if _, ok := l.s.cables.of("m2-max"); ok {
+		t.Fatal("the Sighting outlived a cable pulled while its Mac stayed up")
+	}
+	l.wantCable("m2-max", api.CableNotSighted, "its Sighting was dropped", "plug count", "was heard since on the boot it had")
+	if l.bootOf("m2-max") != boot {
+		t.Fatal("the Mac was restarted")
+	}
+}
+
+// restartedLabd is a second labd on this lab's data, as after a Deploy, with a
+// log the test reads: it looks at the ports once as it starts.
+func (l *lab) restartedLabd() (*Server, *logBuf) {
+	l.t.Helper()
+	logs := &logBuf{}
+	fresh, err := New(l.ctx, l.s.cfg, log.New(logs, "labd: ", 0))
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if strings.Contains(logs.String(), "across the restart") {
+			break
+		}
+	}
+	return fresh, logs
+}
+
+// A Sighting is kept in labd's data: after a restart it holds while its port
+// is still connected with the same product id, and the lab's rules go on
+// from there.
+func TestASightingIsKeptAcrossARestartOfLabd(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	max := l.placeOnMiddle("m2-max")
+	placed, _ := l.s.cables.of("m2-max")
+	named, _ := l.s.cables.of(l.name)
+	fresh, logs := l.restartedLabd()
+	for name, was := range map[string]sighting{"m2-max": placed, l.name: named} {
+		sg, ok := fresh.cables.of(name)
+		if !ok || sg.rid != was.rid || sg.seen != was.seen || sg.proved != was.proved || sg.boot != was.boot {
+			t.Fatalf("%s after the restart: %+v %v, want %+v", name, sg, ok, was)
+		}
+	}
+	for _, line := range []string{"sighting kept across the restart: m2-max on middle", "sighting kept across the restart: " + l.name + " on right"} {
+		if !strings.Contains(logs.String(), line) {
+			t.Fatalf("the log lacks %q:\n%s", line, logs.String())
+		}
+	}
+	// From there the rules go on: a higher count holds it until the lab
+	// can tell a restart from a pull.
+	l.oob.plug(portMiddle, max, "", productM2Max)
+	fresh.sight(l.ctx)
+	if _, ok := fresh.cables.of("m2-max"); !ok {
+		t.Fatal("the restarted labd dropped the Sighting at the first look at a higher count")
+	}
+}
+
+// A kept Sighting whose port shows another product id after the restart, or
+// nothing, is not kept, and the log says why.
+func TestASightingIsNotKeptAcrossARestartWhenItsPortChanged(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		change func(l *lab)
+		saying string
+	}{
+		{"another product id", func(l *lab) { l.oob.swap(portMiddle, productM1Pro) }, "the middle port shows product id 29448, not the 29453 it was seen with"},
+		{"nothing on the port", func(l *lab) { l.oob.unplug(portMiddle) }, "the middle port is no longer connected"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l := sightLab(t, labConfig{})
+			l.baseline()
+			l.placeOnMiddle("m2-max")
+			c.change(l)
+			fresh, logs := l.restartedLabd()
+			if _, ok := fresh.cables.of("m2-max"); ok {
+				t.Fatal("the Sighting was kept across the restart")
+			}
+			if line := "sighting not kept across the restart: m2-max on middle: " + c.saying; !strings.Contains(logs.String(), line) {
+				t.Fatalf("the log lacks %q:\n%s", line, logs.String())
+			}
+			if _, ok := fresh.cables.of(l.name); !ok {
+				t.Fatalf("%s, whose port did not change, was not kept", l.name)
+			}
+		})
+	}
+}
+
+// After the mini restarts its ports count plugs from the start again: a
+// kept Sighting holds by the same rule, from the port as it is then.
+func TestASightingIsKeptAcrossARestartOfTheMini(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	l.placeOnMiddle("m2-max")
+	l.oob.mu.Lock()
+	l.oob.plugs[portMiddle], l.oob.plugs[portRight] = 1, 1
+	l.oob.mu.Unlock()
+	fresh, logs := l.restartedLabd()
+	for _, name := range []string{"m2-max", l.name} {
+		sg, ok := fresh.cables.of(name)
+		if !ok || sg.seen.PlugCount != 1 {
+			t.Fatalf("%s after the mini restarted: %+v %v\n%s", name, sg, ok, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "sighting kept across the restart: m2-max on middle") {
+		t.Fatalf("the log:\n%s", logs.String())
+	}
 }

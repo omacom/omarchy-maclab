@@ -19,7 +19,7 @@ import (
 // enrollTokenLab is a labd that only answers POST /api/enroll-tokens, with a
 // Join command, and remembers what the Maintainer asked for.
 func enrollTokenLab(t *testing.T) (*client.Client, *[]map[string]any) {
-	return joinCommandLab(t, " T='enr_fixture_token' U='https://lab.example' sudo lab-agent setup", nil)
+	return joinCommandLab(t, " curl -fsSL https://lab.example/join | LAB_JOIN=enr_fixture_token bash", nil)
 }
 
 // joinCommandLab is enrollTokenLab answering with line as the Join command

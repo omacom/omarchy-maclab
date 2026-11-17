@@ -16,8 +16,9 @@ import (
 
 // Rule is one weekly window as the Volunteer typed it, e.g. "mon-fri 19:00-07:00":
 // it opens at Start on each day from First to Last (wrapping past Sunday) and
-// closes at End, on the next day when End is not after Start. A window that
-// crosses midnight belongs to the day it starts.
+// closes at End, on the next day when End is not after Start; End 24:00 is
+// the day's end. A window that crosses midnight belongs to the day it starts.
+// "always" is mon-sun 00:00-24:00.
 type Rule struct {
 	First, Last time.Weekday
 	Start, End  int // minutes after midnight, in the Mac's local time
@@ -27,12 +28,20 @@ var days = []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
 
 var reClock = regexp.MustCompile(`^([01][0-9]|2[0-3]):([0-5][0-9])$`)
 
+const dayEnd = 24 * 60
+
+// Always is the window of every hour of the week.
+var Always = Rule{First: time.Monday, Last: time.Sunday, Start: 0, End: dayEnd}
+
 // ParseRule reads a weekly window in `window add` syntax: a day or day range
-// and a time range, "mon-fri 19:00-07:00".
+// and a time range, "mon-fri 19:00-07:00", or "always".
 func ParseRule(s string) (Rule, error) {
 	f := strings.Fields(s)
+	if len(f) == 1 && f[0] == "always" {
+		return Always, nil
+	}
 	if len(f) != 2 {
-		return Rule{}, fmt.Errorf("%q: a window is days and a time range, like mon-fri 19:00-07:00", s)
+		return Rule{}, fmt.Errorf("%q: a window is days and a time range, like mon-fri 19:00-07:00, or always", s)
 	}
 	var r Rule
 	var err error
@@ -46,11 +55,16 @@ func ParseRule(s string) (Rule, error) {
 	if r.Start, err = ParseClock(from); err != nil {
 		return Rule{}, err
 	}
-	if r.End, err = ParseClock(to); err != nil {
+	if to == "24:00" {
+		r.End = dayEnd
+	} else if r.End, err = ParseClock(to); err != nil {
 		return Rule{}, err
 	}
 	if r.Start == r.End {
 		return Rule{}, fmt.Errorf("%q: a window can't start and end at the same time", f[1])
+	}
+	if r.Start == 0 && r.End == dayEnd && (r.Last-r.First+7)%7 == 6 {
+		return Always, nil
 	}
 	return r, nil
 }
@@ -92,6 +106,9 @@ func ParseClock(s string) (int, error) {
 
 // String is the rule as `window show` prints it.
 func (r Rule) String() string {
+	if r == Always {
+		return "always"
+	}
 	d := days[r.First]
 	if r.Last != r.First {
 		d += "-" + days[r.Last]
@@ -119,9 +136,12 @@ func (r Rule) on(d time.Weekday) bool {
 
 // Settings are a Volunteer Mac's window settings: the weekly schedule in the
 // Mac's local time plus the Pause and Open now overrides. Only the Volunteer
-// changes them, on the Mac.
+// changes them: at the Mac, and the weekly schedule on My Macs too.
 type Settings struct {
-	Rules       []Rule    `json:"rules"`
+	Rules []Rule `json:"rules"`
+	// RulesAt is when Rules last changed, by the clock of where they were
+	// changed: the Mac's at the Mac, labd's on My Macs. The last change wins.
+	RulesAt     time.Time `json:"rules_at,omitzero"`
 	Zone        string    `json:"zone,omitempty"`        // IANA name of the Mac's local time zone
 	PausedUntil time.Time `json:"paused_until,omitzero"` // Pause: closed until then
 	OpenUntil   time.Time `json:"open_until,omitzero"`   // Open now: open until then
@@ -158,6 +178,7 @@ type State struct {
 	Attended bool      // the open window is an Attended window
 	End      time.Time // when the current window ends; zero when closed
 	Next     time.Time // when the next window opens; zero when none will
+	Always   bool      // open with no end ahead: the weekly windows cover every hour; End is a week or more away
 }
 
 // Evaluate is the window state of a Mac with settings s at now. Windows that
@@ -177,7 +198,8 @@ func Evaluate(s Settings, now time.Time) State {
 	type span struct{ from, to time.Time }
 	var spans []span
 	local := now.In(loc)
-	for day := time.Date(local.Year(), local.Month(), local.Day()-1, 0, 0, 0, 0, loc); day.Before(horizon); day = day.AddDate(0, 0, 1) {
+	day := time.Date(local.Year(), local.Month(), local.Day()-1, 0, 0, 0, 0, loc)
+	for ; day.Before(horizon); day = day.AddDate(0, 0, 1) {
 		for _, r := range s.Rules {
 			if !r.on(day.Weekday()) {
 				continue
@@ -218,6 +240,9 @@ func Evaluate(s Settings, now time.Time) State {
 		if !now.Before(sp.from) && now.Before(sp.to) {
 			st.Open, st.End = true, sp.to
 			st.Attended = openNow && s.Attended
+			// Spans run out at day, a week past any Pause or Open now: one
+			// reaching it from now is the weekly windows covering every hour.
+			st.Always = !sp.to.Before(day)
 			if i+1 < len(merged) {
 				st.Next = merged[i+1].from
 			}

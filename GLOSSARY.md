@@ -147,7 +147,7 @@ The part of the lab that Hard resets Lab-owned Macs over the cables that join th
 _Avoid_: oobd, VDM host, controller Mac
 
 **Sighting**:
-The lab recognising which Lab-owned Mac is on which of the server's cables, from the name the Mac shows there. It lasts until the cable is unplugged or the server restarts.
+The lab recognising which Lab-owned Mac is on which of the server's cables, from the name the Mac shows there or a Proving reset. It lasts until the cable is unplugged or changed, across restarts of the lab and of the server.
 _Avoid_: Binding, port mapping, detection
 
 **Proving reset**:

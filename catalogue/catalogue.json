@@ -5,9 +5,7 @@
     "asahi": {
       "title": "Asahi Linux feature support",
       "url": "https://github.com/AsahiLinux/docs/tree/main/docs/platform/feature-support",
-      "commit": "0d1f8917fa88745d62a4c05d802c4a7298c8616b",
-      "license": "CC-BY-3.0",
-      "credit": "Asahi-layer states are from the Asahi Linux documentation's feature-support tables (m1.md, m2.md, m3.md, m4.md), (c) the Asahi Linux contributors, licensed under CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/). Converted from table cells to per-chip states; unmodified cell text is kept in each state's \"cell\"."
+      "commit": "0d1f8917fa88745d62a4c05d802c4a7298c8616b"
     },
     "aurora": {
       "title": "Aurora kernel (omacom/linux) and omarchy-mx-mac's hardware support page",

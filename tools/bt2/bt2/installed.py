@@ -84,12 +84,15 @@ def source_cohort(source_release, device):
             'payload_raw': pay_raw, 'payload_rel': man['kernel']['payload_manifest'], 'preinstall': pre}
 
 
-def new_manifest(cohort, release, device):
+def new_manifest(cohort, release, device, approved_by=()):
+    """The source's manifest for this release and Mac, approved by these account ids: a source frozen before
+    2026-11-16 names its approvers by handle, which labd now refuses."""
     if not REL_RE.match(release):
         raise InstalledError('bad release name')
     m = json.loads(json.dumps(cohort['manifest']))
     m['release'] = release
     m['macs'] = {device: m['macs'][device]}
+    m['approved_by'] = [int(a) for a in approved_by]
     raw = (json.dumps(m, indent=2, sort_keys=True) + '\n').encode()
     return m, raw
 

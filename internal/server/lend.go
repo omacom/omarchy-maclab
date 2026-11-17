@@ -245,6 +245,31 @@ func scanJoinCommand(scan func(...any) error) (*joinCommand, error) {
 	return &c, nil
 }
 
+// beforeJoinCommandStored, when set, runs as a Join command is about to be
+// stored; tests cut its asker there.
+var beforeJoinCommandStored func()
+
+// asker is the credential a request came with: a browser session's hash or
+// a Lab token's id, both zero for neither.
+type asker struct {
+	session string
+	token   int64
+}
+
+func askerOf(r *http.Request) asker {
+	if u := tokenUseOf(r); u != nil {
+		return asker{token: u.token.ID}
+	}
+	if si := signedInOf(r); si != nil {
+		return asker{session: si.hash}
+	}
+	return asker{}
+}
+
+// errAskerCut is a Join command whose asker's credential was cut, or whose
+// person was Blocked, while the request was on the way.
+var errAskerCut = errors.New("refused: the access that asked for this Join command was cut while the request was on the way")
+
 // errNameHeld is a Join command asked for a name another unused one holds.
 var errNameHeld = errors.New("another Join command holds the name")
 
@@ -253,11 +278,32 @@ var errNameHeld = errors.New("another Join command holds the name")
 // returns; one for a Lab-owned Mac stands beside the Maintainer's others.
 // A name another person's unused Join command holds is errNameHeld.
 func (st *store) addJoinCommand(hash string, req api.EnrollTokenRequest, madeBy int64, now, exp time.Time) (cancelled *joinCommand, err error) {
+	return st.addJoinCommandAsked(hash, req, madeBy, asker{}, now, exp)
+}
+
+// addJoinCommandAsked is addJoinCommand for a request that came with the
+// credential by. The command is stored only while that is still there and
+// its person not Blocked, in the same transaction: a cut that came after the
+// request was let in either finds the command and sweeps it, or comes first
+// and the command is not stored (errAskerCut).
+func (st *store) addJoinCommandAsked(hash string, req api.EnrollTokenRequest, madeBy int64, by asker, now, exp time.Time) (cancelled *joinCommand, err error) {
+	if beforeJoinCommandStored != nil {
+		beforeJoinCommandStored()
+	}
 	tx, err := st.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	var live bool
+	if err := tx.QueryRow(`SELECT (?1 = '' AND ?2 = 0) OR (NOT EXISTS (SELECT 1 FROM people WHERE account_id = ?3 AND blocked_at IS NOT NULL)
+		AND (EXISTS (SELECT 1 FROM browser_sessions WHERE hash = ?1 AND ?1 != '' AND account_id = ?3)
+		OR EXISTS (SELECT 1 FROM lab_tokens WHERE id = ?2 AND ?2 != 0 AND account_id = ?3)))`, by.session, by.token, madeBy).Scan(&live); err != nil {
+		return nil, err
+	}
+	if !live {
+		return nil, errAskerCut
+	}
 	if req.VolunteerID != 0 {
 		if cancelled, err = scanJoinCommand(tx.QueryRow(unusedOf, req.VolunteerID, now.Unix()).Scan); err != nil {
 			return nil, err
@@ -635,7 +681,7 @@ func (s *Server) makeJoinCommand(r *http.Request, modelID, rawName string) (*mad
 		return nil, refuse(http.StatusServiceUnavailable, "This lab has no lab-agent to hand out yet, so it makes no Join command.")
 	}
 	now := s.now()
-	cancelled, err := s.store.addJoinCommand(hashSecret(token), req, p.AccountID, now, now.Add(joinCommandTTL))
+	cancelled, err := s.store.addJoinCommandAsked(hashSecret(token), req, p.AccountID, askerOf(r), now, now.Add(joinCommandTTL))
 	if errors.Is(err, errNameHeld) {
 		return nil, refuse(http.StatusConflict, "A Join command for a Mac called %s is waiting already: names are unique.", name)
 	} else if err != nil {

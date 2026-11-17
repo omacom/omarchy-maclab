@@ -27,7 +27,6 @@ import (
 
 	"github.com/omacom/omarchy-maclab/internal/api"
 	"github.com/omacom/omarchy-maclab/internal/labhttp"
-	"github.com/omacom/omarchy-maclab/internal/window"
 )
 
 // Activation is what an enrollment carries besides its token: the key that
@@ -476,38 +475,15 @@ func arrive(work string, cfg *Config, now time.Time) error {
 	return nil
 }
 
-// askWindow ends the Join of a Volunteer's Mac by asking, once, for its
-// weekly Availability window. A Mac with none takes nothing from the lab.
-func askWindow(tty *terminal, cfg *Config, say func(string, ...any)) {
-	const later = "this Mac takes nothing from the lab until it has an Availability window: `sudo lab-agent window add mon-fri 19:00-07:00` sets one, `sudo lab-agent open --until HH:MM` opens it now"
-	s, _, err := loadWindow(cfg)
-	if err == nil && len(s.Rules) > 0 {
-		var rules []string
-		for _, r := range s.Rules {
-			rules = append(rules, r.String())
-		}
-		say("this Mac keeps the Availability window it had: %s (`sudo lab-agent window show`)", strings.Join(rules, ", "))
+// sayWindow ends the Join of a Volunteer's Mac: it asks nothing about the
+// weekly Availability window, which its Volunteer sets on My Macs. A Mac
+// with none takes nothing from the lab; one it had is kept.
+func sayWindow(cfg *Config, say func(string, ...any)) {
+	myMacs := strings.TrimRight(cfg.Server, "/") + "/my-macs"
+	if s, _, err := loadWindow(cfg); err == nil && len(s.Rules) > 0 {
+		say("this Mac keeps the Availability window it had: %s (`sudo lab-agent window show`)", s.Schedule())
+		say("Change when the lab may use this Mac on My Macs: %s", myMacs)
 		return
 	}
-	if tty == nil {
-		say("%s", later)
-		return
-	}
-	answer, _ := tty.ask("\nWhen may the lab use this Mac each week? Days and hours in this Mac's local time, like mon-fri 19:00-07:00.\nPress Enter to decide later: ")
-	if answer == "" {
-		say("%s", later)
-		return
-	}
-	r, err := window.ParseRule(answer)
-	if err == nil {
-		err = changeWindow(cfg, func(s *window.Settings, now time.Time) error {
-			s.Rules = append(s.Rules, r)
-			return nil
-		})
-	}
-	if err != nil {
-		say("no window was set (%v): %s", err, later)
-		return
-	}
-	say("the lab may use this Mac %s, in its local time (`sudo lab-agent window show`; `pause` closes it at once)", r)
+	say("This Mac takes nothing from the lab until it has an Availability window. Set when the lab may use this Mac on My Macs: %s", myMacs)
 }

@@ -20,8 +20,14 @@ var panicGrace = 60 * time.Second
 // boot's deadlines reboot it), then walks the recovery ladder. It returns the
 // ladder steps used, whether the Mac is back, and whether the ladder found it
 // still up on oldBoot: it never went down by itself, whatever the ladder did
-// after.
-func (v *dev) waitBack(ctx context.Context, oldBoot string, since time.Time, timeout, selfRecovery time.Duration) (steps []string, ok, neverLeft bool, err error) {
+// after. A check-in on oldBoot after upAfter says it is still up: what labd
+// heard over the whole wait, not whether a check-in fell in the last
+// aliveWindow at its end, which a slow check-in can miss. It goes by when
+// the check-in came (heard), not by LastSeen, which is when labd had saved
+// it: a check-in from before the Mac went down, saved slowly, says nothing.
+// That check-in must also still be the Mac's last word at the deadline (see
+// stillHeardLocked).
+func (v *dev) waitBack(ctx context.Context, oldBoot string, since, upAfter time.Time, timeout, selfRecovery time.Duration) (steps []string, ok, neverLeft bool, err error) {
 	var reason string
 	err = v.waitFor(ctx, timeout+selfRecovery, func() bool {
 		if v.d.BootID != oldBoot && v.d.LastSeen.After(since) {
@@ -45,9 +51,7 @@ func (v *dev) waitBack(ctx context.Context, oldBoot string, since time.Time, tim
 	}
 	v.mu.Lock()
 	back := v.d.BootID != oldBoot && v.d.LastSeen.After(since)
-	// A Mac that is going down stops talking within seconds. Only one still
-	// checking in well after the reboot request never went down at all.
-	stillUp := v.d.BootID == oldBoot && v.aliveLocked() && v.d.LastSeen.After(since.Add(v.s.cfg.RebootGrace))
+	stillUp := v.d.BootID == oldBoot && v.heard.After(upAfter) && v.stillHeardLocked(v.s.now())
 	v.mu.Unlock()
 	if back {
 		return nil, true, false, nil
@@ -65,6 +69,14 @@ func (v *dev) waitBack(ctx context.Context, oldBoot string, since time.Time, tim
 	}
 	steps, ok = v.ladder(ctx, reason, timeout, stillUp)
 	return steps, ok, neverLeft, nil
+}
+
+// stillHeardLocked is whether the Mac's last check-in is still its word at
+// now: heard within quietGrace, or since gone to sleep or into a spell off
+// the network it announced. One check-in and then silence for good, with
+// nothing said, is a hang. Caller holds mu.
+func (v *dev) stillHeardLocked(now time.Time) bool {
+	return now.Sub(v.heard) <= v.s.quietGrace() || !v.asleep.IsZero() || v.quietLocked(now)
 }
 
 // ladder is the recovery ladder: a soft reboot, a Hard reset (twice), then a
@@ -124,7 +136,8 @@ func (v *dev) climb(ctx context.Context, reason string, bootTimeout time.Duratio
 	}
 	v.mu.Lock()
 	stuck := v.d.BootID
-	alive := trySoft && v.aliveLocked()
+	// trySoft is the caller's word that the Mac still checks in on its boot.
+	alive := trySoft
 	volunteers := v.d.IsVolunteer()
 	noReset := v.noHardResetLocked()
 	prev := v.d.State

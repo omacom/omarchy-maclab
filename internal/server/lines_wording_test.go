@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
 // Each event has its own function, and each function its own line.
@@ -33,6 +35,10 @@ func TestEveryEventHasItsLine(t *testing.T) {
 		{"agents", func() { a.LabTokenRevoked("grace", "ada", "laptop") }, `grace revoked ada's Lab token "laptop".`},
 		{"agents", func() { a.EndedAllAccess("grace", "ada") }, `grace used "End all access" on ada.`},
 		{"agents", func() { a.Forgot("grace", time.Date(2026, 11, 14, 23, 12, 0, 0, time.UTC)) }, "grace carried out a forgetting at 2026-11-15 09:12 AEST."},
+		{"agents", func() { a.NeedsHands("d-1", "m1-pro", "did not come back from a test kernel") }, "m1-pro needs hands: did not come back from a test kernel. Its page says what to do."},
+		{"agents", func() { a.NoLongerNeedsHands("d-1", "m1-pro", api.StateReady) }, "m1-pro no longer needs hands: it is ready again."},
+		{"agents", func() { a.NeedsHands("d-2", "m2-max", "") }, "m2-max needs hands. Its page says what to do."},
+		{"agents", func() { a.NoLongerNeedsHands("d-2", "m2-max", api.StateLeft) }, "m2-max no longer needs hands: it left the lab."},
 
 		// The Lab group: Leases.
 		{"lab", func() { g.LeaseTaken("ada", "m1-pro", until) }, "ada leased m1-pro until Sat 14:30 AEST."},

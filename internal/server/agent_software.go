@@ -5,8 +5,9 @@ package server
 // lab-agent comes from the lab server only: labd hands out the one built
 // with it, with its signature beside it, to the Join command's token and to
 // an enrolled Mac's own device secret. The Mac checks it: the Join command
-// against the release key written into the line, a running lab-agent against
-// the key it pins (`sudo lab-agent update`), refusing an older one.
+// against the release key written into its script (/join), a running
+// lab-agent against the key it pins (`sudo lab-agent update`), refusing an
+// older one.
 //
 // Nothing pushes an agent to a Volunteer's Mac. Its Volunteer is told once,
 // by a Notice, and My Macs gives the one line to run at the Mac; until then
@@ -15,6 +16,9 @@ package server
 // (`lab agent-update`). There is no fleet-wide minimum agent.
 
 import (
+	"cmp"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -107,6 +111,16 @@ func (s *Server) releaseKey() string {
 	return ""
 }
 
+// agentUpdating marks a Mac that `lab agent-update` holds: no job is sent,
+// no Lease taken and no exec run on it until its lab-agent is back as to
+// (once the Mac has answered), or agentUpdateWait after that. Back means
+// started again: a check-in from another run than start, the one asked,
+// whose facts say to. The same number in new bytes is the usual update, so
+// the number alone, which labd already holds, says nothing.
+type agentUpdating struct{ to, start string }
+
+const agentBeingUpdated = "lab-agent is being updated"
+
 // hAgentUpdate is `lab agent-update <mac>`: a Maintainer has a Lab-owned Mac
 // that is idle take the lab's lab-agent.
 func (s *Server) hAgentUpdate(w http.ResponseWriter, r *http.Request) {
@@ -114,37 +128,121 @@ func (s *Server) hAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	if v == nil {
 		return
 	}
-	v.mu.Lock()
-	d, alive, lease, waiting := v.d, v.aliveLocked(), v.liveLeaseLocked(), len(v.queue)+len(v.parked)
-	idle := d.State == api.StateNew || d.State == api.StateReady
-	v.mu.Unlock()
 	_, signed := s.agentSig()
+	mark := &agentUpdating{}
+	v.mu.Lock()
+	d := v.d
+	hold := cmp.Or(v.updateHold, agentUpdateWait)
+	why := v.notUpdatableLocked(signed)
+	if why == "" {
+		mark.start = v.agentStart
+		v.updating = mark
+	}
+	v.mu.Unlock()
+	if why != "" {
+		httpErr(w, 409, "%s", why)
+		return
+	}
+	var res api.AgentUpdate
+	// The agent restarts within two thirds of the hold from sending its
+	// result, which is before labd has it: well inside the hold, which
+	// starts once labd's wait has ended.
+	args := agent.UpdateArgs{RestartWithinMS: (hold * 2 / 3).Milliseconds()}
+	if err := v.call(r.Context(), api.CmdAgentUpdate, "", args, agentUpdateWait, &res); err != nil {
+		if errors.Is(err, errAgentRefused) {
+			v.endUpdating(mark) // the agent's own refusal: nothing was installed
+		} else {
+			// A Maintainer gone, a timeout: the Mac may still be downloading.
+			// Its result, if it comes, is answered forgotten, and a forgotten
+			// update restarts nothing; hold the Mac a while for it.
+			v.holdUpdating(mark)
+		}
+		httpErr(w, 502, "%s did not update its lab-agent: %v", d.Name, err)
+		return
+	}
+	if !res.Changed {
+		v.endUpdating(mark) // nothing restarts
+		writeJSON(w, res)
+		return
+	}
+	v.mu.Lock()
+	mark.to = res.To
+	v.heardAgentLocked()
+	v.mu.Unlock()
+	v.holdUpdating(mark)
+	s.log.Printf("%s: lab-agent %s -> %s by %s", d.Name, res.From, res.To, callerOf(r).maintainer)
+	writeJSON(w, res)
+}
+
+// notUpdatableLocked is why lab agent-update cannot update v now, or "".
+// Caller holds v.mu.
+func (v *dev) notUpdatableLocked(signed bool) string {
+	d, lease := v.d, v.liveLeaseLocked()
 	switch {
 	case d.IsVolunteer():
-		httpErr(w, 409, "%s is a Volunteer's Mac, and lab-agent is never pushed to a Volunteer's Mac: its Volunteer runs `%s` at the Mac, and My Macs shows them the line", d.Name, volunteerUpdateLine)
+		return fmt.Sprintf("%s is a Volunteer's Mac, and lab-agent is never pushed to a Volunteer's Mac: its Volunteer runs `%s` at the Mac, and My Macs shows them the line", d.Name, volunteerUpdateLine)
 	case !signed:
-		httpErr(w, 409, "this lab has no signed lab-agent to hand out: it was not Deployed from a Lab release")
+		return "this lab has no signed lab-agent to hand out: it was not Deployed from a Lab release"
+	case v.updating != nil:
+		return fmt.Sprintf("%s: %s already", d.Name, agentBeingUpdated)
 	case d.ActiveJob != "":
-		httpErr(w, 409, "%s is not idle: job %s runs on it. lab agent-update waits for no job and no Lease", d.Name, d.ActiveJob)
+		return fmt.Sprintf("%s is not idle: job %s runs on it. lab agent-update waits for no job and no Lease", d.Name, d.ActiveJob)
 	case lease != nil:
-		httpErr(w, 409, "%s is not idle: %s holds a Lease on it until %s. lab agent-update waits for no job and no Lease", d.Name, lease.Who(), lease.Expires.Format(time.TimeOnly))
-	case waiting > 0:
-		httpErr(w, 409, "%s is not idle: a job waits for it. lab agent-update waits for no job and no Lease", d.Name)
-	case !alive:
-		httpErr(w, 409, "%s is offline, so its lab-agent cannot be updated now", d.Name)
-	case !idle:
-		httpErr(w, 409, "%s is not idle: it is %s. lab agent-update waits for no job and no Lease", d.Name, d.State)
+		return fmt.Sprintf("%s is not idle: %s holds a Lease on it until %s. lab agent-update waits for no job and no Lease", d.Name, lease.Who(), lease.Expires.Format(time.TimeOnly))
+	case v.proving:
+		return fmt.Sprintf("%s is not idle: a Proving reset of it is under way. lab agent-update waits for no job and no Lease", d.Name)
+	case v.cleaning:
+		return fmt.Sprintf("%s is not idle: the lab is removing leftover lab kernels from it. lab agent-update waits for no job and no Lease", d.Name)
+	case len(v.queue)+len(v.parked) > 0:
+		return fmt.Sprintf("%s is not idle: a job waits for it. lab agent-update waits for no job and no Lease", d.Name)
+	case !v.aliveLocked():
+		return fmt.Sprintf("%s is offline, so its lab-agent cannot be updated now", d.Name)
+	case d.State != api.StateNew && d.State != api.StateReady:
+		return fmt.Sprintf("%s is not idle: it is %s. lab agent-update waits for no job and no Lease", d.Name, d.State)
 	case !versionAtLeast(d.Facts.AgentVersion, agentUpdateMinAgent):
-		httpErr(w, 409, "%s runs lab-agent %s; lab agent-update needs %s or later, the first that updates itself: Join the Mac again to give it the lab's", d.Name, orStr(d.Facts.AgentVersion, "(unknown)"), agentUpdateMinAgent)
-	default:
-		var res api.AgentUpdate
-		if err := v.call(r.Context(), api.CmdAgentUpdate, "", nil, agentUpdateWait, &res); err != nil {
-			httpErr(w, 502, "%s did not update its lab-agent: %v", d.Name, err)
-			return
-		}
-		if res.Changed {
-			s.log.Printf("%s: lab-agent %s -> %s by %s", d.Name, res.From, res.To, callerOf(r).maintainer)
-		}
-		writeJSON(w, res)
+		return fmt.Sprintf("%s runs lab-agent %s; lab agent-update needs %s or later, the first that updates itself: Join the Mac again to give it the lab's", d.Name, orStr(d.Facts.AgentVersion, "(unknown)"), agentUpdateMinAgent)
+	// The start number is how labd knows the new lab-agent is back.
+	case !v.heardSinceStart:
+		return fmt.Sprintf("%s has not checked in since labd started, so labd could not tell when its new lab-agent is back: try again once it has", d.Name)
+	case v.agentStart == "":
+		return fmt.Sprintf("%s runs a lab-agent that sends no start number, so labd could not tell when a new one is back, nor keep it from restarting after labd let the Mac go: Join the Mac again to give it the lab's", d.Name)
 	}
+	return ""
+}
+
+// heardAgentLocked lets the Mac go once its lab-agent, started again, says
+// it is the one lab agent-update installed. Caller holds v.mu.
+func (v *dev) heardAgentLocked() {
+	if u := v.updating; u != nil && u.to != "" && v.agentStart != u.start && v.factsStart == v.agentStart && v.d.Facts.AgentVersion == u.to {
+		v.updating = nil
+		v.bump()
+	}
+}
+
+// holdUpdating lets the Mac go agentUpdateWait from now, if mark still
+// holds it then.
+func (v *dev) holdUpdating(mark *agentUpdating) {
+	v.mu.Lock()
+	hold := cmp.Or(v.updateHold, agentUpdateWait)
+	v.mu.Unlock()
+	time.AfterFunc(hold, func() { v.endUpdating(mark) })
+}
+
+// endUpdating lets the Mac go, if mark still holds it.
+func (v *dev) endUpdating(mark *agentUpdating) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.updating == mark {
+		v.updating = nil
+		v.bump()
+	}
+}
+
+// updatingRefusalLocked is the refusal of a Lease or an exec while lab
+// agent-update holds the Mac, or nil. Caller holds v.mu.
+func (v *dev) updatingRefusalLocked(what string) error {
+	if v.updating == nil {
+		return nil
+	}
+	return refuse(409, "%s: %s, so %s; try again once it is back", v.d.Name, agentBeingUpdated, what)
 }

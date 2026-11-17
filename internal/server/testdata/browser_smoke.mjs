@@ -91,7 +91,7 @@ try {
 	await until('the Enroll form', () => js(`!!document.querySelector('#en-name')`));
 	await js(`document.querySelector('#en-name').value = 'browser-mac'; document.querySelector('#en-go').click(); true`);
 	const cmd = await until('the one-liner', () => js(`(document.querySelector('#en-out pre')||{}).innerText || ''`));
-	if (!cmd.includes(`U='${base}'`) || !cmd.includes('--token-stdin') || !cmd.includes('-H @-') || / --token /.test(cmd)) fail('the one-liner: ' + cmd);
+	if (!/^\s*curl -fsSL \S+\/join \| LAB_JOIN=enr_[0-9a-f]{32} bash$/.test(cmd) || !cmd.includes(`${base}/join`)) fail('the one-liner: ' + cmd);
 
 	// Everything the page asked for stayed under the prefix.
 	const outside = requests.filter(u => {

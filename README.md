@@ -466,9 +466,17 @@ nothing. Once the token has expired (1 hour), make a new one with `lab
 enroll <name>`, after `lab remove <name>` if the Mac is listed already. `lab
 enroll <name> --revoke` withdraws a token.
 
-On the Mac, the Join command downloads lab-agent from the lab, checks its
-signature against the release key written into the line itself, and runs
-`setup`, handing it the token on stdin. By hand:
+On the Mac, the Join command is one short line:
+
+```sh
+ curl -fsSL https://lab.omarchy-mac.org/join | LAB_JOIN=enr_... bash
+```
+
+`/join` is a script that holds no secret, made by labd for its current
+release. It downloads lab-agent with the token, checks its sha256 and its
+signature against the release key written into the script, and runs
+`setup`, handing it the token on stdin; setup asks its questions on the
+terminal. By hand:
 
 ```sh
 printf '%s\n' enr_... | sudo ./lab-agent setup --server https://lab.omarchy-mac.org --token-stdin --gui-user <you> --autologin
@@ -518,8 +526,12 @@ Join command (a legacy install from a checkout). It is `omarchy-m-test`'s
 rule, read from files, since the pre-checks run nothing
 (`TestHowASystemIsRecognisedAsOmarchy`).
 
-The Join command holds the token, so keep it private; the token stays out of
-URLs, labd's log and the arguments of the curl and sudo it starts.
+The Join command holds the token, so keep it private. The token stays in the
+environment of your own shell (`LAB_JOIN`, readable by you and root only,
+taken out before anything starts) and out of URLs, labd's log and the
+arguments of the curl and sudo it starts. The line starts with a space, so a
+shell that skips such lines leaves it out of its history. A download of the
+script cut short runs nothing.
 
 `setup` makes these changes. Each one is idempotent and backed up:
 
@@ -582,7 +594,7 @@ lab-agent itself comes from the lab server only, signed, and never from GitHub.
 What each install checks:
 
 - **The Join command** checks the agent's signature against the release key
-  written into the line, and setup stops at its pre-checks when the lab-agent
+  written into the script labd serves at `/join` for the current release, and setup stops at its pre-checks when the lab-agent
   installed on the Mac is newer than the one it brings.
 - **`sudo lab-agent update`** and **`lab agent-update`** check the new agent's
   signature against the release key pinned in the lab-agent already running,
@@ -860,10 +872,14 @@ reads "no window yet", then "first check pending (restarts twice)", then
 "ready"; a first baseline that fails is shown and posted, and a Maintainer
 looks.
 
-Only the Mac gives: Open now, the weekly schedule, raising to Full and turning
-publishing on are `sudo lab-agent …` at the Mac, and labd has no route for
-them. The site only takes away, for the Mac's own Volunteer, and undoes only
-what it took:
+Only the Mac gives Open now, raising to Full and turning publishing on:
+`sudo lab-agent …` at the Mac, and labd has no route for them. The weekly
+schedule is set at the Mac or, by the Mac's own Volunteer, on My Macs (`POST
+/my-macs/{name}/window`, or `POST /api/devices/{name}/window` with their Lab
+token): labd keeps the change and hands it to the Mac in its next check-in
+answer, the Mac takes it unless its own changed later, and the card shows it
+pending until a check-in carries it. Otherwise the site only takes away, for
+the Mac's own Volunteer, and undoes only what it took:
 
 - **Pause**, until a time or until Resume. The Mac is closed to the lab
   whatever its own window says, an Open now included.
@@ -996,25 +1012,33 @@ Thunderbolt-capable cable, and nothing else goes on those ports.
   reads, for the controller, and `/var/lab/secrets/oobd.token`, which only
   the `lab` account reads, for labd (`--oobd-token-file`).
 
-**Which Mac is on which port** is not written anywhere: labd learns it and
-keeps it in memory.
+**Which Mac is on which port** is not written in any Mac's record: labd
+learns it, and keeps what it learnt in its data.
 
 - **Sighting.** Every 15 s labd asks the controller what its three ports
   show. While a Mac's Linux is up with a Thunderbolt link the port shows the
   Mac's name; when that name (the Mac's name in the lab, or the hostname its
   check-ins report) belongs to exactly one Lab-owned Mac's record, labd
-  remembers the Mac, the port, the partner's product id and the plug count.
-  A port that is no longer connected, or shows another product id or plug
-  count, ends the Sighting. Any conflict ends the Sightings involved and
+  remembers the Mac, the port, the partner's product id, the plug count and
+  the Mac's boot id. A port that is no longer connected, or shows another
+  product id, ends the Sighting. A Mac's own restart moves its port's plug
+  count, as a pull does: a higher count keeps the Sighting while the Mac
+  comes back on a new boot (which takes the new count) or stays silent, as
+  a Mac hung after a restart does, and ends it once the Mac is heard again
+  on the boot it had, a cable pulled while it stayed up. Any conflict ends the Sightings involved and
   makes none: one name on two ports, a sighted Mac's name on another port,
-  another name on a sighted Mac's port, one name in two records. After labd
-  restarts it holds none, and Macs that are up are sighted again by
-  themselves.
+  another name on a sighted Mac's port, one name in two records. labd
+  keeps its Sightings in its data: after labd restarts, as at a Deploy,
+  each one holds while its port is still connected with the same product
+  id (the log says `sighting kept across the restart: MAC on PORT`), and
+  the rules above go on from the port as it is then. The same holds after
+  the mini restarts, which starts its plug counts again.
 - **Hard reset.** `lab reset <mac>`, or Hard reset on the Live tab of a
   Lab-owned Mac's page, which asks twice: a Maintainer, or the holder of a
   Lease on the Mac. labd looks at the port, and the controller compares it
   once more under its lock; a port that changed ends the Sighting and the
-  reset is refused with the reason. If the Mac does not return the lab sends
+  reset is refused with the reason. While the plug count has moved and the
+  Mac is still heard on the boot it had, no reset goes out. If the Mac does not return the lab sends
   one more, then asks for hands. Refused for a Mac the lab cannot place, and
   always for a Volunteer's Mac.
 - **Proving reset.** `lab reset <mac> --prove left|middle|right`, Maintainers
@@ -1376,7 +1400,15 @@ gpg --verify ArchLinuxARM-aarch64-latest.tar.gz.sig ArchLinuxARM-aarch64-latest.
 On the mini the set-up takes it (`scripts/mini/setup --builder-rootfs FILE`): it copies the archive into
 a build context only root writes (`/usr/local/lab/pkg-image`), beside the Deployed build's `builder/pkg`,
 says its SHA-256, and builds the image from there. With no archive the Builder's step stops before
-`container`'s server is started and says what to bring. Elsewhere:
+`container`'s server is started and says what to bring.
+
+On the mini each image is tagged by what it is made from: `maclab-kbuild:<tag>` with the first 12 hex
+of a SHA-256 over the paths and contents of `builder/` (not `builder/pkg`), `maclab-pkgbuild:<tag>`
+over `builder/pkg` and the root file system's archive. The set-up builds a tag it does not find,
+writes both into the Builder's LaunchDaemon file (`--image`, `--pkg-image`) and starts it again,
+and removes the images it made before, keeping the last as the way back. A Deploy whose `builder/`
+changed says to run the set-up; until then the Builder runs the images it had, and
+`scripts/mini/check` and `build-watch` say so. Elsewhere:
 
 ```sh
 # in a directory holding builder/pkg/* and the checked rootfs tarball
@@ -1396,7 +1428,7 @@ ignores it: rebuild the image, under a new tag if another lab-builder still uses
 
 The 30+ GB work tree is deleted after every build. The volume keeps downloaded sources (the newest
 six) and the Rust toolchains. `lab-builder` takes package builds only when it has
-`--pkg-image` (the default, `maclab-pkgbuild:1`). An older builder only ever gets kernel builds.
+`--pkg-image` (the default, `maclab-pkgbuild:1`; on the mini, the set-up's tag). An older builder only ever gets kernel builds.
 
 ## Release gate
 

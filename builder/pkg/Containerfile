@@ -12,6 +12,7 @@ RUN sed -i 's/^\[options\]/[options]\nDisableSandbox/' /etc/pacman.conf \
 RUN pacman -Syu --noconfirm --needed base-devel git ccache pacman-contrib zstd \
       bc dtc kmod libelf pahole cpio perl rustup rust-bindgen tar xz xmlto python \
       clang lld llvm \
+  && mkdir -p /usr/share/maclab && pacman -Q > /usr/share/maclab/packages \
   && rm -rf /boot/* /var/cache/pacman/pkg/* \
   && useradd -m build \
   && echo 'build ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/build

@@ -19,8 +19,8 @@
 #   --token-file FILE  the Cloudflare API token, in a file only you can read;
 #                      without it the script asks, and does not show it
 #
-# zone --apply reads the records at Porkbun, whose two keys come from the
-# login Keychain (omarchy-mac-lab), and needs CLOUDFLARE_ACCOUNT_ID in
+# zone --apply reads the records at Porkbun, whose two keys come from
+# --porkbun-keys FILE (see lib.sh), and needs CLOUDFLARE_ACCOUNT_ID in
 # lab.env to make the zone. It moves no nameserver: that is nameservers.sh,
 # started by the owner with DOMAIN=omarchy-m-testing.org. The address
 # records of the apex and www are proxied, so that the certificate is

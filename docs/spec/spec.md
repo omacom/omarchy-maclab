@@ -106,7 +106,7 @@ It starts on the site. `./volunteer` is retired; nothing looks for the lab, and 
 1. **Sign in** with GitHub. "Lend a Mac" opens with the Test machine rule, then a table of what the lab may and may not do, and the terms text.
 2. **Leave to lend**, needed once per person: an M team member or a Maintainer has it; a person with an Invite has it; anyone else sends a Request to lend and waits for a Maintainer.
 3. **Join command.** The person names the Mac on the page and gets one line to copy.
-4. **On the Mac.** Pre-checks, then the terms and a typed `yes`, then leaving any other lab, then enrolling and setup, then one question for the weekly Availability window.
+4. **On the Mac.** Pre-checks, then the terms and a typed `yes`, then leaving any other lab, then enrolling and setup. Join asks nothing about the Availability window: the Mac arrives closed, and setup's last line points to My Macs to set it.
 5. **Arrival.** The Mac is at Qualification with publishing off. The lab queues its first baseline itself; it runs in the first open window.
 6. **Afterwards.** My Macs shows the Mac, its records and its jobs. Leaving is one click or one command.
 
@@ -116,7 +116,7 @@ It starts on the site. `./volunteer` is retired; nothing looks for the lab, and 
 
 **The Join command and its token.**
 
-- One line: the enrollment token only in a header and on stdin; the agent downloaded with the token; then `lab-agent setup`. The agent the Mac installs carries its own signature by the release key, checked against the key pinned in the Join command's script. ("Volunteering a Mac"; "Hardening inside the lab")
+- One short line, `curl -fsSL https://lab.omarchy-mac.org/join | LAB_JOIN=enr_… bash`: the enrollment token travels in the environment of the person's own shell, readable only by them and root, never in an argument or a URL; then only in a header and on stdin; the agent downloaded with the token; then `lab-agent setup`, which asks its questions on the terminal. The agent the Mac installs carries its own signature by the release key, checked against the key pinned in the script labd serves at `/join` for the current release; that script holds no secret, is served to anyone and is never cached, and a download of it cut short runs nothing. ("Volunteering a Mac"; "Hardening inside the lab")
 - The token is made by the signed-in person on the page; no Lab token and no device flow in the terminal. It lasts 1 hour; one unused per person; a new one cancels the old.
 - One Mac, once: the first Mac to use it binds it and may run the command again if setup was interrupted; any other Mac is refused.
 - The command tests the token before anything changes, fails once without retrying and names the case: expired or used; too many refused attempts from this network (wait 15 minutes); challenged at the edge. Blocked, cap reached and name taken are refused at enrollment with the reason.
@@ -155,7 +155,9 @@ Installing a Release and rolling back is not offered on a Volunteer's Mac until 
 
 **Arriving.** A Mac arrives closed: with no Availability window it takes nothing. Joining sets Qualification and publishing off, whatever the Mac had in another lab; a window it had is kept. The first baseline is queued by the lab itself, no Maintainer step; a failed one is shown and posted, and a Maintainer looks. My Macs shows "no window yet", "first check pending (restarts twice)", "ready". ("Volunteering a Mac")
 
-**Controls: the Mac sets the ceiling.** Only the Mac gives: Open now, the weekly schedule, raising to Full and turning publishing on are `sudo lab-agent …` at the Mac; My Macs shows each command. The site only takes away, and undoes only what it took: Pause (until a time or Resume), Limit to Qualification (until "Remove limit"), Leave. Pause and Limit stop a running job as a closing window does and end a Lease. One control on the site gives: accepting changed terms. ("Volunteering a Mac"; "Terms and privacy")
+**Controls: the Mac sets the ceiling, save the weekly schedule.** Only the Mac gives Open now, raising to Full and turning publishing on: `sudo lab-agent …` at the Mac; My Macs shows each command. The weekly schedule is set either at the Mac (`sudo lab-agent window …`) or on My Macs by that Mac's own Volunteer, signed in or with their Lab token (add a window, always included, or remove one); nobody else sets it, Maintainers and the M team included. labd keeps a change made on the site and hands it to the Mac at its next check-in; the Mac enforces its window itself, labd down or not, and My Macs shows the change pending until the Mac holds it. The last change wins, and each is in the Mac's record and posted to the Lab group. The trade-off: a stolen session or Lab token of that Volunteer can widen their own Mac's window, which before took the Mac itself. Otherwise the site only takes away, and undoes only what it took: Pause (until a time or Resume), Limit to Qualification (until "Remove limit"), Leave. Pause and Limit stop a running job as a closing window does and end a Lease. Two controls on the site give: the weekly schedule and accepting changed terms. Lab-owned Macs have no window. ("Volunteering a Mac"; "Terms and privacy")
+
+**The weekly schedule** is days and hours in the Mac's local time, `mon-fri 19:00-07:00`; `00:00-24:00` is a whole day, and `always` (every day, every hour) leaves no gap at midnight. ("Volunteering a Mac")
 
 **Leaving.** By the Volunteer from My Macs (asks twice) or `sudo lab-agent leave`; by a Maintainer; by the Volunteer being Blocked or Forgotten. On the Mac: any job stops, the Mac returns to its own system, and the lab's boot entries, staged kernels, units, settings files and device secret are removed; the `lab-agent` program, the Audit log and the Volunteer's own window and Access level stay, with the one command that removes them named. In the lab: the record is Retired at once, its name is free and it stops counting toward the cap; screenshots, serial log and baselines are deleted; jobs, results, the Audit log copy and the Mac's record stay for Maintainers. A Mac not reaching the lab when ended from the site finishes leaving when it next does. ("Volunteering a Mac")
 
@@ -198,7 +200,7 @@ A job that ran under a Lease is never retried by labd itself. Jobs others queued
 
 **Records.** labd keeps, for every Mac, each Lease taken, renewed, extended, released, expired and ended, with who and why, shown beside the Audit log and on the person's record. The Volunteer sees on My Macs who holds the Lease (handle, kind) and until when. ("Leases for the M team")
 
-**The Lab group** (Signal group "Omarchy Mac Lab"): one line for each Lease taken (handle, Mac, until when), released or expired, or ended by a Maintainer or by the holder leaving the team or being Blocked (who and why). Renewals and extensions are not posted. A Volunteer's Mac is named by its Mac name only. Once a day at 08:00 Brisbane: one summary of each Mac with its Configuration and state (free, leased by whom until when, running a job, outside its window, Paused, not seen), the count of Requests to lend waiting, and a link to Macs. Members: M team members who want it, added by the owner by hand, plus the lab's sender number; no External volunteers. The lab only sends, reads nothing from the group and stores no phone number. A failed send never blocks a Lease. ("Leases for the M team"; "Volunteering a Mac")
+**The Lab group** (Signal group "Omarchy Mac Lab"): one line for each Lease taken (handle, Mac, until when), released or expired, or ended by a Maintainer or by the holder leaving the team or being Blocked (who and why). Renewals and extensions are not posted. A Volunteer's Mac is named by its Mac name only. Once a day at 08:00 Brisbane: one summary of each Mac with its Configuration and state (free, leased by whom until when, running a job, outside its window, Paused, not seen), the count of Requests to lend waiting, and a link to Macs. Members: M team members who want it, added by the owner by hand, plus the lab's sender (the owner's own number when the sender is linked to it); no External volunteers. The lab only sends, reads nothing from the group and stores no phone number. A failed send never blocks a Lease. ("Leases for the M team"; "Volunteering a Mac")
 
 ### Qualification of a Release
 
@@ -222,10 +224,10 @@ A job that ran under a Lease is never retried by labd itself. Jobs others queued
 
 ("Operations bar"; "`container` without a login session")
 
-- The lab's Signal sender is `signal-cli` on the mini; its secrets, like every secret the port brings, are files of the `lab` account. ("Operations bar"; "Hardening inside the lab")
+- The lab's Signal sender is `signal-cli` on the mini; its secrets, like every secret the port brings, are files of the `lab` account. It is either a linked device of the owner's own number (`scripts/mini/signal link`, the owner's choice) or a number of its own (`scripts/mini/signal register`). Linked, the mini holds keys that read the owner's Signal, and every line comes from the owner's own number. `link` shows the `sgnl://` link only as a QR code, drawn by the lab's own binary (`labd qr`, from the Deployed build, the link on its input); the link is never on the terminal as text, an argument, a file or a log. ("Operations bar"; "Hardening inside the lab")
 - **`container`.** A root LaunchDaemon runs `launchctl asuser <uid> sudo -n -u <user> container system start --enable-kernel-install` at boot, which puts the API server in `user/<uid>` with nobody logged in. `lab-builder` never starts the service. Health checks and restarts go through the same wrapper or over SSH. The same LaunchDaemon checks the server every minute and starts it again through that wrapper; "Agents" gets a line on each change (decision S11). Proved with your account; another account needs the same check once. ("`container` without a login session")
 - **Tailscale.** The open-source `tailscaled` system daemon replaces the Standalone app; the mini rejoins as a new node tagged `tag:lab`. SSH stays OpenSSH with keys after Unlock; Screen Sharing stays on, from the LAN and the tailnet. ("Operations bar")
-- **Tools on the mini.** Any tool with a Homebrew formula comes from Homebrew (7.0.13 at `/opt/homebrew`): `cloudflared`, `tailscaled`, Litestream, restic, and `signal-cli` with its Java. Their versions follow Homebrew and are checked in the Maintenance run; this replaces "No Homebrew" and the pin by version and checksum for those tools (decision S10). No daemon runs from `/opt/homebrew`, which the admin account can write: set-up and each Maintenance run copy the Homebrew tools the lab uses into a root-owned folder and every daemon runs from there; the previous copy is kept, so a bad upgrade has a way back (decision S14). `container` (Apple's package) stays pinned by version and checksum in the repository and installed by script; the lab's own reset tool comes in the server bundle. The owner can be at the mini's own screen for the first set-up if required, so the Command Line Tools prompt, the reason "Operations bar" gave for the ban, is no obstacle then. In normal running no script of the lab's on the mini may need `python3`, `git` or `cc`. The mini compiles none of the lab's own software. ("Operations bar"; "Repository layout and release pipeline")
+- **Tools on the mini.** Any tool with a Homebrew formula comes from Homebrew (7.0.13 at `/opt/homebrew`): `cloudflared`, `tailscaled`, Litestream, restic, and `signal-cli` with its Java. Their versions follow Homebrew and are checked in the Maintenance run; this replaces "No Homebrew" and the pin by version and checksum for those tools (decision S10). No daemon runs from `/opt/homebrew`, which the admin account can write: set-up and each Maintenance run copy the Homebrew tools the lab uses into a root-owned folder and every daemon runs from there; the previous copy is kept, so a bad upgrade has a way back (decision S14). A tool Homebrew ships as a wrapper script on a Java tree, as `signal-cli` once was, is copied with its whole Java beside it and the wrapper's paths pointed at the two copies; anything else in a copy that names `/opt/homebrew` is refused. `container` (Apple's package) stays pinned by version and checksum in the repository and installed by script; the lab's own reset tool comes in the server bundle. The owner can be at the mini's own screen for the first set-up if required, so the Command Line Tools prompt, the reason "Operations bar" gave for the ban, is no obstacle then. In normal running no script of the lab's on the mini may need `python3`, `git` or `cc`. The mini compiles none of the lab's own software. ("Operations bar"; "Repository layout and release pipeline")
 - **Kept names.** Everything an enrolled Mac or a stored record carries keeps its `maclab` name: the `MACLAB_*` variables (38 at the fork; `MACLAB_BUILDER_TOKEN` goes, section 12), `/var/lib/maclab`, `/etc/maclab`, `~/.config/maclab`, `~/.local/share/maclab`, the systemd units, `com.maclab.oobd`, the kernel command-line keys, the 17 schema ids, the ESP names. No binary is renamed. ("Fork mechanics and upstream policy")
 
 ### labd's listeners
@@ -291,7 +293,7 @@ None can be turned into another. ("Data and identity")
 - **From `omarchy-gpu`, the whole data directory** with ids unchanged (2 Lab-owned records, 253 jobs, 90 builds, 3.9 GB), upgraded in place; everything done under its admin token is attributed to the owner. Its two Mac records are Retired at import.
 - **Old links.** `/reports/<public_id>` and `/reports/<public_id>/deletion?token=<token>` work with only the host changed.
 - **The import** is a re-runnable script that fills an empty `reports.db`. It is accepted only when: one known machine id is recomputed from one of the owner's Macs' public key; row counts of the three tables match the dump, hidden reports included; a deletion link issued by the old site deletes its report on the lab.
-- **The dump** is taken by the import command itself, which ships in the server bundle: it reads Railway's Postgres, its address typed by the owner at a prompt, and writes the three tables to a file on the mini; the import then reads that file. No `psql`, `pg_dump` or `python3` on the mini (decision S9).
+- **The dump** is taken by the import command itself, which ships in the server bundle: it reads Railway's Postgres, its address typed by the owner at a prompt, and writes the three tables to a file on the mini; the import then reads that file. No `psql`, `pg_dump` or `python3` on the mini (decision S9). Railway's certificate is checked (`verify-ca`) against a CA file the owner gives at a second prompt; beyond loopback nothing is read without it. The rehearsal import first shows the certificate chain Railway's Postgres presents, with each SHA-256 fingerprint, and keeps its last certificate as that file, so the owner looks at it before the day.
 
 ("Data and identity"; "Moving the fleet")
 
@@ -376,7 +378,8 @@ All set, and checked on every run, by the zone script, which fails if one drifts
 
 - **Off**: Bot Fight Mode, AI-bot blocking, AI Labyrinth, Rocket Loader, email obfuscation, Always Online, automatic HTTPS rewrites, Cloudflare Fonts, the analytics script injection.
 - **On**: Always Use HTTPS, HTTP/3, TLS 1.3, 0-RTT, Early Hints, Smart Tiered Cache, Speed Brain.
-- **One skip rule on `/api/*`**: no Browser Integrity Check, no managed rules.
+- **Browser Cache TTL**: Respect Existing Headers, so a browser keeps to the server's `max-age`; the default four hours would override it.
+- **One skip rule on `/api/*` and `/join`**: no Browser Integrity Check, no managed rules.
 - **One rate rule**, a flood cap: 300 requests in 10 s per address, whole site.
 - Clients name themselves in `User-Agent` and report an edge challenge as a plain error.
 - HTTP/3 is switched off for the hostname if Chrome is seen to stall large downloads over it.
@@ -387,8 +390,9 @@ All set, and checked on every run, by the zone script, which fails if one drifts
 - Fingerprinted assets: public, one year, shipped inside the binary already compressed at the highest Brotli level.
 - `/install`: public, 5 minutes.
 - Public pages and exports, `/terms` and `/privacy` among them, for visitors with no session: cached at the edge, fresh for 60 s, then served stale while the edge refreshes, for up to a day, and stale on error for a day (`stale-if-error`). Browsers always revalidate. Nothing is purged in normal running; the one purge is at the lab's opening (section 16, step 25).
-- The guard: the cache rule matches only public paths on requests without the session cookie; anything rendered for a session says `private, no-store`.
+- The guard: the cache rule matches only public paths on requests without the session cookie or a Lab token; anything rendered for a session says `private, no-store`.
 - `/api/*`: one rule bypasses cache. Artifacts send `Cache-Control: private` themselves.
+- A request with a Lab token (`Authorization`) or the session cookie: one rule, the last, bypasses cache on every path.
 - Never a "cache everything" rule or a forced edge lifetime.
 - Left to the build: the exact header pair; the edge lifetime goes in the CDN-only header.
 
@@ -415,7 +419,7 @@ Recorded in the acceptance run, measured without a script in the page. ("The fro
 
 - Whoever holds the Cloudflare account can point the hostname elsewhere. The Cloudflare and Porkbun accounts use a security key or an authenticator; DNSSEC is on; a "tunnel created or deleted" alert goes to the owner beside the tunnel-health alert. ("The front door")
 - `omarchy-mac.org` is registered at Porkbun (order 12534484, expires 2027-11-13, auto-renew on; the account needs credit or a card before then) and is an active Cloudflare zone on Free (`68381e2decfb093d789b6547503729cc`, nameservers `garret.ns.cloudflare.com` and `holly.ns.cloudflare.com`). ("Register the domain and stand up the zone")
-- At step 31 of the Cutover the Porkbun `full` key is swapped for one without `purchase`, limited to this domain, and the dead `CLOUDFLARE_KEY` line is dropped (decision S6). The scripts and `lab.env` move into the repository. ("Register the domain and stand up the zone")
+- At step 31 of the Cutover the Porkbun `full` key is swapped for one without `purchase`, limited to this domain, and the dead `CLOUDFLARE_KEY` line is dropped (decision S6). The scripts and `lab.env` move into the repository. The scripts read Porkbun's two keys from a file only the owner reads (`--porkbun-keys FILE`, by default `~/.config/omarchy-mac-lab/porkbun.keys`), as they read the Cloudflare token, and refuse one others can read; never from the environment or the Keychain. ("Register the domain and stand up the zone")
 - The standing Cloudflare API token leaves the M4 Pro's Keychain at step 31 and stays in Bitwarden for emergencies; routine changes use a short-lived token (decision S2). The token that stays has no expiry: an accepted exception to "Register the domain and stand up the zone", which asked for one (decision S8). ("Operations bar"; "The front door")
 
 ### While Dark
@@ -438,11 +442,11 @@ Recorded in the acceptance run, measured without a script in the page. ("The fro
 
 ## 7. Out-of-band control
 
-- **Ports.** The mini's three rear USB-C ports are three reset lines for Lab-owned Macs (left RID 1, middle RID 0, right RID 2, facing the back). Any Lab-owned Mac goes on any port; no port is written in a Mac's record. Nothing else goes on those ports; a display, if ever needed, uses HDMI. One port is addressed at a time and a Mac on another port is not disturbed; a Hard reset brings a Mac back in about 36 s. ("Out-of-band wiring"; "macvdmtool port selection on the mini")
+- **Ports.** The mini's three rear USB-C ports are three reset lines for Lab-owned Macs (left RID 1, middle RID 0, right RID 2, facing the back). Any Lab-owned Mac goes on any port; no port is written in a Mac's record. A port with a display or power on it instead, connected on CC alone with no product id, is no Mac: the controller and the port check report it so and leave it alone. One port is addressed at a time and a Mac on another port is not disturbed; a Hard reset brings a Mac back in about 36 s. ("Out-of-band wiring"; "macvdmtool port selection on the mini")
 - **Tool.** The lab's own fork, `omacom/macvdmtool`, based on the variant whose `--rid` is required and strictly parsed (`GravityLinux/macvdmtool` `d57c485`). Pinned by commit and checksum, built off the mini, installed by script.
 - **A bad RID is refused twice**: by the tool, and by the controller, which accepts only the RIDs in its own list for this host (0, 1, 2).
 - **One Out-of-band controller**: one root LaunchDaemon for all three ports, loopback only, the port named in every request, one lock so a single tool run happens at a time. Two resets asked together run one after the other.
-- **Sighting.** While a Mac's Linux is up with a Thunderbolt link, the mini reads the Mac's name on that port; when it belongs to exactly one Lab-owned Mac's record, the lab remembers the Mac, the port, the partner's product id and the plug count. A Hard reset goes out only if the port is still connected with the same product id and plug count; otherwise the Sighting is dropped and the reset refused with the reason. Any conflict drops the Sightings involved. After the mini restarts every Sighting is gone and Macs that are up are sighted again by themselves. The controller reports what it sees; labd holds the Sightings; the controller compares port state once more, under its lock, at the moment of the reset.
+- **Sighting.** While a Mac's Linux is up with a Thunderbolt link, the mini reads the Mac's name on that port; when it belongs to exactly one Lab-owned Mac's record, the lab remembers the Mac, the port, the partner's product id, the plug count and the Mac's boot id. A placeholder name a Mac's link shows before its hostname is set, early in boot or hung there (`unknown_xd_device`, the kernel's `(none)`, systemd's `localhost` or `archlinux`), is no Mac's name: it neither places, moves nor ends a Sighting, and a Proving reset takes it as a port that shows none. A Hard reset goes out only if the port is still connected with the same product id, and with the same plug count or one the Mac's own restart moved. A Mac's port counts plugs at every restart (the M2 Max's went from 21 to 25 across a job's two reboots), so a higher count keeps the Sighting while the Mac comes back on a new boot, which takes the new count, or is not heard again, as when it hangs after a restart; it ends the Sighting once the Mac is heard again on the boot it had, a cable pulled while it stayed up. While the Mac is still heard on that boot no Hard reset goes out. Anything else drops the Sighting and the reset is refused with the reason. Accepted: two Macs of one model swapped while one of them is silent are not told apart. Any conflict drops the Sightings involved. labd keeps its Sightings in its data: after labd restarts, at a Deploy or with the mini, each one holds while its port is still connected with the same product id, and the rules above go on from the port as it is then (the mini's own restart starts its plug counts again); the log says which were kept and which not. Accepted: cables swapped while labd is down between two Macs of one model are not told apart. The controller reports what it sees; labd holds the Sightings; the controller compares port state once more, under its lock, at the moment of the reset.
 - **Proving reset.** A Mac that shows no name is placed by a Maintainer naming the port; it counts only if that Mac returns and every other Mac keeps its boot id.
 - **Who.** A Hard reset: a Maintainer, a Lease holder on the Mac they hold, and the recovery ladder. A Proving reset: Maintainers only.
 - **With no Sighting** the ladder skips the Hard-reset rung: the Mac's own watchdog, then Needs hands, with the reason shown.
@@ -520,7 +524,7 @@ Recorded in the acceptance run, measured without a script in the page. ("The fro
 ### What a visitor sees
 
 - No public Releases page; Promotion is never public.
-- A Release and a Candidate set stay two records, linked when the Release's packages match the set's.
+- A Release and a Candidate set stay two records, linked when the Release's packages match the set's: every package a Verified run of the set names, at its version, and no other. One package alone, the `omarchy` package the lab knows a set by included, links nothing.
 - The verdict shows on Candidates, beside the Candidate set the Release matches: "Qualified by the lab, date", "Not qualified, date" or "Qualification revoked, date". No handle, note or Mac. A Release matching no set shows nowhere public.
 - The Candidates page's own line is "Passing: Verified runs on N models, nothing failing", "Failing: N failures, M regressions" or "Waiting".
 
@@ -530,7 +534,7 @@ Recorded in the acceptance run, measured without a script in the page. ("The fro
 
 - Open to M team members and Maintainers.
 - The list: one row per Release, newest first: name; who froze it and when; the state badge with its date; coverage; how many Macs are promoted from it; the matching Candidate set, linked.
-- One Release opened in place: what it is (kernel and packages with versions); its Macs (Mac, Configuration, latest Installed run linked to its job, number of runs, promoted or not) under "n of m Configurations have a passed run"; the verdict history.
+- One Release opened in place: what it is (kernel and packages with versions, and who approved its manifest, by handle); its Macs (Mac, Configuration, latest Installed run linked to its job, number of runs, promoted or not) under "n of m Configurations have a passed run"; the verdict history.
 - M team member: Record verdict, only while there is none. Maintainer: also Change, Revoke, and Promote on each Mac row with a passed run. All ask twice.
 - The page starts nothing: freezing a Release and starting an Installed run stay in `lab`. The kernel gate is not shown.
 
@@ -605,7 +609,7 @@ Unchanged: `baseline`, `crashtest`, `run`, `logs`, `retry`, `gate`, `exclude`, `
 | Command | | What |
 |---|---|---|
 | `update` | added | `sudo lab-agent update`, at the Mac, takes the agent from the lab server; a bad signature, or an agent older than the one installed, is refused |
-| `setup` | changed | pre-checks first; finds and leaves another lab; arrives at Qualification with publishing off; asks once for the window; shows the terms (`--accept-terms <sha256>` keeps its meaning); the Tailscale flags go |
+| `setup` | changed | pre-checks first; finds and leaves another lab; arrives at Qualification with publishing off; asks nothing of the window and points to My Macs for it; shows the terms (`--accept-terms <sha256>` keeps its meaning); the Tailscale flags go |
 | `move` | changed | only for a change of the Lab address |
 | `leave` | changed | its message loses the Tailscale line |
 | `status` | changed | says when changed terms are waiting on My Macs |
@@ -735,7 +739,7 @@ The bar: the lab comes back from anything planned by itself, and from anything u
 
 - **Dead-man switch.** Every minute the mini fetches its own public URL through Cloudflare and, only on success, pings a check at healthchecks.io. Its alert goes to the owner directly (Signal to the owner's number, and email), not to "Agents". The nightly backup and the monthly drill each ping a check of their own.
 - **Second signal**: Cloudflare's tunnel-health alert by email.
-- **Alerts to "Agents"**, operations events only, from the lab's own Signal number (`signal-cli` on the mini, a separate number that is a member of the group, not linked to the owner's). Sent on change and on recovery, never repeated: back after a restart (with how long it was Dark); a service restarting repeatedly; the tunnel disconnected for over 5 minutes; Litestream failing; a backup older than 36 hours; a failed Restore drill; disk under 15 %; the Builder or the Out-of-band controller unhealthy; `container`'s server found stopped and started again (decision S11); the refused-credential limiter; the Alias no longer active; the people lines of section 3; each Deploy and Maintenance run. A weekly digest (pending updates, backup and drill dates) also proves the Signal path works.
+- **Alerts to "Agents"**, operations events only, from the lab's Signal sender (`signal-cli` on the mini): a linked device of the owner's own number, or a number of its own that is a member of the group. Linked, lines come from the owner's own number, so his own phone takes them as sent by him, with no notification, unless they are sent with notify_self (signal-cli's `notifySelf`). Sent on change and on recovery, never repeated: back after a restart (with how long it was Dark); a service restarting repeatedly; the tunnel disconnected for over 5 minutes; Litestream failing; a backup older than 36 hours; a failed Restore drill; disk under 15 %; the Builder or the Out-of-band controller unhealthy; `container`'s server found stopped and started again (decision S11); the refused-credential limiter; the Alias no longer active; a Lab-owned Mac starting to Need hands, and its end (a Volunteer's Mac is its Volunteer's Notice); the people lines of section 3; each Deploy and Maintenance run. A weekly digest (pending updates, backup and drill dates) also proves the Signal path works.
 - **Status page** at `/status`, served by the lab.
 
 ("Operations bar"; "The front door"; "Serving maclab.omarchy.org"; "Hardening inside the lab"; "Repository layout and release pipeline")
@@ -762,7 +766,7 @@ The bar: the lab comes back from anything planned by itself, and from anything u
 7. Install the Homebrew tools, copy them into the root-owned folder the daemons run from, and install the pinned `container`, by script; set `fullfsync`.
 8. On `pve2`: the backup guest (`rest-server --append-only`, an SFTP account for Litestream), a PBS job for it, a prune job, the nightly repository mirror.
 
-To sign up for or buy, by the owner: a number for the lab's Signal sender; a healthchecks.io account; one R2 bucket with a bucket-scoped token; a Bitwarden account; `tag:lab` and an auth key on Tailscale; payment details on Cloudflare for the Alias. No UPS.
+To sign up for or buy, by the owner: a number for the lab's Signal sender, unless it is linked to the owner's own number; a healthchecks.io account; one R2 bucket with a bucket-scoped token; a Bitwarden account; `tag:lab` and an auth key on Tailscale; payment details on Cloudflare for the Alias. No UPS.
 
 ("Operations bar"; "Repository layout and release pipeline"; "Serving maclab.omarchy.org")
 
@@ -792,7 +796,7 @@ All from "Terms and privacy" unless another ticket is named.
     | Everything else: the person's record, the People record, Lease, job and build records, the Mac's record, collected files, verdict history, reports | as long as the lab runs, or until the person is Forgotten or the report deleted |
 
     No separate period for the files a job collects from a Volunteer's Mac. No automatic expiry of people who stop signing in.
-11. **The M team and Maintainers accept no terms.** The privacy statement says what is kept about them.
+11. **The M team and Maintainers accept no terms.** The privacy statement says what is kept about them, and that a forgetting keeps the approver's handle in a Release frozen before 2026-11-16.
 12. **No further machinery.** No disappearing-message timer on either Signal group, no list of past forgettings, no second kind of terms change.
 
 ### Forgetting a person
@@ -814,7 +818,9 @@ The person asks on their own page or by mail; the request shows on People; a Mai
 | The lab's copy of an Audit log, Lease record lines, "who asked" on jobs and builds | Kept, the handle removed |
 | People record lines, about them or by them | Kept, the handle removed |
 | Verdict history entries; who froze a Release or an entry; who promoted | Kept with the time and the note, the handle removed |
+| Who approved a Release's manifest | From 2026-11-16 a manifest names each approver by account id and the pages show the handle: the lab stops showing them, and the frozen manifest keeps its bytes. The approver's handle in a Release frozen before 2026-11-16 is kept: the manifest is pinned, byte for byte |
 | A lab-published report's "who asked" | The handle removed |
+| A run's kernel error log that holds the handle | Kept as it was: a Promotion compares it byte for byte, so it is evidence |
 | The Blocked state | Kept: the account id, "Blocked", the date and who blocked. The handle and the typed reason are erased |
 | Lines already posted to the Lab group or "Agents" | Kept on the members' phones |
 | Backups | Kept until they age out, 6 months at most |
@@ -1009,8 +1015,8 @@ The Release candidate carries: streamed `lab exec`, numbered-part upload, its ow
 | 8a | The first Deploy: the owner runs it on the mini over SSH, naming the Release candidate; the signature is checked; it is verified on labd locally, not through the Front door, which does not answer yet. This is the check that a binary cross-compiled on Linux runs under launchd there (decision S3; "Repository layout and release pipeline") | owner |
 | 9 | The tunnel and the hostname come up with the final edge settings. The name first answers here, serving Preview | scripts |
 | 10 | The `omarchy-gpu` labd is stopped and disabled; its data directory is copied to the mini and upgraded in place; `m1pro` and `m1pro2` are Retired; `admin.token` is retired. The host stays on for Unlock | owner, then scripts |
-| 11 | Rehearsal import: the owner uploads one throwaway report to the old site, has the import command read Railway's Postgres, its address typed at a prompt, and write the three tables to a file on the mini (decision S9), derives the machine-id key inside Railway into the mini's secrets and the off-machine copy, and gives one Mac's Machine public key. The import runs; its three acceptance checks pass | owner, then scripts |
-| 12 | The Signal group "Omarchy Mac Lab" is created with the lab's sender number in it; labd is given its group id. Until then events are recorded and not posted | owner |
+| 11 | Rehearsal import: the owner uploads one throwaway report to the old site, looks at the certificate chain Railway's Postgres presents, has the import command read Railway's Postgres, its address and the CA file typed at prompts, and write the three tables to a file on the mini (decision S9), derives the machine-id key inside Railway into the mini's secrets and the off-machine copy, and gives one Mac's Machine public key. The import runs; its three acceptance checks pass | owner, then scripts |
+| 12 | The Signal group "Omarchy Mac Lab" is created with the lab's sender in it (the owner himself when the sender is linked to his number); labd is given its group id. Until then events are recorded and not posted | owner |
 | 13 | The pinned `--rid` tool and the one Out-of-band controller are installed. A Thunderbolt-capable cable on each rear port in use; the M2 Max's cable swapped once with the M1 Pro's to tell cable from kernel | scripts; owner for cables |
 | 13a | If the owner's router allows it, the Lab-owned Macs go on a network of their own before they Join ("Hardening inside the lab") | owner |
 | 14 | The heads-up line goes to the M team's Signal group; the owner ends `m1pro` in Chris's lab with `lab remove`; the M1 Pro Joins as `m1-pro` by the Maintainer's enroll path and is accepted | owner |
@@ -1050,7 +1056,7 @@ All green, with dated output committed under `docs/acceptance/`:
    - 4: Sighting: each Mac sighted on each port after a move; two cables swapped and the resets follow the Macs; how the plug count and connection id move across a reset, a shutdown and a cable pull; the product id readable on a hung and a powered-off Mac.
    - 5: a truly hung M1 Pro (crashed, watchdog off) brought back from the mini.
    - 6: the M2 Max with auto-unlock: three Hard resets, back with no passphrase, timed.
-   - 7: the controller as a root LaunchDaemon: after an Unlock and after a planned restart, Sightings rebuild unaided.
+   - 7: the controller as a root LaunchDaemon: after labd restarts alone, after an Unlock and after a planned restart, every Sighting is kept.
    - 8: refusals: a Mac with no Sighting, and the controller stopped (status page and "Agents").
 3. **Operations**: one Restore drill, the off-site database copy and the PBS restore included; the Dead-man switch seen to fire and clear; an Unlock from outside the house, through `omarchy-gpu`; the planned-restart rehearsal; the grid-switch test. ("Operations bar")
 4. **The rehearsal import** and its three acceptance checks (step 11), read signed in.
@@ -1083,7 +1089,7 @@ Ready waits for both Macs. **Accepted** in Preview means: checked in, baseline p
 | 18 | The Front door's fourteen tests are run again | scripts | Ready |
 | 19 | `omarchy-m-testing.org`'s DNS moves to Cloudflare: the zone is added to the same account with the same records, still pointing at Railway, and the nameservers are changed at Porkbun. DNSSEC is turned on once it is active | owner | step 18 green. The Alias rehearsal needs this name still on Porkbun's nameservers, so it has run before this step |
 | 20 | **Freeze.** Railway is disconnected from the old repository and the `site` service is stopped. `Postgres` stays up | owner | Cloudflare shows the old zone active and its certificate issued |
-| 21 | Final dump: the import command reads Railway's Postgres, its address typed at a prompt, and writes the three tables to a file on the mini (decision S9) | owner | step 20 |
+| 21 | Final dump: the import command reads Railway's Postgres, its address and the rehearsal's CA file typed at prompts, and writes the three tables to a file on the mini (decision S9) | owner | step 20 |
 | 22 | The import fills an emptied `reports.db`. Its three acceptance checks pass and the row counts match the dump. Reports are spot-checked signed in | scripts, owner looks | step 21 |
 | 23 | The OAuth app is renamed and its callback moved to the Lab address; its client secret goes into the mini's secrets; the lab switches from the development app to it | owner | step 22 |
 | 24 | The owner signs in and marks the 14 M team members on People | owner | step 23 |
@@ -1158,11 +1164,11 @@ Everything a ticket marked "Not verified", "not tested" or left as a test, with 
 | That no cookie reaches a signed-out visitor | Terms and privacy | Preview, step 17b, recorded |
 | The `--rid` tool: read, not built or run | Out-of-band wiring | Ready 2, OOB 1 |
 | Two resets at the same moment | macvdmtool port selection on the mini | Ready 2, OOB 3 |
-| That the plug count and connection id tell an unplug from a restart | Out-of-band wiring | Ready 2, OOB 4; if they cannot, the controller watches the ports continuously |
+| That a cable pulled moves the plug count (a restart moves it too, seen 2026-11-16: the lab tells the two apart by the Mac's boot id) | Out-of-band wiring | Ready 2, OOB 4; if a pull does not move it, the controller watches the ports continuously |
 | Recovery of a truly hung Mac | Mac mini bring-up; macvdmtool port selection on the mini | Ready 2, OOB 5 |
 | The M2 Max's timed return after a Hard reset | macvdmtool port selection on the mini | Ready 2, OOB 6 |
 | `oobd` itself on the mini, on any port | Mac mini bring-up | Ready 2, OOB 1 and 7 |
-| Why the M2 Max shows no Thunderbolt link | Out-of-band wiring | Preview, step 13 |
+| Why the M2 Max shows no Thunderbolt link (it had one on 2026-11-16 until 12:40; at every boot since, its link training times out) | Out-of-band wiring | Preview, step 13 |
 | Three Macs cabled at once | Out-of-band wiring | when a third Lab-owned Mac arrives |
 | A hang inside m1n1 or U-Boot; the mini's front ports | Out-of-band wiring | accepted as unknown |
 | Why the M2 Max came up on a lab kernel after its reset | macvdmtool port selection on the mini | not investigated |

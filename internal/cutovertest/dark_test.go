@@ -134,6 +134,7 @@ echo "back $(date +%s)"
 // The recordings write down what the edge did, whichever it was: here it
 // goes on serving the copy it has while the tunnel, then labd, is stopped.
 func TestTheDarkRecordingsWriteDownAnEdgeThatServesItsCopy(t *testing.T) {
+	added := recordsAdded(t, "*dark-recordings*")
 	e := newDarkEdge(t, true)
 	out, code, record := e.record("")
 	if code != 0 {
@@ -168,7 +169,7 @@ func TestTheDarkRecordingsWriteDownAnEdgeThatServesItsCopy(t *testing.T) {
 	if calls != want {
 		t.Errorf("the mini was asked:\n%s", calls)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*dark-recordings*")); len(entries) != 0 {
+	if entries := added(); len(entries) != 0 {
 		t.Errorf("the run left a record in docs/acceptance: %v", entries)
 	}
 }
@@ -223,6 +224,7 @@ func TestTheDarkRecordingsFailWhenTheMiniDoesNotHold(t *testing.T) {
 // Against a labd on this machine the recordings run whole, and show labd's
 // own side: a signed-out page load sets no cookie.
 func TestTheDarkRecordingsRunAgainstALocalLabd(t *testing.T) {
+	added := recordsAdded(t, "*dark-recordings*")
 	out, code := run(t, nil, "", cutover(t, "dark-recordings"), "--local", "--bin", bins(t))
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
@@ -237,7 +239,7 @@ func TestTheDarkRecordingsRunAgainstALocalLabd(t *testing.T) {
 			t.Errorf("the local recording does not say %q:\n%s", want, out)
 		}
 	}
-	if entries, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*dark-recordings*")); len(entries) != 0 {
+	if entries := added(); len(entries) != 0 {
 		t.Errorf("a local run left a record in docs/acceptance: %v", entries)
 	}
 }
