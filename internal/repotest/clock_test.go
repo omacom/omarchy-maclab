@@ -13,7 +13,7 @@ import (
 // allowed only where it is listed here, with why.
 var labdWallWaits = map[string]int{
 	"gc.go":      1, // hourly artifact GC: no test waits for it
-	"leaving.go": 1, // 20 ms poll; its deadline is on the lab clock
+	"leaving.go": 1, // a request's 20 ms poll on another one's leaving, bounded in wall time
 }
 
 var wallWait = regexp.MustCompile(`\btime\.(Sleep|After|AfterFunc|NewTimer|NewTicker|Tick)\(`)
