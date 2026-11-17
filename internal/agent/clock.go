@@ -29,7 +29,7 @@ func (wallClock) Now() time.Time                         { return time.Now() }
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 func (wallClock) Sleep(d time.Duration)                  { time.Sleep(d) }
 func (wallClock) NewTicker(d time.Duration) Ticker       { return wallTicker{time.NewTicker(d)} }
-func (wallClock) AfterFunc(d time.Duration, f func())   { time.AfterFunc(d, f) }
+func (wallClock) AfterFunc(d time.Duration, f func())    { time.AfterFunc(d, f) }
 
 type wallTicker struct{ t *time.Ticker }
 
