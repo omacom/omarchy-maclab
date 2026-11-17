@@ -373,6 +373,7 @@ func TestLeaseOnALabOwnedMacKeepsItsTimeToLive(t *testing.T) {
 }
 
 func TestPauseDoesNothingToALabOwnedMacsJob(t *testing.T) {
+	wallClock(t)
 	l := newLab(t, false)
 	l.baseline()
 	l.sim.SetTestLength(3 * time.Second)

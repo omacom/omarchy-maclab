@@ -33,6 +33,7 @@ func execLines(t *testing.T, s *Server, mac string) []api.ExecEvent {
 }
 
 func TestNobodyRunsLabExecWithoutTheirOwnLease(t *testing.T) {
+	wallClock(t)
 	l := newLab(t, true)
 	l.baseline()
 	grace := l.member("grace")

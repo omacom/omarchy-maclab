@@ -203,6 +203,7 @@ func (l *lab) noLease(why string) {
 // Released by the holder: the running job finishes, none is left to run,
 // and the holder's sessions are cut.
 func TestAReleasedLeaseLetsItsJobFinishAndCutsTheRest(t *testing.T) {
+	wallClock(t)
 	l := newEndsLab(t)
 	taken := l.leaseAs(l.grace, 0)
 	if left := time.Until(taken.Expires); left < 3*time.Hour+50*time.Minute || left > 4*time.Hour {
@@ -599,6 +600,7 @@ func TestALeaseItsWindowEndedLeavesItsHoldersJobsQueued(t *testing.T) {
 // An M team member's job starts only under their own Lease: one queued by
 // a Maintainer who is no Maintainer by the time the Mac is free is not run.
 func TestAJobStartsOnlyUnderItsPersonsOwnLeaseOnceTheyAreNoMaintainer(t *testing.T) {
+	wallClock(t)
 	l := newEndsLab(t)
 	joshua := l.addMaintainer(harnessToken, "joshua")
 	busy := l.longJobAs(testMaintainer{Name: harnessMaintainer, Token: harnessToken}, "7.2-busy", 3*time.Second)

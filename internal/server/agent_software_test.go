@@ -525,6 +525,7 @@ func TestADisconnectedUpdateHoldsTheMacAndRestartsNothing(t *testing.T) {
 // The idle clean-up rewrites boot entries as root: it is not sent while lab
 // agent-update holds the Mac, whose restart could cut it.
 func TestAnIdleCleanUpIsNotSentWhileTheAgentIsUpdated(t *testing.T) {
+	wallClock(t)
 	k := sshsigtest.NewKey(t)
 	handed := signedAgent(t, k, "0.11.0")
 	fetching, fetch := make(chan struct{}), make(chan struct{})

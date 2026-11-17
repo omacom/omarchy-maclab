@@ -99,19 +99,33 @@ func newLab(t *testing.T, withOOB bool) *lab { return newLabNamed(t, withOOB, "s
 // earlier test's labd can still be reading them while the next test starts.
 var testKnobs sync.Once
 
+// labClock is the clock a lab runs on unless a test gives it a fake one: the
+// wall clock sped up LAB_TEST_CLOCK_SCALE times (default 10), so grace
+// periods, boot timeouts and heartbeats pass that much sooner.
+func labClock() agent.Clock {
+	k, err := strconv.ParseFloat(os.Getenv("LAB_TEST_CLOCK_SCALE"), 64)
+	if err != nil || k <= 0 {
+		k = 10
+	}
+	if k == 1 {
+		return agent.WallClock
+	}
+	return agent.NewScaledClock(k)
+}
+
 func newLabNamed(t *testing.T, withOOB bool, name string) *lab {
 	return newLabWith(t, labConfig{oob: withOOB, name: name})
 }
 
 // labConfig shapes a lab; the zero value is one Lab-owned Mac named sim-mac
-// on the wall clock, in a lab with no Out-of-band controller.
+// on labClock, in a lab with no Out-of-band controller.
 type labConfig struct {
 	// oob gives the lab the mini's Out-of-band controller, and cables the
 	// Mac to its right port, where it shows its name: it is sighted from
 	// the start.
 	oob       bool
 	name      string
-	clock     *agent.FakeClock // nil runs labd and lab-agent on the wall clock
+	clock     *agent.FakeClock // nil runs labd, lab-agent and the sim on labClock
 	volunteer bool             // the Mac is a Volunteer's; drive its commands with l.volunteer
 	// lender is the account id of the person who lends the Mac, a
 	// Volunteer's, as a Join command made on "Lend a Mac" has it: the lab
@@ -141,7 +155,7 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	if name == "" {
 		name = "sim-mac"
 	}
-	var clock agent.Clock = agent.WallClock
+	var clock agent.Clock = labClock()
 	if c.clock != nil {
 		clock = c.clock
 	}
@@ -156,6 +170,7 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	l := &lab{t: t, cancel: cancel, name: name, ctx: ctx, logs: &logBuf{}}
 	sim := agent.NewSim(t.TempDir())
 	sim.RebootDelay = 300 * time.Millisecond
+	sim.Clock = clock
 	l.sim = sim
 	l.oob = newFakeMini(t)
 	var logw io.Writer = l.logs
@@ -470,6 +485,7 @@ func TestHangRecoveredByHardReset(t *testing.T) {
 // for until its boot timeout and the Mac's own deadline have passed, then
 // Hard reset.
 func TestASilentHangIsHardResetOnlyAfterItsBootTimeout(t *testing.T) {
+	wallClock(t)
 	l := newLab(t, true)
 	l.baseline()
 	start := time.Now()
@@ -943,6 +959,7 @@ func TestSuspendDuringTestIsNotACrash(t *testing.T) {
 // one run (the desktop session can take that long to appear): a GUI test may
 // outlast another test's wait.
 func TestGUITestWait(t *testing.T) {
+	wallClock(t)
 	l := newLab(t, true)
 	l.baseline()
 	l.s.cfg.TestGrace, l.s.cfg.GUIGrace = time.Second, 3*time.Second
@@ -1904,3 +1921,7 @@ func TestResetRespectsLease(t *testing.T) {
 		t.Fatalf("reset by the holder: %s", r.Status)
 	}
 }
+
+// wallClock runs the test's labs on the wall clock: the test times what
+// labd does against its own sleeps and deadlines.
+func wallClock(t *testing.T) { t.Setenv("LAB_TEST_CLOCK_SCALE", "1") }

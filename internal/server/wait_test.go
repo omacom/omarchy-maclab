@@ -102,6 +102,7 @@ func TestAJobWaitAnswersWhenTheJobSaysMore(t *testing.T) {
 
 // Cutting a waiter does nothing to its job.
 func TestCuttingAWaiterLeavesItsJobUntouched(t *testing.T) {
+	wallClock(t)
 	held := make(chan struct{}, 1)
 	l := newLabWith(t, labConfig{wrap: func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

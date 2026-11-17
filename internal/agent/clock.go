@@ -136,3 +136,64 @@ func (t *fakeTicker) Stop() {
 		}
 	}
 }
+
+// ScaledClock is the wall clock run k times faster, for tests whose waits
+// are timings, not moments: it never needs advancing, so nothing stalls.
+type ScaledClock struct {
+	k     float64
+	start time.Time // wall time when the clock was made
+	from  time.Time // its time then
+}
+
+func NewScaledClock(k float64) *ScaledClock {
+	now := time.Now()
+	return &ScaledClock{k: k, start: now, from: now}
+}
+
+func (c *ScaledClock) Now() time.Time {
+	return c.from.Add(time.Duration(float64(time.Since(c.start)) * c.k))
+}
+
+// Real is how long d on this clock takes on the wall clock.
+func (c *ScaledClock) Real(d time.Duration) time.Duration {
+	return time.Duration(float64(d) / c.k)
+}
+
+func (c *ScaledClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	time.AfterFunc(c.Real(d), func() { ch <- c.Now() })
+	return ch
+}
+
+func (c *ScaledClock) Sleep(d time.Duration) { time.Sleep(c.Real(d)) }
+
+func (c *ScaledClock) AfterFunc(d time.Duration, f func()) { time.AfterFunc(c.Real(d), f) }
+
+func (c *ScaledClock) NewTicker(d time.Duration) Ticker {
+	t := &scaledTicker{c: make(chan time.Time, 1), stop: make(chan struct{})}
+	real := time.NewTicker(max(c.Real(d), time.Microsecond))
+	go func() {
+		defer real.Stop()
+		for {
+			select {
+			case <-t.stop:
+				return
+			case <-real.C:
+				select {
+				case t.c <- c.Now():
+				default:
+				}
+			}
+		}
+	}()
+	return t
+}
+
+type scaledTicker struct {
+	c    chan time.Time
+	stop chan struct{}
+	once sync.Once
+}
+
+func (t *scaledTicker) C() <-chan time.Time { return t.c }
+func (t *scaledTicker) Stop()               { t.once.Do(func() { close(t.stop) }) }

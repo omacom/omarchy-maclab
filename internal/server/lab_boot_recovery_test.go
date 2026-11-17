@@ -248,6 +248,7 @@ func withoutLabBootAdditions(cmdline string) string {
 // With no Sighting the ladder skips the Hard-reset rung: the Mac's own
 // watchdog has its time, then the Mac Needs hands, with the reason shown.
 func TestWithNoSightingTheLadderSkipsTheHardResetRung(t *testing.T) {
+	wallClock(t)
 	for _, c := range []struct {
 		name string
 		// cable changes what the mini's right port holds before the job.
@@ -308,6 +309,7 @@ func TestWithNoSightingTheLadderSkipsTheHardResetRung(t *testing.T) {
 // with no Sighting and with the controller stopped, and for none while the
 // Mac is sighted, when the Hard reset is the next rung.
 func TestTheMacsOwnWatchdogGetsItsTimeWhereNoHardResetReaches(t *testing.T) {
+	wallClock(t)
 	l := sightLab(t, labConfig{})
 	l.baseline()
 	go l.sim.Quiet(time.Minute)

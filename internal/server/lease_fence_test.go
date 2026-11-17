@@ -104,6 +104,7 @@ func TestAnMTeamMemberNeedsTheirOwnLeaseForEachFencedThing(t *testing.T) {
 // An M team member cancels only their own jobs. A Maintainer cancels any,
 // and the job says who did.
 func TestAnMTeamMemberCancelsOnlyTheirOwnJobs(t *testing.T) {
+	wallClock(t)
 	l := newLab(t, true)
 	l.baseline()
 	grace, linus := l.member("grace"), l.member("linus")
