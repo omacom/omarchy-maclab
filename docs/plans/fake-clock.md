@@ -65,15 +65,17 @@ Non-test code that bypasses the seam:
 
 | Ticket | PR | State |
 |---|---|---|
-| 1 labd waits on its clock | #15 | open, CI green |
-| 2 sim waits on a clock | #16 (on #15) | open, CI green |
-| 3 test lab on a scaled clock | #17 (on #16) | open |
-| 4 drop the server shards | | dropped: the package's serial time is still 1248 s, so the shards still pay |
-| 5 cutover runbook waits | | dropped: `cutovertest`'s time is the front door's wire timings, which must stay real, and the builder gate's waits, already set from the environment; the out-of-band waits follow labd, which ticket 7 speeds up |
-| 6 mini scripts' waits | #19 | open |
-| 7 scaled labd in the script suites | #18 (on #17) | open |
-| 8 agent package | | dropped: its slow tests time real child processes (process-group kill, SIGTERM grace, hung sync), which stay on the wall clock; ~20 s at most |
-| 9 tests' own waits | | not started |
+| 1 labd waits on its clock | [#15](https://github.com/omacom/omarchy-maclab/pull/15) | merged |
+| 2 sim waits on a clock | [#16](https://github.com/omacom/omarchy-maclab/pull/16) | merged |
+| 3 test lab on a scaled clock | [#17](https://github.com/omacom/omarchy-maclab/pull/17) | merged |
+| 4 drop the server shards | | dropped: the package's serial time is still ~1250 s, so the shards still pay |
+| 5 cutover runbook waits | | dropped: `cutovertest`'s time is the front door's wire timings, which stay real, and the builder gate's waits, already set from the environment; the out-of-band waits follow labd, which ticket 7 speeds up |
+| 6 mini scripts' waits | [#19](https://github.com/omacom/omarchy-maclab/pull/19) | merged |
+| 7 scaled labd in the script suites | [#18](https://github.com/omacom/omarchy-maclab/pull/18) | merged |
+| 8 agent package | | dropped: its slow tests time real child processes, which stay on the wall clock; ~20 s at most |
+| 9 tests' own waits | | not started: the next real gain |
+
+Measured. On the owner's Mac: `internal/server` 187 s → ~117 s (serial 1911 s → 1248 s); `outofband` 374 s → 122 s; `carrytest` 94 s → 71 s. On CI the Go job barely moved (macOS ~8 min → 7–8 min, Ubuntu 12–16 min → 11–16 min): the scaled clock leaves out labs with the controller, 24 wall-clock tests and every test-side sleep, which are most of what CI waits for, and CI's run-to-run noise is as large as the gain. Ticket 9 is where CI time comes down.
 
 ## Tickets
 
