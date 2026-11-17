@@ -610,8 +610,16 @@ func TestAPauseFromTheSiteEndsALease(t *testing.T) {
 	if lease := l.leaseNow(); lease != nil {
 		t.Fatalf("the Lease outlived the Pause: %+v", lease)
 	}
-	if got := strings.Join(l.leaseEvents(), "\n"); !strings.Contains(got, "its Volunteer Paused the Mac from the site") {
-		t.Errorf("the Lease record does not say why the Lease ended:\n%s", got)
+	// The keeper may be the one that ends the capped Lease, and it writes the
+	// record's line once the Lease is gone from the Mac.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		got := strings.Join(l.leaseEvents(), "\n")
+		if strings.Contains(got, "its Volunteer Paused the Mac from the site") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Lease record does not say why the Lease ended:\n%s", got)
+		}
 	}
 	if r, body := l.post("/api/devices/"+l.name+"/lease", api.LeaseRequest{Holder: "connor", TTLSec: 600}); r.StatusCode == 200 {
 		t.Errorf("a Lease was taken on a Paused Mac: %s", body)

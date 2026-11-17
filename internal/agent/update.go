@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -208,27 +209,60 @@ func updateCmd(ctx context.Context, cfg *Config, sys System, args []string, out 
 	return nil
 }
 
+// UpdateArgs is the lab's order to update. RestartWithinMS, when set, is how
+// long after its result first went to labd the new lab-agent may still be
+// started: labd holds the Mac for a while after it has the result, and an
+// answer that comes after that must not restart an agent under whatever
+// labd has given the Mac since.
+type UpdateArgs struct {
+	RestartWithinMS int64 `json:"restart_within_ms,omitempty"`
+}
+
 // updateSelf is the lab's order to update, on a Lab-owned Mac that is idle.
-// The new agent starts once labd has heard the result.
+// The new agent starts once labd has heard the result, within the time labd
+// gave; one labd gave up waiting for, or heard too late, is installed and
+// not started.
 func (a *Agent) updateSelf(ctx context.Context, c api.Command) (any, *afterAck, error) {
+	var args UpdateArgs
+	_ = json.Unmarshal(c.Args, &args)
 	a.mu.Lock()
-	job := ""
+	job, cleaning := "", false
 	for id, r := range a.running {
 		if id != c.ID && r.c.JobID != "" {
 			job = r.c.JobID
+		}
+		if id != c.ID && r.c.Kind == api.CmdCleanup {
+			cleaning = true
 		}
 	}
 	a.mu.Unlock()
 	if job != "" {
 		return nil, nil, fmt.Errorf("%s is not idle: job %s runs on it. %s", a.cfg.Name, job, nothingChanged)
 	}
+	if cleaning {
+		// The restart would cut it as it rewrites the boot entries.
+		return nil, nil, fmt.Errorf("%s is not idle: the lab's clean-up of leftover lab kernels runs on it. %s", a.cfg.Name, nothingChanged)
+	}
 	res, err := update(ctx, a.cfg, a.sys)
 	if err != nil || !res.Changed {
 		return res, nil, err
 	}
-	return res, &afterAck{run: func() {
+	clock, within := a.cfg.clock(), time.Duration(args.RestartWithinMS)*time.Millisecond
+	var sent time.Time
+	// labd no longer holds the Mac for it: a restart now could cut whatever
+	// it has started since. The new one starts with the next.
+	notNow := func() { a.log.Printf("lab-agent %s is installed, and starts when lab-agent next restarts", res.To) }
+	return res, &afterAck{check: func() error {
+		sent = clock.Now()
+		return nil
+	}, run: func() {
+		if late := clock.Now().Sub(sent); within > 0 && late > within {
+			a.log.Printf("labd answered the update %s after its result went, past the %s it gave", late.Round(time.Millisecond), within)
+			notNow()
+			return
+		}
 		if err := a.cfg.self().Restart(); err != nil {
 			a.log.Printf("the new lab-agent is installed but was not started: %v", err)
 		}
-	}}, nil
+	}, dropped: notNow}, nil
 }

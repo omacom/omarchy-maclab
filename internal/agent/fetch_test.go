@@ -184,6 +184,9 @@ func TestFetchGivesUpAfterEightRetriesWithGrowingBackOff(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- a.fetch(t.Context(), shaOf(content), dst) }()
 
+	// The clock moves only to the back-off fetch waits on: moved on by itself,
+	// it ran on while a loaded machine was slow to make the request after one,
+	// and the gaps grew by that.
 	var err error
 	giveUp := time.After(30 * time.Second)
 loop:
@@ -194,7 +197,9 @@ loop:
 		case <-giveUp:
 			t.Fatal("fetch never gave up")
 		case <-time.After(5 * time.Millisecond):
-			clock.Advance(time.Second)
+			if at, ok := clock.Next(); ok {
+				clock.Advance(at.Sub(clock.Now()))
+			}
 		}
 	}
 	if err == nil {

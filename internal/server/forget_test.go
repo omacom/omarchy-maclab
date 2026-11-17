@@ -310,3 +310,87 @@ func TestTheLadderStopsWhenTheMacIsRetired(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	l.wantResets("the Mac was retired while the ladder waited")
 }
+
+// waitingAtTheController waits until a Hard reset of v waits its turn at
+// the Out-of-band controller.
+func waitingAtTheController(t *testing.T, v *dev) {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		v.mu.Lock()
+		waiting := v.oobCallCancel != nil
+		v.mu.Unlock()
+		if waiting {
+			return
+		}
+		if time.Now().After(end) {
+			t.Fatal("the Hard reset never reached the controller")
+		}
+	}
+}
+
+// A person's Hard reset that set out after the Mac's forget was checked
+// still keeps the Mac from being retired: the reset would go to a retired
+// Mac.
+func TestAMacIsNotRetiredWhileAPersonsHardResetIsOnItsWay(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	probing, release := l.oob.holdProbes(t)
+	probed := make(chan error, 1)
+	go func() { _, err := l.oob.client.Probe(context.Background(), portLeft); probed <- err }()
+	<-probing
+	answer := make(chan string, 1)
+	go func() { r, body := l.resetAs(harnessToken, l.name, ""); answer <- r.Status + " " + body }()
+	v := l.s.dev(l.name)
+	waitingAtTheController(t, v)
+
+	if err := l.s.endEnrollment(v, leaving{how: leftByMaintainer, by: Person{Handle: harnessMaintainer}}); err == nil {
+		t.Error("the Mac was retired while a Hard reset was on its way to it")
+	}
+	if l.s.dev(l.name) != v {
+		t.Error("the Mac is gone from the fleet")
+	}
+	release()
+	if err := <-probed; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-answer; !strings.Contains(got, "Hard reset sent to "+l.name) {
+		t.Fatalf("the reset that waited: %s", got)
+	}
+}
+
+// The recovery ladder's Hard reset waiting at the controller when the Mac
+// is retired is called off: it never goes out to a retired Mac, and no
+// other one sets out after.
+func TestRetiringAMacCallsOffTheLaddersResetAtTheController(t *testing.T) {
+	l := sightLab(t, labConfig{})
+	l.baseline()
+	probing, release := l.oob.holdProbes(t)
+	probed := make(chan error, 1)
+	go func() { _, err := l.oob.client.Probe(context.Background(), portLeft); probed <- err }()
+	<-probing
+	v := l.s.dev(l.name)
+	reset := make(chan error, 1)
+	go func() { _, err := v.resetOOB(context.Background()); reset <- err }()
+	waitingAtTheController(t, v)
+
+	if err := l.s.endEnrollment(v, leaving{how: leftByMaintainer, by: Person{Handle: harnessMaintainer}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-reset:
+		if err == nil {
+			t.Error("the ladder's reset of a retired Mac went out")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the ladder's reset still waits at the controller after the Mac was retired")
+	}
+	release()
+	if err := <-probed; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.resetOOB(context.Background()); err == nil {
+		t.Error("a Hard reset of a retired Mac was sent")
+	}
+	time.Sleep(300 * time.Millisecond)
+	l.wantResets("the Mac was retired while the ladder's reset waited")
+}

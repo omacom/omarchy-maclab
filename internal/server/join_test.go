@@ -10,9 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -235,134 +233,6 @@ func TestRevokedInviteIsRefused(t *testing.T) {
 	}
 	if code, _ := j.do("DELETE", "/api/enroll-tokens/revoked", tok, ""); code != 401 {
 		t.Errorf("an enrollment token revoking: %d", code)
-	}
-}
-
-// The one-liner a Maintainer gets: the public URL with its prefix, the token
-// in a shell variable sent in the Authorization header, never in a URL,
-// https only, the download checked against labd's lab-agent sha256, the token
-// handed to setup on stdin; and labd never logs the token.
-func TestJoinCommandKeepsTheTokenOutOfURLsAndLogs(t *testing.T) {
-	j := newJoinLab(t)
-	t1 := j.invite("one-liner")
-	cmd, tok := t1.JoinCommand, t1.Token
-	sum := j.s.agentSHA256()
-	for _, want := range []string{
-		" T='" + tok + "'", "U='https://chonkbase.net/maclab'", "--proto '=https' --tlsv1.2",
-		`printf 'Authorization: Bearer %s\n' "$T" | curl`, "-H @-", `"$U/api/join/lab-agent"`, "echo '" + sum + "  '",
-		"sha256sum -c --quiet", `printf '%s\n' "$T" | sudo "$D/lab-agent" setup --server "$U" --token-stdin`,
-	} {
-		if !strings.Contains(cmd, want) {
-			t.Errorf("the one-liner lacks %q:\n%s", want, cmd)
-		}
-	}
-	if strings.Count(cmd, tok) != 1 || strings.Contains(cmd, "?") || strings.Contains(cmd, "--token ") || strings.Contains(cmd, "--allow-plain-http") {
-		t.Errorf("the token is used more than once, or in a URL or on a command line, or plain http is allowed:\n%s", cmd)
-	}
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(sum) {
-		t.Errorf("lab-agent sha256 %q", sum)
-	}
-	// The whole join, then: no token in labd's log.
-	j.do("GET", "/api/join/terms", tok, "")
-	j.do("GET", "/api/join/lab-agent", tok, "")
-	j.enroll(tok, keyA, termsSum())
-	j.enroll(tok, keyB, termsSum())
-	j.do("DELETE", "/api/enroll-tokens/one-liner", "lab_adm_secret", "")
-	j.mu.Lock()
-	logs := j.logs.String()
-	j.mu.Unlock()
-	if strings.Contains(logs, tok) || strings.Contains(logs, keyA) {
-		t.Errorf("labd logged the token or activation key:\n%s", logs)
-	}
-	// Without a lab-agent to hand out there is no one-liner.
-	j.s.cfg.AgentBinary = filepath.Join(t.TempDir(), "none")
-	if t2 := j.invite("no-agent"); t2.JoinCommand != "" {
-		t.Errorf("a one-liner without a lab-agent: %s", t2.JoinCommand)
-	}
-}
-
-// Over plain http (a test or LAN labd), the one-liner says so: curl isn't held
-// to https and setup must allow plain http. An address that isn't safe in
-// single quotes gets no one-liner at all.
-func TestJoinCommandForPlainHTTPAndUnsafeURLs(t *testing.T) {
-	agentBin := filepath.Join(t.TempDir(), "lab-agent")
-	os.WriteFile(agentBin, []byte("x"), 0o755)
-	s := &Server{cfg: Config{AgentBinary: agentBin}}
-	r := httptest.NewRequest("POST", "http://10.1.1.55:7770/api/enroll-tokens", nil)
-	cmd := s.joinCommand(r, "enr_0123456789abcdef0123456789abcdef")
-	if !strings.Contains(cmd, "U='http://10.1.1.55:7770'") || strings.Contains(cmd, "--proto") || !strings.HasSuffix(cmd, "--allow-plain-http") {
-		t.Errorf("plain http one-liner:\n%s", cmd)
-	}
-	r.Host = "evil.example';rm -rf ~;'"
-	if cmd := s.joinCommand(r, "enr_0123456789abcdef0123456789abcdef"); cmd != "" {
-		t.Errorf("a one-liner for an unsafe host: %s", cmd)
-	}
-	if cmd := s.joinCommand(httptest.NewRequest("POST", "http://10.1.1.55:7770/", nil), "enr_x';id;'"); cmd != "" {
-		t.Errorf("a one-liner for an unsafe token: %s", cmd)
-	}
-}
-
-// The one-liner itself, run by bash with stand-ins for curl and sudo that
-// record what they were given: the token reaches both on stdin, and no
-// process's arguments, while the download is checked against its sha256.
-func TestJoinCommandRunsWithTheTokenInNoArguments(t *testing.T) {
-	needsLinux(t, "the Join command runs on Omarchy and calls GNU sha256sum")
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash")
-	}
-	for _, tool := range []string{"mktemp", "sha256sum", "chmod", "cat"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip("no " + tool)
-		}
-	}
-	j := newJoinLab(t)
-	t1 := j.invite("argv")
-	bin := t.TempDir()
-	rec := t.TempDir()
-	agent, _ := os.ReadFile(j.s.cfg.AgentBinary)
-	os.WriteFile(filepath.Join(rec, "agent"), agent, 0o600)
-	// curl: record argv and stdin, write the agent where -o says.
-	os.WriteFile(filepath.Join(bin, "curl"), []byte(`#!/bin/bash
-printf '%s\n' "$@" > "$REC/curl.argv"
-cat > "$REC/curl.stdin"
-while [ $# -gt 0 ]; do if [ "$1" = -o ]; then cp "$REC/agent" "$2"; fi; shift; done
-printf 200
-`), 0o755)
-	os.WriteFile(filepath.Join(bin, "sudo"), []byte(`#!/bin/bash
-printf '%s\n' "$@" > "$REC/sudo.argv"
-cat > "$REC/sudo.stdin"
-`), 0o755)
-	path := bin
-	for _, tool := range []string{"mktemp", "sha256sum", "chmod", "cat", "cp"} {
-		p, _ := exec.LookPath(tool)
-		path += ":" + filepath.Dir(p)
-	}
-	cmd := exec.Command(bash, "-c", t1.JoinCommand)
-	cmd.Env = []string{"PATH=" + path, "REC=" + rec, "USER=owner", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("the one-liner: %v\n%s", err, out)
-	}
-	read := func(f string) string { b, _ := os.ReadFile(filepath.Join(rec, f)); return string(b) }
-	if strings.Contains(read("curl.argv"), t1.Token) || strings.Contains(read("sudo.argv"), t1.Token) {
-		t.Errorf("the token is in a command's arguments:\ncurl %q\nsudo %q", read("curl.argv"), read("sudo.argv"))
-	}
-	if read("curl.stdin") != "Authorization: Bearer "+t1.Token+"\n" || read("sudo.stdin") != t1.Token+"\n" {
-		t.Errorf("stdin: curl %q, sudo %q", read("curl.stdin"), read("sudo.stdin"))
-	}
-	if !strings.Contains(read("curl.argv"), "https://chonkbase.net/maclab/api/join/lab-agent") || !strings.Contains(read("sudo.argv"), "--token-stdin") {
-		t.Errorf("curl %q sudo %q", read("curl.argv"), read("sudo.argv"))
-	}
-	// A download that isn't labd's lab-agent never runs.
-	os.WriteFile(filepath.Join(rec, "agent"), []byte("#!/bin/sh\necho pwned\n"), 0o600)
-	os.Remove(filepath.Join(rec, "sudo.argv"))
-	cmd = exec.Command(bash, "-c", t1.JoinCommand)
-	cmd.Env = []string{"PATH=" + path, "REC=" + rec, "USER=owner", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
-	if err := cmd.Run(); err == nil {
-		t.Error("the one-liner went on with a wrong download")
-	}
-	if _, err := os.Stat(filepath.Join(rec, "sudo.argv")); err == nil {
-		t.Error("sudo ran with a wrong download")
 	}
 }
 

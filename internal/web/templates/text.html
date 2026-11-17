@@ -2,5 +2,5 @@
 <h2 class="card-title">{{.Title}}</h2>
 <pre class="legal">{{.Data.Body}}</pre>
 </section>
-<p class="legal-version">Dated <time datetime="{{.Data.Date}}">{{.Data.Date}}</time>. sha256 of this text: <code>{{.Data.SHA256}}</code>.</p>
+<p class="legal-version">Dated <time datetime="{{.Data.Date}}">{{.Data.Date}}</time>. sha256 of this text: {{template "copy" (copy "the sha256 of this text" .Data.SHA256)}}.</p>
 {{end}}

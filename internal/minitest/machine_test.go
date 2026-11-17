@@ -72,26 +72,36 @@ esac
 `
 
 // sshd reads the made-up machine's own sshd_config.d as the real one does:
-// in name order, the first value of a key standing.
+// in name order, the first value of a key standing, and -T leaves out what
+// follows a Match. sshd-capitals has -T
+// print its keywords as macOS 27's sshd does, PasswordAuthentication;
+// sshd-silent has it print nothing.
 const sshdStub = `#!/bin/bash
 echo "sshd $*" >> "$STUB_LOG"
 s="$STUB_STATE/machine"
 case "$1" in
   -t) [[ ! -f $s/sshd-broken ]] || { echo "bad configuration" >&2; exit 255; } ;;
   -T)
+    [[ ! -f $s/sshd-silent ]] || exit 0
     p=yes k=yes ps=0 ks=0
     for f in "$LAB_SYSROOT"/etc/ssh/sshd_config.d/*.conf; do
       [[ -f $f ]] || continue
       while read -r key val; do
         case "$key" in
+          [Mm]atch) break ;;
           PasswordAuthentication) (( ps )) || { p="$val"; ps=1; } ;;
           KbdInteractiveAuthentication) (( ks )) || { k="$val"; ks=1; } ;;
         esac
       done < "$f"
     done
     echo "port 22"
-    echo "passwordauthentication $p"
-    echo "kbdinteractiveauthentication $k"
+    if [[ -f $s/sshd-capitals ]]; then
+      echo "PasswordAuthentication $p"
+      echo "KbdInteractiveAuthentication $k"
+    else
+      echo "passwordauthentication $p"
+      echo "kbdinteractiveauthentication $k"
+    fi
     echo "pubkeyauthentication yes" ;;
   *) exit 64 ;;
 esac
@@ -308,6 +318,61 @@ func TestSetupMakesSSHKeysOnlyOnceTheOwnerHasAKey(t *testing.T) {
 	// The steps after it are done all the same.
 	if m.is("pmset.sleep") != "0" {
 		t.Errorf("the run stopped at sshd and left the rest undone:\n%s", out)
+	}
+}
+
+// sshd -T prints the settings outside every Match block: a Match block that
+// takes a password again is read from the files and fails the set-up.
+func TestAMatchBlockThatTakesAPasswordFailsTheSetUp(t *testing.T) {
+	m := newMini(t)
+	k := newKey(t)
+	m.ownerHasAKey()
+	m.ok("setup", "--release-key", k.signers)
+	match := m.path("etc/ssh/sshd_config.d/900-match.conf")
+	for _, text := range []string{
+		"# a Mac on the LAN\nMatch Address 192.168.0.0/16\n  PasswordAuthentication yes\n",
+		"Match User lab\n\tkbdinteractiveauthentication=yes\n",
+	} {
+		write(t, match, text, 0o644)
+		out := m.refused("setup")
+		if !strings.Contains(out, "a Match block lets SSH take a password after Unlock") || !strings.Contains(out, match) {
+			t.Errorf("a Match block %q was not noticed:\n%s", text, out)
+		}
+	}
+	// One that turns it off, or a setting before any Match, is no Match's doing.
+	write(t, match, "PasswordAuthentication no\nMatch User lab\n  PasswordAuthentication no\n", 0o644)
+	if out := m.ok("setup"); strings.Contains(out, "Match block") {
+		t.Errorf("a Match block that says no:\n%s", out)
+	}
+}
+
+// sshd's keywords are any case: macOS 27's sshd -T prints them capitalised.
+// "no answer" is said only when sshd -T printed nothing.
+func TestSetupReadsSshdInAnyCaseAndSaysNoAnswerOnlyForNothing(t *testing.T) {
+	m := newMini(t)
+	k := newKey(t)
+	m.ownerHasAKey()
+	m.set("sshd-capitals", "")
+
+	out := m.ok("setup", "--release-key", k.signers)
+	if strings.Contains(out, "still takes a password") || !exists(m.path(sshdKeysOnly)) {
+		t.Fatalf("capitalised keywords were not read:\n%s", out)
+	}
+	if out := m.ok("setup"); !strings.Contains(out, "nothing to change") {
+		t.Errorf("a second run with capitalised keywords:\n%s", out)
+	}
+
+	// Capitals that say otherwise are seen, and not as no answer.
+	write(t, m.path("etc/ssh/sshd_config.d/000-earlier.conf"), "PasswordAuthentication yes\n", 0o644)
+	out = m.refused("setup")
+	if !strings.Contains(out, "still takes a password") || !strings.Contains(out, "passwordauthentication yes") || strings.Contains(out, "no answer") {
+		t.Errorf("a capitalised yes:\n%s", out)
+	}
+	os.Remove(m.path("etc/ssh/sshd_config.d/000-earlier.conf"))
+
+	m.set("sshd-silent", "")
+	if out := m.refused("setup"); !strings.Contains(out, "(sshd -T: no answer)") {
+		t.Errorf("an sshd -T that printed nothing:\n%s", out)
 	}
 }
 

@@ -209,7 +209,24 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 		hs.Start()
 	}
 	l.url = hs.URL + c.prefix
-	t.Cleanup(func() { cancel(); hs.Close() })
+	t.Cleanup(func() {
+		cancel()
+		hs.Close()
+		// A job's run writes how it ended in the data dir after the cancel:
+		// the dir is removed only once no run is left.
+		for end := time.Now().Add(time.Minute); ; time.Sleep(10 * time.Millisecond) {
+			s.mu.Lock()
+			running := len(s.cancels)
+			s.mu.Unlock()
+			if running == 0 {
+				break
+			}
+			if time.Now().After(end) {
+				t.Errorf("%d job runs did not end within a minute of their lab", running)
+				break
+			}
+		}
+	})
 
 	// Enroll the simulated Mac exactly as lab-agent setup would: its owner
 	// accepts the terms, and the token is used up by its activation.
@@ -250,7 +267,18 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	a := agent.New(l.agent, sim, logger)
 	actx, stop := context.WithCancel(ctx)
 	l.stopAgent = stop
-	go a.Run(actx)
+	ran := make(chan struct{})
+	go func() { defer close(ran); a.Run(actx) }()
+	// Registered after the agent's work dir, so it runs before that is
+	// removed: the Mac's lab-agent and its commands no longer write in it.
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-ran:
+		case <-time.After(time.Minute):
+			t.Errorf("the simulated Mac's lab-agent did not stop within a minute of its lab")
+		}
+	})
 	if withOOB {
 		l.oob.plug(portRight, sim, name, productM1Pro)
 		l.sight()
@@ -385,20 +413,23 @@ func TestBaselineAndGoodKernel(t *testing.T) {
 }
 
 // Preflight warnings (a volatile journal) cost evidence, not the Mac: jobs
-// still run. Problems hold them back.
+// still run. Problems hold them back. The Mac reports both, as lab-agent
+// does, with the facts a job's cleanup has it send: a copy written into
+// labd's record would be put back by that check-in.
 func TestPreflightWarningsDontBlockJobs(t *testing.T) {
 	l := newLab(t, true)
+	warning := []string{"the journal is not kept across reboots (no /var/log/journal)"}
+	problem := []string{"the disk is encrypted (/ is on dm-crypt)"}
+	l.sim.SetPreflight(nil, warning)
 	l.baseline()
-	setFacts := func(problems, warnings []string) {
-		v := l.s.dev(l.name)
-		v.mu.Lock()
-		v.d.Facts.PreflightOK, v.d.Facts.Problems, v.d.Facts.Warnings = len(problems) == 0, problems, warnings
-		v.mu.Unlock()
-	}
-	setFacts(nil, []string{"the journal is not kept across reboots (no /var/log/journal)"})
-	l.expect(l.run(api.JobSpec{Kernel: l.artifact("krel=7.2-rc1 behavior=ok")}), api.OutcomePass)
-	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady })
-	setFacts([]string{"the disk is encrypted (/ is on dm-crypt)"}, nil)
+	l.waitDevice(func(d api.Device) bool { return slices.Equal(d.Facts.Warnings, warning) && d.Facts.PreflightOK })
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-rc1 behavior=ok")})
+	l.waitJob(id, func(j *api.Job) bool { return j.State != api.JobQueued })
+	l.sim.SetPreflight(problem, nil)
+	l.expect(l.wait(id, 60*time.Second), api.OutcomePass)
+	l.waitDevice(func(d api.Device) bool {
+		return d.State == api.StateReady && slices.Equal(d.Facts.Problems, problem) && !d.Facts.PreflightOK
+	})
 	if _, code, err := l.s.Submit(api.JobSpec{Device: l.name, Kernel: l.artifact("krel=7.2-rc2 behavior=ok")}); code != 409 || err == nil || !strings.Contains(err.Error(), "fails preflight") {
 		t.Fatalf("a preflight problem: %d %v", code, err)
 	}
@@ -1713,6 +1744,41 @@ func TestNetworkBackOnTheSameBootIsLostContact(t *testing.T) {
 		t.Fatal(err)
 	}
 	j = l.wait(j.ID, 2*time.Minute) // lostDuringTest waits at least a minute for a new boot first
+	l.expect(j, api.OutcomeLostContact)
+	if !strings.Contains(j.Summary, "came back on the same boot") {
+		t.Fatalf("summary: %s", j.Summary)
+	}
+}
+
+// A Mac heard again on the same boot after labd lost it came back, even if a
+// check-in gap falls on the wait's end: labd judges by what it heard, not by
+// one look at that moment.
+func TestNetworkBackOnTheSameBootIsLostContactThoughSilentAtTheDeadline(t *testing.T) {
+	l := newLab(t, false)
+	l.baseline()
+	l.sim.SuspendFor = 8 * time.Second
+	l.s.cfg.TestGrace = 2 * time.Second
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-ok behavior=ok"), Tests: []api.TestSpec{{Name: "quiet-suspend-wifi", Builtin: "x", TimeoutSec: 10}}})
+	var lost time.Time
+	l.waitJob(id, func(j *api.Job) bool {
+		for _, e := range j.Events {
+			if strings.HasPrefix(e.Msg, "lost the Mac") {
+				lost = e.Time
+				return true
+			}
+		}
+		return false
+	})
+	boot := l.s.dev(l.name).snapshot().BootID
+	l.waitDevice(func(d api.Device) bool { return d.BootID == boot && d.LastSeen.After(lost) })
+	l.sim.Sleep()
+	for end := time.Now().Add(2 * time.Minute); !ladderBegun(l.s.dev(l.name).snapshot()); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("labd never began recovering the Mac")
+		}
+	}
+	l.sim.Wake()
+	j := l.wait(id, 2*time.Minute)
 	l.expect(j, api.OutcomeLostContact)
 	if !strings.Contains(j.Summary, "came back on the same boot") {
 		t.Fatalf("summary: %s", j.Summary)

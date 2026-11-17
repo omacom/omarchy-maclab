@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1003,5 +1004,215 @@ func TestABlockOrAForgetWhoseMacCannotLeaveFails(t *testing.T) {
 	ravi.did(personPath(graceID, "forget"), "sure", "yes")
 	if l.s.dev("shelf-mac") != nil || !l.who(graceID).Blocked {
 		t.Errorf("forgetting again: the Mac %v, Blocked %v", l.s.dev("shelf-mac") != nil, l.who(graceID).Blocked)
+	}
+}
+
+// A Forget leaves no Mac of the person enrolled: not one whose retirement
+// was under way and then failed, nor one that told the lab it is leaving
+// and waits for `lab remove`. Each is found in the store by account id.
+func TestAForgetEndsAMacMidRetirementOrLeftAsWell(t *testing.T) {
+	l := rolesLab(t, nil)
+	ravi := l.signedIn(maintainerID)
+	l.signedIn(edithID)
+	retiring, left := l.addMac("edith-air", edithID), l.addMac("edith-pro", edithID)
+	retiring.mu.Lock()
+	retiring.forgotten = true // another ending has it, and will fail
+	retiring.mu.Unlock()
+	left.mu.Lock()
+	left.d.State = api.StateLeft
+	left.saveLocked()
+	left.mu.Unlock()
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		retiring.mu.Lock()
+		retiring.forgotten = false
+		retiring.mu.Unlock()
+	}()
+
+	ravi.did(personPath(edithID, "forget"), "sure", "yes")
+
+	for _, name := range []string{"edith-air", "edith-pro"} {
+		if l.s.dev(name) != nil || l.count(`SELECT count(*) FROM devices WHERE name = ?`, name) != 0 {
+			t.Errorf("%s is still enrolled after its Volunteer was forgotten", name)
+		}
+	}
+}
+
+// A retirement still under way when a Forget has waited long enough fails
+// the Forget, which can be done again.
+func TestAForgetWhoseMacIsStillLeavingFails(t *testing.T) {
+	l := rolesLab(t, nil)
+	ravi := l.signedIn(maintainerID)
+	l.signedIn(edithID)
+	v := l.addMac("edith-air", edithID)
+	v.mu.Lock()
+	v.forgotten = true
+	v.mu.Unlock()
+	saved := retiringWait
+	retiringWait = 200 * time.Millisecond
+	t.Cleanup(func() { retiringWait = saved })
+
+	if w := ravi.post(personPath(edithID, "forget"), "sure", "yes"); w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "Nothing is forgotten yet") {
+		t.Errorf("a Forget whose Mac is still leaving: %d\n%s", w.Code, refusalIn(w.Body.String()))
+	}
+	if !l.known(edithID) {
+		t.Fatal("the person is forgotten though her Mac is still enrolled")
+	}
+}
+
+// retiredAudit is labd's copy of a retired Mac's Audit log, renamed after
+// its enrollment.
+func retiredAudit(t *testing.T, s *Server, v *dev) []api.AuditEntry {
+	t.Helper()
+	d := v.snapshot()
+	b, err := os.ReadFile(strings.TrimSuffix(s.auditPath(d.Name), ".jsonl") + "." + d.ID + ".jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []api.AuditEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e api.AuditEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// A report copying a Mac's Audit entries while the Mac is retired keeps
+// them: the retirement renames labd's copy once the entries are in, and an
+// entry that reaches the retired Mac's copy afterwards goes to the renamed
+// one, not to a new file under the name the next Mac may take.
+func TestAnAuditEntryInFlightAtRetirementIsKept(t *testing.T) {
+	l := rolesLab(t, nil)
+	mini := l.addMac("ravi-mini", maintainerID)
+	mini.copyAudit([]api.AuditEntry{{Time: l.clock.Now(), Action: "screenshot", End: 40}})
+	by := Person{AccountID: maintainerID, Handle: "ravi", Maintainer: true}
+
+	// The Mac's report is being copied when the Maintainer ends it.
+	mini.auditMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- l.s.endEnrollment(mini, leaving{how: leftByMaintainer, by: by}) }()
+	select {
+	case err := <-done:
+		done <- err
+	case <-time.After(time.Second):
+	}
+	line, _ := json.Marshal(api.AuditEntry{Time: l.clock.Now(), Action: "reboot", End: 80})
+	f, err := os.OpenFile(l.s.auditPath("ravi-mini"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(append(line, '\n'))
+	f.Close()
+	mini.auditHave = 80
+	mini.auditMu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// One more report the retired Mac's check-in carried.
+	mini.copyAudit([]api.AuditEntry{{Time: l.clock.Now(), Action: "kernel errors baseline", End: 120}})
+
+	var actions []string
+	for _, e := range retiredAudit(t, l.s, mini) {
+		actions = append(actions, e.Action)
+	}
+	if want := []string{"screenshot", "reboot", "kernel errors baseline"}; !slices.Equal(actions, want) {
+		t.Errorf("the retired Mac's Audit log copy: %q, want %q", actions, want)
+	}
+	if _, err := os.Stat(l.s.auditPath("ravi-mini")); !os.IsNotExist(err) {
+		t.Errorf("a copy is left under the Mac's name, free for the next Mac: %v", err)
+	}
+}
+
+// A forgetting while a retired Mac's last report copies its Audit entries
+// waits for the copy, as it does for an enrolled Mac's: the entry is kept,
+// without the handle.
+func TestAForgettingWaitsForARetiredMacsAuditCopy(t *testing.T) {
+	l := rolesLab(t, nil)
+	l.signedIn(edithID)
+	mini := l.addMac("ravi-mini", maintainerID)
+	mini.copyAudit([]api.AuditEntry{{Time: l.clock.Now(), Maintainer: "edith", Action: "screenshot", End: 40}})
+	if err := l.s.endEnrollment(mini, leaving{how: leftByMaintainer, by: Person{AccountID: maintainerID, Handle: "ravi", Maintainer: true}}); err != nil {
+		t.Fatal(err)
+	}
+	k, err := l.s.store.knownPerson(edithID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l.s.auditWrite.RLock()
+	mini.auditMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- l.s.forgetHeld(Person{AccountID: maintainerID, Handle: "ravi", Maintainer: true}, k, newForgetting(edithID, k.Handle))
+	}()
+	select {
+	case err := <-done:
+		done <- err
+	case <-time.After(time.Second):
+	}
+	d := mini.snapshot()
+	line, _ := json.Marshal(api.AuditEntry{Time: l.clock.Now(), Maintainer: "edith", AccountID: edithID, Action: "reboot", End: 80})
+	f, err := os.OpenFile(strings.TrimSuffix(l.s.auditPath(d.Name), ".jsonl")+"."+d.ID+".jsonl", os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(append(line, '\n'))
+	f.Close()
+	mini.auditHave = 80
+	mini.auditMu.Unlock()
+	l.s.auditWrite.RUnlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	es := retiredAudit(t, l.s, mini)
+	if len(es) != 2 || es[1].Action != "reboot" {
+		t.Fatalf("the retired Mac's Audit log copy: %+v", es)
+	}
+	for _, e := range es {
+		if e.Maintainer != "" || e.AccountID != 0 {
+			t.Errorf("an entry still names her: %+v", e)
+		}
+	}
+}
+
+// The Maintainer who ended a Mac's enrollment during an Installed run, and
+// was Forgotten before the run was sealed, is named in neither copy of the
+// run's record: the seal's own summary and last event say who ended it.
+func TestAnInstalledRunSealedAfterItsEnderIsForgottenNamesNobody(t *testing.T) {
+	l := macLab(t, nil)
+	l.signedIn(edithID)
+	l.lrMac("m1", "j293", nil)
+	l.pjJob("j-41", "m1", maintainerID, "ravi", l.clock.Now(), func(j *api.Job) { j.State, j.Outcome, j.Summary = api.JobTesting, "", "" })
+	j, err := l.s.store.job("j-41")
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := l.s.forgetInJobs(newForgetting(edithID, "edith"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	end()
+
+	ir := &installedRun{r: &jobRun{s: l.s, v: l.s.dev("m1"), j: j},
+		c: &installedCtx{release: "9.9", dir: l.s.frozenDir("9.9")}, res: api.InstalledResult{Release: "9.9"}}
+	gone := leaving{how: leftByMaintainer, by: Person{AccountID: edithID, Handle: "edith", Maintainer: true}}
+	outcome, summary := ir.seal(api.OutcomeCanceled, "canceled: "+gone.reason(), l.clock.Now())
+	if outcome != api.OutcomeCanceled {
+		t.Fatalf("sealed %s: %s", outcome, summary)
+	}
+	byName := regexp.MustCompile(`(?i)(^|[^a-z0-9-])edith($|[^a-z0-9-])`)
+	for _, p := range []string{filepath.Join(ir.evDir(), "job.json"), filepath.Join(ir.c.dir, "installed", "m1", "j-41", "job.json")} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if byName.Match(b) {
+			rel, _ := filepath.Rel(l.s.cfg.DataDir, p)
+			t.Errorf("%s still names the Maintainer who ended the enrollment:\n%s", rel, b)
+		}
 	}
 }

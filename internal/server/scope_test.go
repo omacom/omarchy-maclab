@@ -81,6 +81,7 @@ func TestRoutesDeclareReach(t *testing.T) {
 	want := []string{
 		"GET /api/devices",
 		"GET /api/devices/{name}",
+		"POST /api/devices/{name}/window", // the Mac's own Volunteer only: changeWindow asks lends
 		"GET /api/devices/{name}/leases",
 		"GET /api/devices/{name}/oob",
 		"GET /api/stream",

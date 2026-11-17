@@ -170,9 +170,24 @@ func (s *Server) auditPath(name string) string {
 	return filepath.Join(s.cfg.DataDir, "audit", name+".jsonl")
 }
 
+// auditFile is labd's copy of v's Audit log: under its name while it is
+// enrolled, renamed after its enrollment once it is retired (retireAudit).
+func (s *Server) auditFile(v *dev) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.retiredAudit[v]; ok {
+		return p
+	}
+	return s.auditPath(v.d.Name)
+}
+
 // readAuditCopy reads labd's copy of a Mac's Audit log.
 func (s *Server) readAuditCopy(name string) ([]api.AuditEntry, error) {
-	b, err := os.ReadFile(s.auditPath(name))
+	return readAuditFile(s.auditPath(name))
+}
+
+func readAuditFile(path string) ([]api.AuditEntry, error) {
+	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -196,7 +211,7 @@ func (s *Server) readAuditCopy(name string) ([]api.AuditEntry, error) {
 func (v *dev) auditHaveLocked() int64 {
 	if v.auditHave < 0 {
 		v.auditHave = 0
-		if es, err := v.s.readAuditCopy(v.d.Name); err == nil && len(es) > 0 {
+		if es, err := readAuditFile(v.s.auditFile(v)); err == nil && len(es) > 0 {
 			v.auditHave = es[len(es)-1].End
 		}
 	}
@@ -215,6 +230,8 @@ func (v *dev) copyAudit(es []api.AuditEntry) {
 	if len(es) == 0 {
 		return
 	}
+	v.s.auditWrite.RLock()
+	defer v.s.auditWrite.RUnlock()
 	v.auditMu.Lock()
 	defer v.auditMu.Unlock()
 	have := v.auditHaveLocked()
@@ -236,7 +253,7 @@ func (v *dev) copyAudit(es []api.AuditEntry) {
 	if b.Len() == 0 {
 		return
 	}
-	p := v.s.auditPath(v.d.Name)
+	p := v.s.auditFile(v)
 	err := os.MkdirAll(filepath.Dir(p), 0o755)
 	var f *os.File
 	if err == nil {

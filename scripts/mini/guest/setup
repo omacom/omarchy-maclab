@@ -63,7 +63,9 @@ rest-server 0.14.0 4c9c95bc079a0334e81fad379b19dc5c3353c71c2c88d652cafce2081c2b1
 FOR_MINI="$GUEST_ROOT/root/for-the-mini"
 UNITS="$GUEST_ROOT/etc/systemd/system"
 SSHD_DROP="$GUEST_ROOT/etc/ssh/sshd_config.d/lab-backup.conf"
-HOST_KEY="$GUEST_ROOT/etc/ssh/ssh_host_ed25519_key.pub"
+HOST_KEY="$GUEST_ROOT/etc/ssh/ssh_host_ed25519_key"
+HOST_PUBLIC=""
+BACKUPS=(lab-backup-rest.service lab-backup-prune.timer lab-backup-mirror.timer lab-backup-trim.timer)
 RESTARTS=""
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/lab-guest.XXXXXX")"
@@ -207,7 +209,7 @@ make_mini_keys() {
   install -o "$ROOT_USER" -m 0644 "$FOR_MINI/litestream-sftp-key.pub" "$ETC/litestream.authorized_keys"
   rm -f "$FOR_MINI/litestream-sftp-key.pub"
   cp "$ETC/tls.crt" "$FOR_MINI/guest.crt"
-  awk '{ print $1, $2 }' "$HOST_KEY" > "$FOR_MINI/host-key"
+  echo "$HOST_PUBLIC" > "$FOR_MINI/host-key"
   chmod 0600 "$FOR_MINI"/*
   date -u +%Y-%m-%dT%H:%M:%SZ > "$ETC/mini-keys-made"
 }
@@ -217,13 +219,22 @@ keys() {
   [[ -s $ETC/tls.crt && -s $ETC/tls.key ]] || change "make rest-server's certificate, for the name lab-backup" make_certificate
   [[ -f $REPOSITORY/config ]] || change "make the mini's restic repository at $REPOSITORY" make_repository
   if [[ ! -f $ETC/mini-keys-made ]]; then
-    (( DRY )) || [[ -s $HOST_KEY ]] || fail "no $HOST_KEY: the SSH server has no host key yet"
+    if (( ! DRY )) || [[ -e $HOST_KEY ]]; then
+      [[ -s $HOST_KEY ]] || fail "no $HOST_KEY: the SSH server has no host key yet"
+      HOST_PUBLIC="$(ssh-keygen -y -f "$HOST_KEY" | awk '{ print $1, $2 }')" || fail "ssh-keygen could not read $HOST_KEY"
+      [[ $HOST_PUBLIC == "ssh-ed25519 "* ]] || fail "$HOST_KEY is not an ed25519 key: the mini pins that key and Litestream takes no other"
+    fi
     change "make the mini's keys and leave them in $FOR_MINI" make_mini_keys
   fi
 }
 
 sftp_account() {
   file "$SSHD_DROP" "$ROOT_USER" 644 <<EOF || return 0
+# Litestream on the mini pins the ed25519 host key and takes no other, and
+# its SSH client asks for ECDSA first: offer that key alone. sshd_config
+# reads this folder before its own lines, so this replaces the default keys.
+HostKey ${HOST_KEY#"$GUEST_ROOT"}
+
 # Litestream on the mini reaches the backup guest as this account: SFTP
 # only, shut into one folder, by key only.
 Match User $SFTP_USER
@@ -236,7 +247,6 @@ Match User $SFTP_USER
     X11Forwarding no
     PermitTTY no
 EOF
-  (( DRY )) || sshd -t || fail "sshd does not take $SSHD_DROP"
   RESTARTS+=" ssh"
 }
 
@@ -332,11 +342,22 @@ WantedBy=timers.target
 EOF
 }
 
+# ssh comes last: on the first real guest its reload failed, and the set-up
+# stopped there with rest-server never started.
+ssh_takes() {
+  local started="rest-server and the three nightly timers are started"
+  if ! sshd -t; then
+    rm -f "$SSHD_DROP"
+    fail "sshd does not take its configuration, as sshd -t says above: $SSHD_DROP is removed again and ssh left as it was; $started"
+  fi
+  systemctl reload-or-restart ssh || systemctl restart ssh || fail "ssh did not take $SSHD_DROP: it neither reloads nor restarts (journalctl -u ssh); $started"
+}
+
 restart() {
-  systemctl daemon-reload
-  [[ " $RESTARTS " != *" ssh "* ]] || systemctl reload ssh
-  systemctl enable --quiet lab-backup-rest.service lab-backup-prune.timer lab-backup-mirror.timer lab-backup-trim.timer
-  systemctl restart lab-backup-rest.service lab-backup-prune.timer lab-backup-mirror.timer lab-backup-trim.timer
+  systemctl daemon-reload || fail "systemctl daemon-reload failed: nothing was started"
+  systemctl enable --quiet "${BACKUPS[@]}" || fail "rest-server and the nightly timers could not be enabled"
+  systemctl restart "${BACKUPS[@]}" || fail "rest-server or a nightly timer did not start (systemctl status ${BACKUPS[*]})"
+  [[ " $RESTARTS " != *" ssh "* ]] || ssh_takes
 }
 
 packages
@@ -349,8 +370,14 @@ sftp_account
 units
 if [[ -n $RESTARTS ]]; then
   change "start what changed:$RESTARTS" restart
-elif ! systemctl is-active --quiet lab-backup-rest.service lab-backup-prune.timer lab-backup-mirror.timer lab-backup-trim.timer; then
-  change "start rest-server and the three nightly timers" restart
+else
+  # One by one: is-active of several units passes when any one runs.
+  down=""
+  for u in "${BACKUPS[@]}" ssh; do
+    systemctl is-active --quiet "$u" || down+=" $u"
+  done
+  [[ " $down " != *" ssh "* ]] || RESTARTS=" ssh"
+  [[ -z $down ]] || change "start what is not running:$down" restart
 fi
 
 if (( CHANGES == 0 )); then

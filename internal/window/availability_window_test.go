@@ -222,3 +222,76 @@ func TestScheduleReadsAsTheVolunteerTypedIt(t *testing.T) {
 		t.Error("a Mac with no weekly window has a schedule")
 	}
 }
+
+// "always" is every hour of every day, and 24:00 ends a window at midnight:
+// a whole day is DAYS 00:00-24:00, and a whole week of them reads as always.
+func TestParseRuleReadsAlwaysAndWholeDays(t *testing.T) {
+	for s, want := range map[string]string{
+		"always":              "always",
+		"mon-sun 00:00-24:00": "always",
+		"sun-sat 00:00-24:00": "always",
+		"wed-tue 00:00-24:00": "always",
+		"mon-fri 00:00-24:00": "mon-fri 00:00-24:00",
+		"sat 00:00-24:00":     "sat 00:00-24:00",
+		"fri 19:00-24:00":     "fri 19:00-24:00",
+	} {
+		r, err := ParseRule(s)
+		if err != nil {
+			t.Errorf("ParseRule(%q): %v", s, err)
+			continue
+		}
+		if r.String() != want {
+			t.Errorf("ParseRule(%q).String() = %q, want %q", s, r.String(), want)
+		}
+		back, err := ParseRule(r.String())
+		if err != nil || back != r {
+			t.Errorf("ParseRule(%q) does not read back: %v, %v", r.String(), back, err)
+		}
+	}
+	if rs := rules(t, "always", "mon-sun 00:00-24:00"); rs[0] != rs[1] {
+		t.Errorf("always %v and mon-sun 00:00-24:00 %v are not the same window", rs[0], rs[1])
+	}
+	for _, s := range []string{"always mon", "Always", "mon always", "mon 24:00-07:00", "mon 00:00-24:01", "mon 24:00-24:00", "mon 00:00-25:00"} {
+		if _, err := ParseRule(s); err == nil {
+			t.Errorf("ParseRule(%q) accepted bad syntax", s)
+		}
+	}
+}
+
+// A window of whole days has no gap at midnight, and always never closes:
+// open across each day's end, the week's end and the end of daylight saving
+// time, with no next window.
+func TestWholeDaysAndAlwaysHaveNoGapAtMidnight(t *testing.T) {
+	always := Settings{Rules: rules(t, "always"), Zone: macZone}
+	for _, now := range []time.Time{
+		at(t, "2026-10-26 00:00"), at(t, "2026-10-26 23:59"), at(t, "2026-10-27 00:00"),
+		at(t, "2026-11-01 00:00"), at(t, "2026-11-01 01:30"), at(t, "2026-11-01 23:59").Add(59 * time.Second),
+	} {
+		st := Evaluate(always, now)
+		if !st.Open || !st.Always || !st.Next.IsZero() || st.End.Sub(now) < 7*24*time.Hour {
+			t.Errorf("always at %s: %+v, want open with no end", now, st)
+		}
+	}
+	weekdays := Settings{Rules: rules(t, "mon-fri 00:00-24:00"), Zone: macZone}
+	st := Evaluate(weekdays, at(t, "2026-10-27 23:59").Add(59*time.Second))
+	if !st.Open || st.Always || !st.End.Equal(at(t, "2026-10-31 00:00")) || !st.Next.Equal(at(t, "2026-11-02 00:00")) {
+		t.Errorf("mon-fri 00:00-24:00 on Tuesday night: %+v, want open until Saturday 00:00", st)
+	}
+	if st := Evaluate(weekdays, at(t, "2026-10-31 00:00")); st.Open {
+		t.Errorf("mon-fri 00:00-24:00 is open on Saturday: %+v", st)
+	}
+	split := Settings{Rules: rules(t, "mon-sun 00:00-12:00", "mon-sun 12:00-24:00"), Zone: macZone}
+	if st := Evaluate(split, at(t, "2026-10-28 09:00")); !st.Open || !st.Always {
+		t.Errorf("two halves of every day: %+v, want always open", st)
+	}
+	// A Pause on an always Mac closes it until then, and it opens for good after.
+	always.PausedUntil = at(t, "2026-10-29 00:00")
+	if st := Evaluate(always, at(t, "2026-10-27 12:00")); st.Open || !st.Next.Equal(always.PausedUntil) {
+		t.Errorf("a Paused always Mac: %+v, want closed until the Pause ends", st)
+	}
+	// One whole day a week is not always, on that day or any other.
+	sunday := Settings{Rules: rules(t, "sun 00:00-24:00"), Zone: macZone}
+	if st := Evaluate(sunday, at(t, "2026-11-01 12:00")); !st.Open || st.Always || !st.End.Equal(at(t, "2026-11-02 00:00")) {
+		t.Errorf("sun 00:00-24:00 on Sunday: %+v", st)
+	}
+}

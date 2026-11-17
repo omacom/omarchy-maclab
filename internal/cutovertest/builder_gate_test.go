@@ -41,15 +41,44 @@ case "$1" in
     outcome="$(cat "$GATE/outcome.$(cores).$step" 2>/dev/null || echo done)"
     took=(0 31m12s 4m3s 11m40s)
     echo "$id  queued  src" > "$GATE/row.$id"
+    # meta: who asked and what, as labd lists a build: asked_by, kind,
+    # device, config_name, recipe_dir, source.input.
+    if [[ $1 == package ]]; then
+      meta="owner|package|||$(cd "$2" && pwd)|"
+    else
+      dev="" cfg="" prev=""
+      for a in "$@"; do [[ $prev != --device ]] || dev="$a"; [[ $prev != --config ]] || cfg="$(basename "$a")"; prev="$a"; done
+      meta="owner||$dev|$cfg||$2"
+    fi
+    echo "$meta" > "$GATE/meta.$id"
+    # another.build: another Maintainer asks for the same build meanwhile.
+    if [[ -f $GATE/another.build ]]; then
+      echo "b1115-999999-other  queued  src" > "$GATE/row.b1115-999999-other"
+      echo "maint|${meta#*|}" > "$GATE/meta.b1115-999999-other"
+    fi
+    # another.mine: the owner asks for the same build by hand meanwhile;
+    # another.source: the same, of another kernel source.
+    if [[ -f $GATE/another.mine ]]; then
+      echo "b1115-999998-mine  queued  src" > "$GATE/row.b1115-999998-mine"
+      echo "$meta" > "$GATE/meta.b1115-999998-mine"
+    fi
+    if [[ -f $GATE/another.source ]]; then
+      echo "b1115-999997-src  queued  src" > "$GATE/row.b1115-999997-src"
+      echo "${meta%|*}|https://github.com/o/linux-aurora/tree/other" > "$GATE/meta.b1115-999997-src"
+    fi
+    # The build goes on as labd's would, after lab has gone; a canceled
+    # build ends at once.
     (
+      canceled() { grep -q '  canceled  ' "$GATE/row.$id" 2>/dev/null; }
       sleep 0.3
+      canceled && exit 0
       uploads="$(wc -l < "$GATE/uploads")"
       echo "$id" > "$GATE/vm"
       echo "$id  running: build 40%  src" > "$GATE/row.$id"
       case "$outcome" in
         "done")
           if [[ $step != 2 ]]; then
-            for i in $(seq 300); do [[ "$(wc -l < "$GATE/uploads")" -gt $uploads ]] && break; sleep 0.2; done
+            for i in $(seq 300); do canceled && exit 0; [[ "$(wc -l < "$GATE/uploads")" -gt $uploads ]] && break; sleep 0.2; done
           fi
           sleep 1.2
           rm -f "$GATE/vm"
@@ -69,6 +98,8 @@ case "$1" in
           echo "$id  failed  src" > "$GATE/row.$id" ;;
       esac
     ) > /dev/null 2>&1 &
+    # answer.lost: labd took the build, and its answer never reached lab.
+    [[ ! -f $GATE/answer.lost ]] || { echo "lab: the lab did not answer" >&2; exit 1; }
     echo "build $id: o/linux-aurora @ 0123456789ab (queued)" ;;
   upload)
     [[ ! -f $GATE/upload.fails ]] || { echo "lab: the lab answered 502" >&2; exit 1; }
@@ -134,7 +165,7 @@ case "$1" in
     case "$1 $2" in
       "volume delete" | "volume create") [[ ! -f $GATE/volume.fails ]] ;;
       "volume inspect") printf '[{"name":"%s","source":"%s"}]\n' "$3" "$GATE/$3.img" ;;
-      "image inspect") [[ ! -f $GATE/no.$3 ]] ;;
+      "image inspect") [[ ! -f $GATE/no.${3%%:*} ]] ;;
       *) exit 64 ;;
     esac ;;
   *) exit 64 ;;
@@ -145,7 +176,8 @@ const gateSetupStub = `#!/bin/bash
 echo "setup $*" >> "$GATE/mini-calls"
 [[ $1 == --builder-cpus ]] || exit 64
 plist="$LAB_SYSROOT/Library/LaunchDaemons/org.omarchy-mac.lab.builder.plist"
-echo "    <string>--cpus</string><string>$2</string>" > "$plist"
+sed "s|<string>--cpus</string><string>[0-9]*</string>|<string>--cpus</string><string>$2</string>|" "$plist" > "$plist.new"
+mv "$plist.new" "$plist"
 `
 
 const gatePageTimesStub = `#!/bin/bash
@@ -179,6 +211,15 @@ printf 'probe_pages=13\nprobe_requests=260\nprobe_p95_ms=%s\nprobe_max_ms=%s\nda
 const gateProbeStub = `#!/bin/bash
 echo "probe $*" >> "$GATE/calls"
 case "$*" in
+  "ask --out "*" GET /api/auth") echo '{"trusted":true,"login":"owner","kind":"Admin"}' > "$3"; echo status=200 ;;
+  "ask --rows id,state,asked_by,kind,device,config_name,recipe_dir"*" GET /api/builds?limit=100")
+    echo status=200
+    for f in "$GATE"/row.*; do
+      [ -f "$f" ] || continue
+      read -r id state _ < "$f"
+      IFS='|' read -r by kind dev cfg rec src < "$GATE/meta.$id"
+      echo "row=$id|${state%:}|$by|$kind|$dev|$cfg|$rec|$src"
+    done ;;
   "ask POST /api/builds/"*"/cancel")
     id="${3#/api/builds/}"; id="${id%/cancel}"
     echo "$id  canceled  src" > "$GATE/row.$id"
@@ -244,7 +285,36 @@ func (g *gate) run(args ...string) (string, int) {
 	g.t.Helper()
 	all := append([]string{"--lab", "--mini", "owner@mini", "--kernel", "https://github.com/o/linux-aurora/tree/aurora", "--recipe", g.recipe,
 		"--size", "65536", "--deploy", g.deploy, "--records", g.records, "--bin", g.bin}, args...)
-	return run(g.t, g.env, "", cutover(g.t, "builder-gate"), all...)
+	cmd := exec.Command(cutover(g.t, "builder-gate"), all...)
+	cmd.Env = append(os.Environ(), g.env...)
+	cmd.Stdin = strings.NewReader("")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := cmd.CombinedOutput()
+	if cmd.Process != nil {
+		endGroup(g.t, cmd.Process.Pid)
+	}
+	if err == nil {
+		return string(out), 0
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return string(out), ee.ExitCode()
+	}
+	g.t.Fatalf("builder-gate: %v\n%s", err, out)
+	return "", 0
+}
+
+// endGroup ends what a run left going in its process group. A build the
+// made-up lab took goes on after a run that ended first, as labd's would,
+// and it writes in the test's folder: left, it races the folder's removal.
+func endGroup(t *testing.T, pgid int) {
+	t.Helper()
+	syscall.Kill(-pgid, syscall.SIGKILL)
+	for end := time.Now().Add(10 * time.Second); syscall.Kill(-pgid, 0) == nil; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Errorf("processes of the run in group %d outlived it", pgid)
+			return
+		}
+	}
 }
 
 func newGate(t *testing.T) *gate {
@@ -268,25 +338,27 @@ func newGate(t *testing.T) *gate {
 	stubs := filepath.Join(root, "stubs")
 	g.bin = stubs
 	files := map[string]string{
-		filepath.Join(stubs, "lab"):                                                    gateLabStub,
-		filepath.Join(stubs, "ssh"):                                                    gateSSHStub,
-		filepath.Join(stubs, "du"):                                                     gateDuStub,
-		filepath.Join(stubs, "hardening-probe"):                                        gateProbeStub,
-		filepath.Join(stubs, "launchctl"):                                              "#!/bin/bash\nexit 0\n",
-		filepath.Join(g.state, "machine/ps"):                                           gatePsStub,
-		filepath.Join(g.state, "machine/vm_stat"):                                      gateVMStatStub,
-		filepath.Join(g.state, "machine/pfctl"):                                        gatePfctlStub,
-		filepath.Join(scripts, "container"):                                            gateContainerStub,
-		filepath.Join(scripts, "setup"):                                                gateSetupStub,
-		filepath.Join(scripts, "page-times"):                                           gatePageTimesStub,
-		filepath.Join(scripts, "build-watch"):                                          read(t, filepath.Join(repo(t), "scripts/mini/build-watch")),
-		filepath.Join(scripts, "lib.sh"):                                               read(t, filepath.Join(repo(t), "scripts/mini/lib.sh")),
-		filepath.Join(g.deploy, "builder-cpus"):                                        read(t, filepath.Join(repo(t), "deploy/builder-cpus")),
-		filepath.Join(g.recipe, "PKGBUILD"):                                            "pkgname=linux-aurora\n",
-		filepath.Join(mini, "usr/local/lab/container-user"):                            me.Username + "\n",
-		filepath.Join(mini, "Library/LaunchDaemons/org.omarchy-mac.lab.builder.plist"): "    <string>--cpus</string><string>10</string>\n",
-		filepath.Join(mini, "var/lab/data/artifacts/keep"):                             "",
-		filepath.Join(mini, "usr/local/lab/io/keep"):                                   "",
+		filepath.Join(stubs, "lab"):                                                       gateLabStub,
+		filepath.Join(stubs, "ssh"):                                                       gateSSHStub,
+		filepath.Join(stubs, "du"):                                                        gateDuStub,
+		filepath.Join(stubs, "hardening-probe"):                                           gateProbeStub,
+		filepath.Join(stubs, "launchctl"):                                                 "#!/bin/bash\nexit 0\n",
+		filepath.Join(g.state, "machine/ps"):                                              gatePsStub,
+		filepath.Join(g.state, "machine/vm_stat"):                                         gateVMStatStub,
+		filepath.Join(g.state, "machine/pfctl"):                                           gatePfctlStub,
+		filepath.Join(scripts, "container"):                                               gateContainerStub,
+		filepath.Join(scripts, "setup"):                                                   gateSetupStub,
+		filepath.Join(scripts, "page-times"):                                              gatePageTimesStub,
+		filepath.Join(scripts, "build-watch"):                                             read(t, filepath.Join(repo(t), "scripts/mini/build-watch")),
+		filepath.Join(scripts, "lib.sh"):                                                  read(t, filepath.Join(repo(t), "scripts/mini/lib.sh")),
+		filepath.Join(g.deploy, "builder-cpus"):                                           read(t, filepath.Join(repo(t), "deploy/builder-cpus")),
+		filepath.Join(g.recipe, "PKGBUILD"):                                               "pkgname=linux-aurora\n",
+		filepath.Join(mini, "usr/local/lab/container-user"):                               me.Username + "\n",
+		filepath.Join(mini, "usr/local/lab/current/builder/Containerfile"):                "FROM scratch\n",
+		filepath.Join(mini, "usr/local/lab/current/builder/pkg/Containerfile"):            "FROM scratch\n",
+		filepath.Join(mini, "usr/local/lab/pkg-image/ArchLinuxARM-aarch64-latest.tar.gz"): "\x1f\x8b a made-up root file system\n",
+		filepath.Join(mini, "var/lab/data/artifacts/keep"):                                "",
+		filepath.Join(mini, "usr/local/lab/io/keep"):                                      "",
 	}
 	for path, text := range files {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -297,6 +369,21 @@ func newGate(t *testing.T) *gate {
 		}
 	}
 	if err := os.MkdirAll(g.records, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The Builder runs the images the set-up named from the Deployed build.
+	named := exec.Command("bash", "-c", `. "$1"; builder_image maclab-kbuild builder "$LAB_CURRENT"; builder_image maclab-pkgbuild builder/pkg "$LAB_CURRENT"`, "images", filepath.Join(scripts, "lib.sh"))
+	named.Env = append(os.Environ(), "LAB_SYSROOT="+mini)
+	images, err := named.Output()
+	tags := strings.Fields(string(images))
+	if err != nil || len(tags) != 2 {
+		t.Fatalf("the Deployed build's images: %v %q", err, images)
+	}
+	plist := "    <string>--cpus</string><string>10</string>\n    <string>--image</string><string>" + tags[0] + "</string>\n    <string>--pkg-image</string><string>" + tags[1] + "</string>\n"
+	if err := os.MkdirAll(filepath.Join(mini, "Library/LaunchDaemons"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mini, "Library/LaunchDaemons/org.omarchy-mac.lab.builder.plist"), []byte(plist), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for name, text := range map[string]string{
@@ -537,6 +624,77 @@ func TestAGateThatEndsFirstLeavesNoBuild(t *testing.T) {
 			t.Errorf("the record does not say the build was canceled before its result:\n%s", record)
 		}
 	})
+	// The cancel is armed before the build is asked for: a build labd took
+	// whose answer was lost is the run's too.
+	t.Run("an answer lost", func(t *testing.T) {
+		t.Parallel()
+		g := newGate(t)
+		g.set("answer.lost", "")
+		out, code := g.run()
+		if code != 1 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		if !strings.Contains(g.calls("calls"), "probe ask POST /api/builds/b1115-000001-abcd/cancel\n") {
+			t.Errorf("the build was left:\n%s", g.calls("calls"))
+		}
+		record := g.record()
+		if i := strings.Index(record, "build b1115-000001-abcd was canceled"); i < 0 || i > strings.Index(record, "Result: fail") {
+			t.Errorf("the record does not say the build was canceled before its result:\n%s", record)
+		}
+	})
+	// With no id read, the run cancels only a build of its own: asked under
+	// its login, for what it asked.
+	t.Run("an answer lost beside another Maintainer's build", func(t *testing.T) {
+		t.Parallel()
+		g := newGate(t)
+		g.set("answer.lost", "")
+		g.set("another.build", "")
+		out, code := g.run()
+		if code != 1 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		calls := g.calls("calls")
+		if !strings.Contains(calls, "probe ask POST /api/builds/b1115-000001-abcd/cancel\n") {
+			t.Errorf("the run's build was left:\n%s", calls)
+		}
+		if strings.Contains(calls, "b1115-999999-other/cancel") || strings.Contains(g.record(), "b1115-999999-other") {
+			t.Errorf("another Maintainer's build was canceled:\n%s\n%s", calls, g.record())
+		}
+	})
+	// Nor one the owner started by hand: of another kernel source it is not
+	// the run's, and with two that match the run cannot tell which is its
+	// own, so it cancels neither and names both.
+	t.Run("an answer lost beside the owner's build of another kernel source", func(t *testing.T) {
+		t.Parallel()
+		g := newGate(t)
+		g.set("answer.lost", "")
+		g.set("another.source", "")
+		out, code := g.run()
+		if code != 1 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		calls := g.calls("calls")
+		if !strings.Contains(calls, "probe ask POST /api/builds/b1115-000001-abcd/cancel\n") {
+			t.Errorf("the run's build was left:\n%s", calls)
+		}
+		if strings.Contains(calls, "b1115-999997-src/cancel") {
+			t.Errorf("the owner's build of another kernel source was canceled:\n%s\n%s", calls, g.record())
+		}
+	})
+	t.Run("an answer lost beside a second build that matches", func(t *testing.T) {
+		t.Parallel()
+		g := newGate(t)
+		g.set("answer.lost", "")
+		g.set("another.mine", "")
+		out, code := g.run()
+		if code != 1 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		if calls := g.calls("calls"); strings.Contains(calls, "/cancel") {
+			t.Errorf("a build was canceled though two matched:\n%s", calls)
+		}
+		wants(t, "the record", g.record(), "NOT CANCELED", "b1115-000001-abcd", "b1115-999998-mine", "Result: fail")
+	})
 	t.Run("stopped by the owner", func(t *testing.T) {
 		t.Parallel()
 		g := newGate(t)
@@ -557,6 +715,7 @@ func TestAGateThatEndsFirstLeavesNoBuild(t *testing.T) {
 		// Ctrl-C at the owner's terminal: the whole group gets it.
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
 		cmd.Wait()
+		endGroup(t, cmd.Process.Pid)
 		if !strings.Contains(g.calls("calls"), "probe ask POST /api/builds/b1115-000001-abcd/cancel\n") || !strings.Contains(g.record(), "build b1115-000001-abcd was canceled") {
 			t.Errorf("the build was left:\n%s\n%s", g.calls("calls"), g.record())
 		}
@@ -698,7 +857,7 @@ func TestWhatCannotBeMeasuredDecidesNothing(t *testing.T) {
 		"the cold cache":      {func(g *gate) { g.set("volume.fails", "") }, "the mini did not get ready for the builds at 10 cores"},
 		"the watch gone":      {func(g *gate) { g.set("watch.dies", "") }, "the watch on the mini ended while the cold kernel build ran"},
 		"other cores":         {func(g *gate) { g.set("vm.cores", "4\n") }, "the Builder gave the cold kernel build 4 cores, not 10"},
-		"an image missing":    {func(g *gate) { g.set("no.maclab-pkgbuild:1", "") }, "the mini did not get ready for the builds at 10 cores"},
+		"an image missing":    {func(g *gate) { g.set("no.maclab-pkgbuild", "") }, "the mini did not get ready for the builds at 10 cores"},
 		"a stale image": {func(g *gate) {
 			g.set("outcome.10.1", "stale\n")
 			g.set("says.stale", "kbuild: /in/config: No such file or directory\n")
@@ -717,7 +876,7 @@ func TestWhatCannotBeMeasuredDecidesNothing(t *testing.T) {
 			}
 			wants(t, "the record", g.record(), "FAILED: "+c.says, "Result: fail")
 			if name == "a stale image" {
-				wants(t, "the record", g.record(), `sudo /usr/local/lab/current/scripts/mini/container as "$(cat /usr/local/lab/container-user)" image delete maclab-kbuild:1 maclab-pkgbuild:1, then sudo /usr/local/lab/current/scripts/mini/setup`)
+				wants(t, "the record", g.record(), "sudo /usr/local/lab/current/scripts/mini/setup builds the images the Deployed build names and starts the Builder with them")
 			}
 			if g.cores() != "10" || strings.Count(g.calls("calls"), "ssh ") != 1 || !strings.HasPrefix(g.results(), "builder-gate fail ") {
 				t.Errorf("it went on, or wrote: cores %s, results %q\n%s", g.cores(), g.results(), g.calls("calls"))
@@ -777,6 +936,7 @@ func TestTheGateTestRefusesBeforeItAsksAnything(t *testing.T) {
 // With no option it says its steps and runs nothing; with no record,
 // --results is not green.
 func TestTheGateTestsDryRunSaysTheStepsAndRunsNothing(t *testing.T) {
+	added := recordsAdded(t, "*builder-gate*")
 	g := newGate(t)
 	out, code := run(t, g.env, "", cutover(t, "builder-gate"))
 	if code != 0 {
@@ -790,7 +950,7 @@ func TestTheGateTestsDryRunSaysTheStepsAndRunsNothing(t *testing.T) {
 	if g.calls("calls") != "" || g.calls("mini-calls") != "" {
 		t.Errorf("a dry run ran:\n%s%s", g.calls("calls"), g.calls("mini-calls"))
 	}
-	if files, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*builder-gate*")); len(files) != 0 {
+	if files := added(); len(files) != 0 {
 		t.Errorf("a dry run left a record: %v", files)
 	}
 	if out, code := run(t, nil, "", cutover(t, "builder-gate"), "--results", "--records", g.records); code == 0 || !strings.Contains(out, "no run of the Builder's gate test is recorded") {

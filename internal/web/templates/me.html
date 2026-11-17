@@ -10,8 +10,8 @@
 {{with .Shown}}<section class="card attention">
 <h2 class="card-title">your new lab token</h2>
 <p>“{{.Name}}” {{.Expires}}. This is the only time the lab shows it: copy it now.</p>
-<p><code>{{.Secret}}</code></p>
-<p class="dim">Give it to <code>lab login</code> at its prompt. It acts as you, with what you may do at that moment.</p>
+<p>{{template "copy" (copy "the Lab token" .Secret)}}</p>
+<p class="dim">Give it to {{template "copy" (copy "lab login" "lab login")}} at its prompt. It acts as you, with what you may do at that moment.</p>
 </section>
 {{end}}<section class="card">
 <h2 class="card-title">lab tokens · {{.Count}} of {{.Cap}}</h2>
@@ -44,7 +44,7 @@
 </section>
 <section class="card">
 <h2 class="card-title">macs signed in as you</h2>
-<p class="dim">A Mac signs in with <code>omarchy-m-test --sign-in</code>. {{if .Counted}}While you are on the Omarchy M team, its runs are published as Verified runs.{{else}}Its runs are published as Community runs: Verified runs come from Macs of the Omarchy M team.{{end}} Signing a Mac out changes no report it already sent.</p>
+<p class="dim">A Mac signs in with {{template "copy" (copy "omarchy-m-test --sign-in" "omarchy-m-test --sign-in")}}. {{if .Counted}}While you are on the Omarchy M team, its runs are published as Verified runs.{{else}}Its runs are published as Community runs: Verified runs come from Macs of the Omarchy M team.{{end}} Signing a Mac out changes no report it already sent.</p>
 {{if .Macs}}<div class="scroll"><table class="list stack">
 <thead><tr><th>Mac</th><th>Signed in</th><th>Reports</th><th></th></tr></thead>
 <tbody>

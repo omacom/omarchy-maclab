@@ -75,8 +75,11 @@ edge_lab() {
   SOCKET_DIR="$(mktemp -d /tmp/fd-XXXXXX)"
   LOCAL_SOCKET="$SOCKET_DIR/labd.sock"
   echo 1 > "$WORK/sign-in/admins"
+  # Each log is made before its program starts: a background job opens its
+  # redirect only once it runs, and the first read below can come before.
+  : > "$WORK/labd.log"
   "$BIN/labd" --listen=127.0.0.1:0 --socket="$LOCAL_SOCKET" --public-url="https://$EDGE_HOST" --data="$LOCAL_DATA" \
-    --sign-in="$WORK/sign-in" --omt=false > "$WORK/labd.log" 2>&1 &
+    --sign-in="$WORK/sign-in" --omt=false >> "$WORK/labd.log" 2>&1 &
   LABD_PID=$!
   port=""
   for n in $(seq 100); do
@@ -87,8 +90,9 @@ edge_lab() {
   done
   [[ -n $port ]] || fail "labd did not say where it listens"
   LOCAL_LISTEN="127.0.0.1:$port"
+  : > "$WORK/tunnel.log"
   "$PROBE" tunnel --socket "$LOCAL_SOCKET" --host "$EDGE_HOST" --client "$STAND_IN_ADDRESS" --silence "$silence" --down 2s \
-    ${FAULT:+--fault "$FAULT"} > "$WORK/tunnel.log" 2>&1 &
+    ${FAULT:+--fault "$FAULT"} >> "$WORK/tunnel.log" 2>&1 &
   TUNNEL_PID=$!
   at=""
   for n in $(seq 100); do

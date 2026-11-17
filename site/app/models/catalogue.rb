@@ -18,7 +18,6 @@ module Catalogue
   def self.version = data.fetch("catalogue_version")
   def self.check_ids = data.fetch("checks").keys
   def self.outcome_words(outcome) = data.fetch("outcomes").fetch(outcome, outcome)
-  def self.asahi_credit = data.dig("sources", "asahi", "credit")
   def self.features = data.fetch("features")
   def self.chips = data.fetch("chips")
   # Every Apple Silicon Mac board: its name, chip, SoC, lineup and hardware facts.

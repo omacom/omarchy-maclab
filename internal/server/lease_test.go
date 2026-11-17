@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -147,8 +148,11 @@ func TestAnyMaintainerCanForceALeaseToEnd(t *testing.T) {
 		t.Fatalf("the lease outlived lab release --force: %+v", q)
 	}
 	const ended = "ended early by Maintainer joshua"
-	if logs := l.logs.String(); !strings.Contains(logs, "lease by ada@laptop (ada)") || !strings.Contains(logs, ended) {
-		t.Fatalf("labd's log doesn't say who ended whose lease:\n%s", logs)
+	// By account in labd's log, which a forgetting does not reach.
+	whose := fmt.Sprintf("the Lease of account %d, until", testAccount(harnessMaintainer))
+	by := fmt.Sprintf("ended by account %d", testAccount("joshua"))
+	if logs := l.logs.String(); !strings.Contains(logs, whose) || !strings.Contains(logs, by) || strings.Contains(logs, "lease by ada@laptop") {
+		t.Fatalf("labd's log doesn't say by account who ended whose lease:\n%s", logs)
 	}
 	j := l.jobAPI(theirs, 60*time.Second)
 	l.expect(j, api.OutcomePass)
@@ -170,8 +174,9 @@ func TestRemovingAMaintainerEndsTheirLeases(t *testing.T) {
 		t.Fatalf("a removed Maintainer's lease outlived them: %+v", q)
 	}
 	const ended = "@joshua is no longer a Maintainer"
-	if !strings.Contains(l.logs.String(), ended) {
-		t.Fatalf("labd's log doesn't say why the lease ended:\n%s", l.logs.String())
+	// labd's log, which a forgetting does not reach, has the account; the job says why.
+	if logs := l.logs.String(); !strings.Contains(logs, fmt.Sprintf("the Lease of account %d, until", testAccount("joshua"))) || strings.Contains(logs, ended) {
+		t.Fatalf("labd's log doesn't say by account whose lease ended:\n%s", logs)
 	}
 	j := l.jobAPI(mine, 60*time.Second)
 	l.expect(j, api.OutcomePass)

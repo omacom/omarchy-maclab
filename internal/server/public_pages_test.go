@@ -311,6 +311,9 @@ func TestTheHomePageShowsTheMatrixOrSaysThereAreNoReportsYet(t *testing.T) {
 	if got := page.sole(t, "#install").words(); got != "curl -fsSL "+labAddress+"/install | bash" {
 		t.Errorf("the install command: %q", got)
 	}
+	home := l.do("GET", "/", "").Body.String()
+	offersToCopy(t, home, "the install command", "curl -fsSL "+labAddress+"/install | bash")
+	offersToCopy(t, home, "omarchy-m-test", "omarchy-m-test")
 	l.add(goldenDoc(t, "m2-max-image2"), "a")
 	page = l.page("/")
 	if page.count(t, "table.matrix tr.model-summary") != 1 || page.count(t, "tbody.matrix-history tr.build-row") != 1 {
@@ -661,7 +664,7 @@ func TestAModelPageShowsWhatItsChipIsExpectedToDoAndEachStacksResults(t *testing
 		head.attr("title") != label || head.attr("href") != "#configuration-1" || head.words() != "#1" || !page.hasText(t, ".configuration-key li#configuration-1", label) {
 		t.Error("the features table is not as the old page's")
 	}
-	if page.count(t, "tr.report-row") != 2 || !page.says(t, ".credit", "CC BY 3.0") {
+	if page.count(t, "tr.report-row") != 2 {
 		t.Errorf("%d reports listed", page.count(t, "tr.report-row"))
 	}
 	if page.count(t, "tr.report-row .badge-community") != 2 || !page.says(t, "tr.report-row td.nowrap", "37 pass 2 fail 2 gap 45 skip") ||
@@ -700,7 +703,7 @@ func TestTheFeaturesPageKeepsCompactResultsWithAccessibleModelAndBuildDetails(t 
 	if len(details) != 2 || details[0] == details[1] || !strings.Contains(details[0], "linux-aurora") || !strings.Contains(details[1], "linux-aurora") {
 		t.Errorf("the boxes' details: %q", details)
 	}
-	if page.count(t, "tr.feature-row") != all || !page.says(t, ".credit", "CC BY 3.0") {
+	if page.count(t, "tr.feature-row") != all {
 		t.Errorf("%d feature rows, want %d", page.count(t, "tr.feature-row"), all)
 	}
 }

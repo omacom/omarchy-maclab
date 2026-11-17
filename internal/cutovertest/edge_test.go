@@ -148,12 +148,13 @@ func stubs(t *testing.T) (env []string, log string) {
 // With no option every test says what it would do and runs nothing: no lab,
 // no curl, no ssh, no probe.
 func TestADryRunOfAStreamOrEdgeTestSendsNothing(t *testing.T) {
+	added := recordsAdded(t, "*front-door*")
 	env, log := stubs(t)
 	for name, wants := range map[string][]string{
 		"fd01-exec-keepalives": {"lab exec --timeout 3600 m1-pro 'sleep 3590", "one every 30 s (120 in all)", "front-door-01.md", "Exec record"},
 		"fd02-freeze-entry":    {"freeze-entry m1-pro --release R", "frozen once", "front-door-02.md"},
 		"fd06-ten-clients":     {"six times over, lab status m1-pro", "the event stream", "lab logs JOB", "front-door-06.md"},
-		"fd07-clients-pass":    {"lab status", "Python CLI", "curl -fsSL https://lab.omarchy-mac.org/install", "never runs", "front-door-07.md"},
+		"fd07-clients-pass":    {"lab status", "Python CLI", "curl -fsSL https://lab.omarchy-mac.org/install", "curl -fsSL https://lab.omarchy-mac.org/join, with no token", "never runs", "front-door-07.md"},
 		"fd08-forged-address":  {"CF-Connecting-IP: 203.0.113.77", "edge-facts callers", "No address goes into the record", "front-door-08.md"},
 		"fd09-tunnel-restart":  {"launchctl kickstart -k system/org.omarchy-mac.lab.cloudflared", "connection lost; the command may still be running", "Exec record to hold lab's command once", "front-door-09.md"},
 		"fd10-origin-closed":   {"edge-facts origin", "7770 7780 20241 80 443 8080", "UPnP", "--no-forwards", "front-door-10.md"},
@@ -180,7 +181,7 @@ func TestADryRunOfAStreamOrEdgeTestSendsNothing(t *testing.T) {
 	if b, _ := os.ReadFile(log); len(b) != 0 {
 		t.Errorf("a dry run ran:\n%s", b)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*front-door*")); len(entries) != 0 {
+	if entries := added(); len(entries) != 0 {
 		t.Errorf("a dry run left a record: %v", entries)
 	}
 }
@@ -325,7 +326,7 @@ func TestFD06FailsWhenTheEdgeThrottles(t *testing.T) {
 func TestFD07TheLabsClientsPass(t *testing.T) {
 	t.Parallel()
 	passes(t, "fd07-clients-pass", "lab (Go): lab status was answered by labd", "omarchy-m-test (Python): /install came as the script", "lab-agent: m1-pro is checking in",
-		"curl -fsSL …/install: the install script", "a body of shell, SQL and script text reached m1-pro")
+		"curl -fsSL …/install: the install script", "curl -fsSL …/join: labd's own answer", "a body of shell, SQL and script text reached m1-pro")
 	fails(t, "challenge", "fd07-clients-pass", "FAIL: omarchy-m-test (Python): /install gave HTTP 403")
 }
 
@@ -382,6 +383,72 @@ func TestFD10NothingAnswersBeyondLoopback(t *testing.T) {
 	}
 	if code != 1 || !strings.Contains(record, "FAIL: something answers beyond loopback on port(s) "+port) {
 		t.Errorf("with a port open on every address: exit %d\n%s", code, out)
+	}
+	noAddress(t, "fd10-origin-closed", record)
+}
+
+// An address the mini shares with the machine asking it, such as the
+// bridge Apple's container gives both Macs, reaches the asker itself: it is
+// not asked, and the record says why without naming it.
+func TestFD10DoesNotAskAnAddressThatIsAlsoThisMachines(t *testing.T) {
+	t.Parallel()
+	stubs, bin, records := t.TempDir(), t.TempDir(), t.TempDir()
+	calls := filepath.Join(stubs, "calls")
+	write := func(file, body string) {
+		if err := os.WriteFile(file, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(stubs, "ssh"), `#!/bin/bash
+case "$*" in
+  *edge-facts\ origin*) printf 'lab_listeners=3\nbeyond_loopback=0\nbeyond_loopback_ports=\n' ;;
+  */sbin/ifconfig*) printf 'lo0: flags=8049\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags=8863\n\tinet 198.51.100.7 netmask 0xffffff00\nbridge100: flags=8863\n\tinet 192.0.2.1 netmask 0xffffff00\nutun4: flags=8051\n\tinet 203.0.113.77 --> 203.0.113.77\n' ;;
+  *) exit 1 ;;
+esac
+`)
+	write(filepath.Join(stubs, "ifconfig"), "#!/bin/sh\nprintf 'lo0: flags=8049\\n\\tinet 127.0.0.1 netmask 0xff000000\\nen0: flags=8863\\n\\tinet 192.0.2.50 netmask 0xffffff00\\nbridge100: flags=8863\\n\\tinet 192.0.2.1 netmask 0xffffff00\\n'\n")
+	// The stand-in for the probe: SSH answers everywhere, and 7780 answers
+	// at the shared address, as this machine's own listener did.
+	write(filepath.Join(bin, "front-door-probe"), `#!/bin/bash
+echo "probe $*" >> "`+calls+`"
+case "$1" in
+  answers)
+    shift
+    asked=$# open=0 ports=""
+    for a in "$@"; do
+      if [[ $a == *:22 || $a == 192.0.2.1:7780 ]]; then open=$((open + 1)); ports="${a##*:}"; fi
+    done
+    printf 'asked=%s\nopen=%s\nclosed=%s\nopen_ports=%s\n' "$asked" "$open" "$((asked - open))" "$ports" ;;
+  router) printf 'upnp=silent\nnat_pmp=silent\n' ;;
+esac
+`)
+	out, code := run(t, []string{"PATH=" + stubs + ":" + os.Getenv("PATH")}, "", frontDoor(t, "fd10-origin-closed"),
+		"--lab", "--mini", "owner@mini.example", "--bin", bin, "--records", records, "--no-forwards", "--upnp-off")
+	files, _ := filepath.Glob(filepath.Join(records, "*-front-door-10.md"))
+	if len(files) != 1 {
+		t.Fatalf("no record: exit %d\n%s", code, out)
+	}
+	record := read(t, files[0])
+	if code != 0 || !strings.Contains(record, "\nResult: pass\n") {
+		t.Errorf("fd10 --lab: exit %d\n%s\nrecord:\n%s", code, out, record)
+	}
+	for _, want := range []string{
+		"the mini has 3 address(es) beyond loopback; 1 of them is also this machine's own address: not asked",
+		"2 of the rest can be reached from this machine (SSH answers there)",
+		"asked on 2 address(es) and ports 7770 7780 20241 80 443 8080: none takes a connection",
+	} {
+		if !strings.Contains(record, want) {
+			t.Errorf("the record lacks %q:\n%s", want, record)
+		}
+	}
+	if probed := read(t, calls); strings.Contains(probed, "192.0.2.1:") {
+		t.Errorf("the shared address was asked:\n%s", probed)
+	}
+	if !strings.Contains(out, "192.0.2.1 is also this machine's own address: not asked") {
+		t.Errorf("the run does not name the address it left out:\n%s", out)
+	}
+	if strings.Contains(record, "192.0.2.1") {
+		t.Errorf("the record names an address:\n%s", record)
 	}
 	noAddress(t, "fd10-origin-closed", record)
 }

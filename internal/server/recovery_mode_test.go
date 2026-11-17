@@ -161,21 +161,25 @@ func TestRecoveryNetworkTransitionCancelsAndDrainsPriorControllerCall(t *testing
 		}
 		time.Sleep(time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond) // past labd's own look, at the controller's lock
+	l.oob.waitResetCalls(t, "the Hard reset never reached the controller's lock", func(asked, _ int) bool { return asked == 1 })
 	j := &api.Job{ID: "mode-quiesce-job", Spec: api.JobSpec{Device: l.name, RecoveryMode: api.RecoveryNetworkOnly}, State: api.JobQueued}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if e := l.s.beginJobRecoveryMode(ctx, v, j); e != nil {
 		t.Fatal(e)
 	}
-	select {
-	case e := <-resetDone:
-		if e == nil {
-			t.Fatal("prior reset not canceled")
-		}
-	default:
+	// A controller call holds oobCallMu from start to end; resetOOB lets go
+	// of it only as it returns, so its goroutine may not have said so yet.
+	if !v.oobCallMu.TryLock() {
 		t.Fatal("device commands could start before the controller call stopped")
 	}
+	v.oobCallMu.Unlock()
+	if e := <-resetDone; e == nil {
+		t.Fatal("prior reset not canceled")
+	}
+	// The controller learns its caller left when it sees the connection
+	// close, a moment after labd let go: the reset ends without its turn.
+	l.oob.waitResetCalls(t, "the canceled Hard reset still waits at the controller", func(_, ended int) bool { return ended == 1 })
 	release()
 	if e := <-probed; e != nil {
 		t.Fatal(e)

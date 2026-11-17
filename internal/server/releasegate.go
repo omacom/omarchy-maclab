@@ -629,7 +629,7 @@ func (s *Server) hExclude(w http.ResponseWriter, r *http.Request) {
 	j, err := s.store.job(id)
 	if err == nil && j.State == api.JobDone {
 		j.GateExclusion = x
-		err = s.store.saveJob(j)
+		err = s.saveJobLocked(j)
 	}
 	jobMu.Unlock()
 	switch {

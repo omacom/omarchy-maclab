@@ -26,9 +26,8 @@ import (
 
 func (l *Linux) jobDir(job string) string { return filepath.Join(l.WorkDir, "jobs", job) }
 
-func (l *Linux) Stage(ctx context.Context, job string, a api.StageArgs, fetch Fetcher) (api.StageResult, error) {
-	defer syncDisks()
-	var res api.StageResult
+func (l *Linux) Stage(ctx context.Context, job string, a api.StageArgs, fetch Fetcher) (res api.StageResult, err error) {
+	defer flushed(&err)
 	if strings.ContainsAny(job, "/. ") || job == "" {
 		return res, fmt.Errorf("bad job id %q", job)
 	}
@@ -249,7 +248,56 @@ func stageCmdline(knownGood string, stock func() (string, error), a api.StageArg
 	if !hasParam(base, "root") {
 		return "", fmt.Errorf("the test cmdline would have no root= (base %q, strip %q)", a.CmdlineBase, a.CmdlineStrip)
 	}
-	return testCmdline(base, a, job), nil
+	return testCmdline(withDiskUnlock(base, knownGood), a, job), nil
+}
+
+// withDiskUnlock adds to a test boot's base the known-good boot's disk
+// unlocking (rd.luks.name/uuid/key/options) for each volume the base doesn't
+// set up itself. On an auto-unlocked Mac the known-good cmdline has
+// lab-only-autounlock's rd.luks.key=<uuid>=<file>, and every initramfs
+// mkinitcpio builds holds that file, the test kernel's too; a stock or literal
+// base, or a strip glob such as rd.*, would leave the boot at the passphrase
+// prompt with no one there to type it.
+func withDiskUnlock(base, knownGood string) string {
+	out := strings.Fields(base)
+	have := map[string]bool{}
+	for _, f := range out {
+		if k := diskUnlockKey(f); k != "" {
+			have[k] = true
+		}
+	}
+	for _, f := range strings.Fields(knownGood) {
+		if k := diskUnlockKey(f); k != "" && !have[k] {
+			out = append(out, f)
+			have[k] = true
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// diskUnlockKey is what a cmdline token sets up for systemd-cryptsetup, as
+// "<what> <uuid>" ("*" for every volume), or "" when it sets up none.
+func diskUnlockKey(tok string) string {
+	k, v, _ := strings.Cut(tok, "=")
+	k = strings.TrimPrefix(k, "rd.")
+	uuidOf := func(v string) string {
+		if u, _, ok := strings.Cut(v, "="); ok && !strings.HasPrefix(v, "/") {
+			return luksUUID(u)
+		}
+		return "*"
+	}
+	switch k {
+	case "luks.uuid":
+		return "volume " + luksUUID(v)
+	case "luks.name":
+		u, _, _ := strings.Cut(v, "=")
+		return "volume " + luksUUID(u)
+	case "luks.key":
+		return "key " + uuidOf(v)
+	case "luks.options":
+		return "options " + uuidOf(v)
+	}
+	return ""
 }
 
 // stripParams drops the parameters whose name (before "=") or whole text
@@ -351,7 +399,7 @@ func (l *Linux) install(ctx context.Context, job, sha string, fetch Fetcher, boo
 		return "", err
 	}
 	defer os.Remove(art)
-	if out, err := exec.CommandContext(ctx, "tar", "-xf", art, "-C", x).CombinedOutput(); err != nil {
+	if out, err := combinedGroup(exec.CommandContext(ctx, "tar", "-xf", art, "-C", x)); err != nil {
 		return "", fmt.Errorf("extract: %v: %s", err, out)
 	}
 
@@ -370,9 +418,15 @@ func (l *Linux) install(ctx context.Context, job, sha string, fetch Fetcher, boo
 	src := dirs[0]
 	krel := filepath.Base(src)
 
+	// The image must be a regular file, not a link: a FIFO or a device
+	// would hang the copy that opens it.
 	var image string
 	for _, c := range []string{filepath.Join(src, "vmlinuz"), filepath.Join(src, "Image"), filepath.Join(x, "boot", "Image"), filepath.Join(x, "Image")} {
-		if _, err := os.Stat(c); err == nil {
+		if st, err := os.Lstat(c); err == nil {
+			if !st.Mode().IsRegular() {
+				rel, _ := filepath.Rel(x, c)
+				return "", fmt.Errorf("%s in the artifact is not a regular file", rel)
+			}
 			image = c
 			break
 		}
@@ -399,7 +453,8 @@ func (l *Linux) install(ctx context.Context, job, sha string, fetch Fetcher, boo
 		os.RemoveAll(dst)
 	}
 	if err := os.Rename(src, dst); err != nil {
-		if out, err := exec.Command("cp", "-a", src, dst).CombinedOutput(); err != nil {
+		if out, err := combinedGroup(exec.CommandContext(ctx, "cp", "-a", src, dst)); err != nil {
+			os.RemoveAll(dst) // a copy cut part way; dst was not there before
 			return "", fmt.Errorf("install modules: %v: %s", err, out)
 		}
 	}
@@ -407,7 +462,7 @@ func (l *Linux) install(ctx context.Context, job, sha string, fetch Fetcher, boo
 	if image == filepath.Join(src, filepath.Base(image)) {
 		image = filepath.Join(dst, filepath.Base(image))
 	}
-	if out, err := exec.CommandContext(ctx, "depmod", "-a", krel).CombinedOutput(); err != nil {
+	if out, err := combinedGroup(exec.CommandContext(ctx, "depmod", "-a", krel)); err != nil {
 		return "", fmt.Errorf("depmod: %v: %s", err, out)
 	}
 	if err := boot(krel, image); err != nil {
@@ -418,7 +473,7 @@ func (l *Linux) install(ctx context.Context, job, sha string, fetch Fetcher, boo
 
 // grubBootFiles copies the kernel next to its entry and builds its initramfs.
 func grubBootFiles(ctx context.Context, krel, image, bootDir string) error {
-	if out, err := exec.Command("cp", image, filepath.Join(bootDir, "vmlinuz")).CombinedOutput(); err != nil {
+	if out, err := combinedGroup(exec.CommandContext(ctx, "cp", image, filepath.Join(bootDir, "vmlinuz"))); err != nil {
 		return fmt.Errorf("copy image: %v: %s", err, out)
 	}
 	ictx, cancel := context.WithTimeout(ctx, 10*time.Minute)
@@ -430,7 +485,7 @@ func grubBootFiles(ctx context.Context, krel, image, bootDir string) error {
 	} else {
 		cmd = exec.CommandContext(ictx, "dracut", "--force", "--kver", krel, initrd)
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := combinedGroup(cmd); err != nil {
 		return fmt.Errorf("initramfs: %v: %s", err, lastLines(string(out), 15))
 	}
 	return nil
@@ -460,8 +515,8 @@ func (l *Linux) removeJob(job string) error {
 	return nil
 }
 
-func (l *Linux) Cleanup(job string, all bool) error {
-	defer syncDisks()
+func (l *Linux) Cleanup(job string, all bool) (err error) {
+	defer flushed(&err)
 	return cleanupAfterMesa(l.cleanupMesa(job, all), func() error { return l.cleanupKernel(job, all) })
 }
 

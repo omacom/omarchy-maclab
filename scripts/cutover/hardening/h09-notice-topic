@@ -38,17 +38,29 @@ while (( $# )); do
   shift
 done
 
+# Where lab-agent keeps a Volunteer's Notice settings at the Mac, and where
+# the test copies them aside (see notices below). Each command stops at its
+# first step that fails: the copy aside goes only once every setting is
+# back.
+agent_dir=/var/lib/maclab
+saved_dir=/var/lib/maclab-h09
+save_settings="sudo sh -c 'set -e; mkdir -m 700 $saved_dir; for f in ntfy-topic ntfy-jobs; do [ ! -e $agent_dir/\$f ] || cp -p $agent_dir/\$f $saved_dir/; done'"
+put_back="sudo sh -c 'set -e; cd $saved_dir; for f in ntfy-topic ntfy-jobs; do if [ -e \$f ]; then cp -p \$f $agent_dir/; else rm -f $agent_dir/\$f; fi; done; cd /; rm -r $saved_dir'"
+
 if [[ $MODE == dry ]]; then
   cat <<PLAN
 $ME: dry run. Through $ADDRESS, with the Volunteer of ${volunteers:-NAME} at the Mac and the owner's browser (the session cookie typed at a hidden prompt), it would:
-  1. STOP, by hand: at ${volunteers:-NAME}, run: sudo lab-agent notify --topic https://192.168.0.1/h09
-  2. read ${volunteers:-NAME}'s card on My Macs (for M team, Mine on Macs at $ADDRESS/macs?show=mine)
+  1. read ${volunteers:-NAME}'s card on My Macs: the topic and the job Notices it shows, kept in the run's folder and never shown
+  2. STOP, by hand: at ${volunteers:-NAME}, copy its Notice settings aside, as root: $save_settings
+  3. STOP, by hand: at ${volunteers:-NAME}, run: sudo lab-agent notify --topic https://192.168.0.1/h09
+  4. read ${volunteers:-NAME}'s card on My Macs (for M team, Mine on Macs at $ADDRESS/macs?show=mine)
      expects: the topic shown as refused (not a public address)
-  3. STOP, by hand: at ${volunteers:-NAME}, run: sudo lab-agent notify --topic ${redirect:-URL}, then: sudo lab-agent notify --jobs on
-  4. run: lab run ${volunteers:-NAME} --no-wait, for the Notice that a job is starting; read the card; lab cancel the job before the Mac reboots
+  5. STOP, by hand: at ${volunteers:-NAME}, run: sudo lab-agent notify --topic ${redirect:-URL}, then: sudo lab-agent notify --jobs on
+  6. run: lab run ${volunteers:-NAME} --no-wait under a holder of the run's own, armed for lab cancel by it first, for the Notice that a job is starting; read the card; lab cancel the job before the Mac reboots
      expects: the topic shown as refused (a redirect is not followed); the topic got no Notice
-  5. STOP, by hand: at ${volunteers:-NAME}, put its topic back (said again if the run ends first)
-  6. write docs/acceptance/$(today)-hardening-09.md and its line in docs/acceptance/$RESULTS_NAME
+  7. STOP, by hand: at ${volunteers:-NAME}, put its Notice settings back, as root: $put_back
+     expects: the card shows the topic and the job Notices of step 1 again; what does not come back the record names NOT UNDONE (labd keeps the last topic a Mac reported: a Mac with no topic of its own does not get the lab's back)
+  8. write docs/acceptance/$(today)-hardening-09.md and its line in docs/acceptance/$RESULTS_NAME
 Locally: a Volunteer's simulated Mac reports a topic on this machine's loopback, a Maintainer ends its enrollment,
      expects: nothing connects to the topic's port; the Notice is dropped
 Nothing was sent.
@@ -143,21 +155,63 @@ refused_with() { card; refusal | grep -qF -- "$1"; }
 # shellcheck disable=SC2329
 not_refused_with() { card; ! refusal | grep -qF -- "$1"; }
 
-# The topic is set at the Mac, by hand, and only there can it be put back.
+# The Mac's Notice settings, its own topic and its job Notices, are two files
+# at the Mac, set by hand there, and only there put back. Before the test
+# changes them they are copied aside as root at the Mac, and copied back at
+# its end (a file the Mac did not have is removed again); the Mac's card is
+# read before and after, to see them back. The card shows the topic, the
+# Mac's only secret: it is kept in the run's own folder and never shown.
+# labd keeps the last topic a Mac reported, so a Mac that had none of its
+# own, and so the lab's, does not get the lab's back: the record says so.
+# notices: the topic and the job Notices the Mac's card shows, a line each.
+notices() {
+  card
+  grep -oE '<dt>Notices</dt><dd>(<span class="copyable"><code data-copy>[^<]*</code>|<span class="dim">no topic</span>)' "$WORK/card.html" | head -n 1 || true
+  grep -oE 'job Notices o(n|ff)' "$WORK/card.html" | head -n 1 || true
+}
+# shellcheck disable=SC2329
+notices_back() { notices > "$WORK/notices.after"; cmp -s "$WORK/notices.before" "$WORK/notices.after"; }
 # shellcheck disable=SC2329
 undo_topic() {
-  rec "BY HAND: at $volunteers, put its topic back: sudo lab-agent notify --topic <the one it had>; and sudo lab-agent notify --jobs off if its job Notices were off"
+  rec "NOT UNDONE: $volunteers's topic and job Notices are still the test's: at $volunteers, put them back: $put_back"
+}
+# The job is asked for under a holder of the run's own, its tag, and armed by
+# that tag before it is asked for: an answer that is lost, or a Ctrl-C before
+# its id is read, still leaves no job of the run's on the Mac.
+# tagged_jobs TAG: of the jobs labd listed (JSON on stdin), the ids of those
+# asked for under TAG that have not ended.
+# shellcheck disable=SC2329
+tagged_jobs() {
+  sed 's/"id":"j/\
+"id":"j/g' | awk -v want="\"holder\":\"$1\"" 'index($0, want) && !index($0, "\"state\":\"done\"") && match($0, /^"id":"j[0-9a-z-]*"/) { print substr($0, 7, RLENGTH - 7) }'
 }
 # shellcheck disable=SC2329
 undo_job() {
-  if "$LAB_CMD" cancel "$1" > "$WORK/undo-job.out" 2>&1; then
-    rec "undone: job $1 on $volunteers was canceled"
-  else
-    rec "NOT UNDONE: job $1 on $volunteers may still run: lab cancel $1 ($(plain "$WORK/undo-job.out"))"
+  local ids id said
+  "$PROBE" ask --out "$WORK/jobs.json" GET "/api/jobs?device=$volunteers&limit=50" > "$WORK/jobs.out" 2>&1 || true
+  if ! grep -qx 'status=200' "$WORK/jobs.out"; then
+    said="$(fact jobs status)"
+    rec "NOT UNDONE: a job of the run's on $volunteers may still run: the lab did not list the Mac's jobs (${said:-no answer}): lab jobs $volunteers, and lab cancel the one it started"
+    return 0
   fi
+  ids="$(tagged_jobs "$1" < "$WORK/jobs.json")"
+  if [[ -z $ids ]]; then
+    rec "undone: no job of the run's is left on $volunteers"
+    return 0
+  fi
+  for id in $ids; do
+    if "$LAB_CMD" cancel "$id" > "$WORK/undo-job.out" 2>&1; then
+      rec "undone: job $id on $volunteers was canceled"
+    else
+      rec "NOT UNDONE: job $id on $volunteers may still run: lab cancel $id ($(plain "$WORK/undo-job.out"))"
+    fi
+  done
 }
 
 owner_session
+notices > "$WORK/notices.before"
+[[ "$(wc -l < "$WORK/notices.before" | tr -d ' ')" == 2 ]] || give_up "$volunteers's card on My Macs does not show its topic and job Notices: the test could not see them put back"
+hands "At $volunteers, copy its Notice settings aside, as root (if it says the folder exists, an earlier run's copy is there: put that back first with: $put_back): $save_settings"
 arm topic undo_topic
 hands "At $volunteers, run: sudo lab-agent notify --topic https://192.168.0.1/h09"
 wait_until "$WAIT" refused_with "not a public address" || rule_broken "$volunteers's card does not show the topic at a private address refused"
@@ -172,16 +226,25 @@ confirm "The test now starts a job on $volunteers for its Notice that a job is s
 "$LAB_CMD" status "$volunteers" > "$WORK/mac.out" 2>&1 || give_up "lab status $volunteers: $(plain "$WORK/mac.out")"
 ! grep -q '^  lease:' "$WORK/mac.out" || stopped "somebody holds a Lease on $volunteers now: run this when it is free"
 wait_until "$WAIT" not_refused_with "not a public address" || give_up "$volunteers did not report the topic behind a redirect: its card still says $(refusal)"
-"$LAB_CMD" run "$volunteers" --no-wait > "$WORK/job.out" 2>&1 || give_up "no job on $volunteers: $(plain "$WORK/job.out")"
+job_tag="$MACLAB_HOLDER-h09-$(nonce)"
+arm job undo_job "$job_tag"
+MACLAB_HOLDER="$job_tag" "$LAB_CMD" run "$volunteers" --no-wait > "$WORK/job.out" 2>&1 || give_up "no job on $volunteers: $(plain "$WORK/job.out")"
 job="$(sed -n 's/^job \([^ ]*\) queued on .*/\1/p' "$WORK/job.out" | head -n 1)"
 [[ -n $job ]] || give_up "lab run named no job: $(plain "$WORK/job.out")"
-arm job undo_job "$job"
 wait_until "$WAIT" refused_with "redirect" || rule_broken "$volunteers's card does not show the topic behind a redirect refused, after job $job's Notice"
 "$LAB_CMD" cancel "$job" > "$WORK/cancel.out" 2>&1 || give_up "job $job was not canceled: $(plain "$WORK/cancel.out")"
 disarm job
 rec "job $job on $volunteers made a Notice to the topic behind a redirect, and was canceled"
 rec "the topic behind a redirect: $volunteers's card says: $(refusal)"
 confirm "Did that topic, or the address it sends to, get no Notice from the lab?" || rule_broken "the topic behind a redirect got a Notice"
-hands "At $volunteers, put its topic back: sudo lab-agent notify --topic <the one it had>; and sudo lab-agent notify --jobs off if its job Notices were off"
+hands "At $volunteers, put its Notice settings back, as root: $put_back"
 disarm topic
+if wait_until "$WAIT" notices_back; then
+  rec "undone: $volunteers's topic and job Notices are as they were before the test, as its card shows"
+else
+  [[ "$(sed -n 1p "$WORK/notices.before")" == "$(sed -n 1p "$WORK/notices.after")" ]] \
+    || rec "NOT UNDONE: $volunteers's Notices still go to another topic than before the test, as its card shows. If the Mac had no topic of its own before, labd keeps the last one it reported: the lab's own topic cannot be given back from the Mac, and the Volunteer sets one with sudo lab-agent notify --topic URL. Otherwise, at $volunteers: $put_back"
+  [[ "$(sed -n 2p "$WORK/notices.before")" == "$(sed -n 2p "$WORK/notices.after")" ]] \
+    || rec "NOT UNDONE: $volunteers's job Notices are $(sed -n 2p "$WORK/notices.after" | sed 's/^job Notices //') and were $(sed -n 2p "$WORK/notices.before" | sed 's/^job Notices //') before the test: at $volunteers, sudo lab-agent notify --jobs $(sed -n 2p "$WORK/notices.before" | sed 's/^job Notices //')"
+fi
 passed

@@ -61,7 +61,9 @@ if [ -n "${SRC_SHA:-}${PKGREL:-}" ]; then
   step "checksums"
   as_build updpkgsums
 fi
-echo "toolchain: $(gcc --version | head -1); $(pacman -Q rustup rust-bindgen pahole binutils | tr '\n' ' ')"
+# linux-api-headers newer than the recipe's kernel tree can break its host tools
+# (7.3's __u128 against a 7.1 tree): the full list is /usr/share/maclab/packages.
+echo "toolchain: $(gcc --version | head -1); $(pacman -Q gcc glibc linux-api-headers binutils rustup rust-bindgen pahole | tr '\n' ' ')"
 echo "jobs: OMARCHY_BUILD_JOBS=${OMARCHY_BUILD_JOBS:-(unset: the recipe default)}"
 
 step "sources"

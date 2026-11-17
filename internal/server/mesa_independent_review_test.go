@@ -15,22 +15,30 @@ func TestReviewMesaUnfinishedSurvivesHistoryWindow(t *testing.T) {
 			l := newLab(t, false)
 			spec := mesaSpec(l)
 			old := time.Now().Add(-48 * time.Hour)
-			for _, p := range spec.Mesa.Packages {
-				if e := os.Chtimes(l.s.artifactPath(p.SHA256), old, old); e != nil {
+			// labd's start-up GC pass runs on its own goroutine. Landing
+			// between the backdating and the job that refers to the
+			// packages, it would delete what this pass must keep. No pass
+			// runs while the fixture is laid out.
+			func() {
+				gcMu.Lock()
+				defer gcMu.Unlock()
+				for _, p := range spec.Mesa.Packages {
+					if e := os.Chtimes(l.s.artifactPath(p.SHA256), old, old); e != nil {
+						t.Fatal(e)
+					}
+				}
+				j := &api.Job{ID: "j-review-old-active", Spec: spec, State: api.JobQueued, Created: old, Updated: old}
+				if e := l.s.store.saveJob(j); e != nil {
 					t.Fatal(e)
 				}
-			}
-			j := &api.Job{ID: "j-review-old-active", Spec: spec, State: api.JobQueued, Created: old, Updated: old}
-			if e := l.s.store.saveJob(j); e != nil {
-				t.Fatal(e)
-			}
-			for i := 0; i < newer; i++ {
-				done := &api.Job{ID: fmt.Sprintf("j-review-done-%03d", i), Spec: api.JobSpec{Device: l.name}, State: api.JobDone, Created: time.Now().Add(time.Duration(i) * time.Nanosecond), Updated: time.Now()}
-				if e := l.s.store.saveJob(done); e != nil {
-					t.Fatal(e)
+				for i := 0; i < newer; i++ {
+					done := &api.Job{ID: fmt.Sprintf("j-review-done-%03d", i), Spec: api.JobSpec{Device: l.name}, State: api.JobDone, Created: time.Now().Add(time.Duration(i) * time.Nanosecond), Updated: time.Now()}
+					if e := l.s.store.saveJob(done); e != nil {
+						t.Fatal(e)
+					}
 				}
-			}
-			l.s.cfg.ArtifactBudget = 1
+				l.s.cfg.ArtifactBudget = 1
+			}()
 			l.s.gcArtifacts()
 			for _, p := range spec.Mesa.Packages {
 				if _, e := os.Stat(l.s.artifactPath(p.SHA256)); e != nil {

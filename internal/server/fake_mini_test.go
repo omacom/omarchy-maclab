@@ -49,6 +49,9 @@ type fakeMini struct {
 	resets int   // resets the tool sent
 	sent   []int // the RID of each, in order
 	down   bool  // the controller does not answer
+	// resetsAsked counts the reset requests that reached the controller,
+	// resetsEnded those it has answered or let go.
+	resetsAsked, resetsEnded int
 	// afterRead runs after the controller read a port for labd, with no lock
 	// held: a test changes the port between labd's look and the controller's.
 	afterRead func(rid int)
@@ -65,8 +68,11 @@ type fakeMini struct {
 	// answers after each reset it sent.
 	onLook      func(rid int)
 	rebootFails error
-	client      *oob.Client
-	log         *logBuf
+	// resetPlugs is how many plugs a port counts for each reset the tool
+	// sends to it: the Mac's restart, as the real mini counts one.
+	resetPlugs int
+	client     *oob.Client
+	log        *logBuf
 }
 
 // holdProbes makes the tool's next nop run until release is called: a tool
@@ -98,6 +104,16 @@ func newFakeMini(t *testing.T) *fakeMini {
 			http.Error(w, "stopped", http.StatusServiceUnavailable)
 			return
 		}
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/reset") {
+			m.mu.Lock()
+			m.resetsAsked++
+			m.mu.Unlock()
+			defer func() {
+				m.mu.Lock()
+				m.resetsEnded++
+				m.mu.Unlock()
+			}()
+		}
 		ctl.Handler().ServeHTTP(w, r)
 	}))
 	t.Cleanup(hs.Close)
@@ -117,6 +133,23 @@ func (m *fakeMini) plug(rid int, sim *agent.Sim, name string, productID int) {
 	defer m.mu.Unlock()
 	m.cables[rid] = &fakeCable{sim: sim, name: name, productID: productID}
 	m.plugs[rid]++
+}
+
+// restarted is the port of a Mac that restarted by itself, as the mini
+// sees it: the port counts n more plugs, its cable untouched. A real Apple
+// Silicon Mac's port counts two for each restart (the M2 Max's went from 21
+// to 25 across two reboots).
+func (m *fakeMini) restarted(rid, n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.plugs[rid] += n
+}
+
+// countResets has each reset the tool sends count n plugs on its port.
+func (m *fakeMini) countResets(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetPlugs = n
 }
 
 func (m *fakeMini) unplug(rid int) {
@@ -167,6 +200,26 @@ func (m *fakeMini) resetsBegun() []int {
 }
 
 // resetsSent is how many resets the tool sent, and to which RIDs.
+// waitResetCalls waits up to five seconds for the reset requests that
+// reached the controller, asked, and those it has done with, ended, to be
+// as ok wants.
+func (m *fakeMini) waitResetCalls(t *testing.T, why string, ok func(asked, ended int) bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m.mu.Lock()
+		asked, ended := m.resetsAsked, m.resetsEnded
+		m.mu.Unlock()
+		if ok(asked, ended) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: after 5s, %d reset requests reached the controller and %d ended", why, asked, ended)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (m *fakeMini) resetsSent() (int, []int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -229,6 +282,7 @@ func (m *fakeMini) Run(_ context.Context, rid int, command string) (string, erro
 	var sim *agent.Sim
 	if c := m.cables[rid]; c != nil {
 		sim = c.sim
+		m.plugs[rid] += m.resetPlugs
 	}
 	fails := m.rebootFails
 	m.mu.Unlock()

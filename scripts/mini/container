@@ -61,10 +61,11 @@ was() {
   if [[ $at == "$(boot)" ]]; then echo "$state"; fi
 }
 
+# Each run writes its own file: the set-up's watch and launchd's run at once.
 now() {
-  rm -f "$CONTAINER_STATE.new"
-  echo "$1 $(boot)" > "$CONTAINER_STATE.new"
-  mv -f "$CONTAINER_STATE.new" "$CONTAINER_STATE"
+  local new="$CONTAINER_STATE.new.$$"
+  echo "$1 $(boot)" > "$new"
+  mv -f "$new" "$CONTAINER_STATE"
 }
 
 # tell TEXT: one line for "Agents", written by the lab account: its log is

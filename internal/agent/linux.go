@@ -5,14 +5,17 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -85,7 +88,7 @@ func (l *Linux) Health() api.Health {
 	if f := strings.Fields(readTrim("/proc/uptime")); len(f) > 0 {
 		h.Uptime, _ = strconv.ParseFloat(f[0], 64)
 	}
-	out, _ := exec.Command("systemctl", "is-system-running").Output()
+	out, _ := toolOutput("systemctl", "is-system-running")
 	h.SystemState = strings.TrimSpace(string(out))
 	h.Tainted, _ = strconv.ParseInt(readTrim("/proc/sys/kernel/tainted"), 10, 64)
 	_, _, cmd := l.Identity()
@@ -128,7 +131,7 @@ func (l *Linux) Facts() api.Facts {
 	}
 	_, err := os.Stat("/dev/watchdog0")
 	f.Watchdog = err == nil
-	out, _ := exec.Command("systemctl", "show", "-p", "RuntimeWatchdogUSec", "--value").Output()
+	out, _ := toolOutput("systemctl", "show", "-p", "RuntimeWatchdogUSec", "--value")
 	v := strings.TrimSpace(string(out))
 	f.WatchdogArmed = f.Watchdog && v != "" && v != "0" && v != "infinity"
 	f.PanicTimeout, _ = strconv.Atoi(readTrim("/proc/sys/kernel/panic"))
@@ -262,10 +265,10 @@ func (l *Linux) QuiesceBootSync() (resume func()) {
 	defer cancel()
 	var again []string
 	for _, u := range bootSyncUnits {
-		if exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", u).Run() != nil {
+		if runGroup(exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", u)) != nil {
 			continue // not running, or not installed (a GRUB Mac)
 		}
-		if exec.CommandContext(ctx, "systemctl", "stop", u).Run() != nil {
+		if runGroup(exec.CommandContext(ctx, "systemctl", "stop", u)) != nil {
 			continue
 		}
 		if u != "snapper-cleanup.service" {
@@ -274,27 +277,33 @@ func (l *Linux) QuiesceBootSync() (resume func()) {
 	}
 	return func() {
 		if len(again) > 0 {
-			exec.Command("systemctl", append([]string{"start"}, again...)...).Run()
+			tool(nil, nil, "systemctl", append([]string{"start"}, again...)...)
 		}
 	}
 }
 
 func (l *Linux) Reboot() error {
-	exec.Command("sync").Run()
-	return exec.Command("systemctl", "reboot").Run()
+	tool(nil, nil, "sync")
+	return tool(nil, nil, "systemctl", "reboot")
 }
 
 func (l *Linux) Crash(mode string) error {
 	if mode != "panic" {
 		return fmt.Errorf("unknown crash mode %q", mode)
 	}
-	syncDisks() // a crash test checks recovery, not FAT's tolerance of the lab's unflushed writes
-	os.WriteFile("/proc/sys/kernel/sysrq", []byte("1"), 0)
-	return os.WriteFile("/proc/sysrq-trigger", []byte("c"), 0)
+	// A crash test checks recovery, not FAT's tolerance of the lab's
+	// unflushed writes.
+	if err := syncDisks(); err != nil {
+		return fmt.Errorf("no panic: %w", err)
+	}
+	os.WriteFile(sysrqEnable, []byte("1"), 0)
+	return os.WriteFile(sysrqTrigger, []byte("c"), 0)
 }
 
-func (l *Linux) CancelBootOnce() error {
-	defer syncDisks()
+var sysrqEnable, sysrqTrigger = "/proc/sys/kernel/sysrq", "/proc/sysrq-trigger"
+
+func (l *Linux) CancelBootOnce() (err error) {
+	defer flushed(&err)
 	b, err := detectBootloader()
 	if err != nil {
 		return err
@@ -302,8 +311,8 @@ func (l *Linux) CancelBootOnce() error {
 	return b.disarm()
 }
 
-func (l *Linux) BootOnce(entry string) error {
-	defer syncDisks()
+func (l *Linux) BootOnce(entry string) (err error) {
+	defer flushed(&err)
 	b, err := detectBootloader()
 	if err != nil {
 		return err
@@ -331,7 +340,7 @@ func (l *Linux) Collect(ctx context.Context, boot, outDir string) error {
 		}
 	}
 	run := func(name string, args ...string) {
-		out, err := exec.CommandContext(ctx, "journalctl", args...).CombinedOutput()
+		out, err := combinedGroup(exec.CommandContext(ctx, "journalctl", args...))
 		save(name, out, err, "journalctl")
 	}
 	// boot is dashed, as /proc/sys/kernel/random/boot_id is, but journalctl
@@ -349,7 +358,7 @@ func (l *Linux) Collect(ctx context.Context, boot, outDir string) error {
 			"systemd-blame.txt":          {"blame", "--no-pager"},
 			"systemd-critical-chain.txt": {"critical-chain", "--no-pager"},
 		} {
-			out, err := exec.CommandContext(ctx, "systemd-analyze", args...).CombinedOutput()
+			out, err := combinedGroup(exec.CommandContext(ctx, "systemd-analyze", args...))
 			save(name, out, err, "systemd-analyze")
 		}
 	}
@@ -357,7 +366,7 @@ func (l *Linux) Collect(ctx context.Context, boot, outDir string) error {
 }
 
 func (l *Linux) PreviousBoot(since time.Time) string {
-	out, err := exec.Command("journalctl", "--list-boots", "-o", "json", "--no-pager").Output()
+	out, err := toolOutput("journalctl", "--list-boots", "-o", "json", "--no-pager")
 	if err != nil {
 		return ""
 	}
@@ -435,7 +444,44 @@ func dirSize(dir string) uint64 {
 // command's result (rebooting, resetting, or moving on), so the result must
 // only go out once the change is on disk. sync(2) also covers GRUB's /boot and
 // U-Boot's variable file, whatever the layout.
-func syncDisks() { unix.Sync() }
+//
+// sync(2) cannot be cut, and a sync program inside it cannot be reaped, so
+// the bound is on lab-agent's wait: after toolTimeout it goes on without
+// the flush and says so. A flush still under way is waited on, not started
+// again.
+func syncDisks() error {
+	syncMu.Lock()
+	if syncing == nil {
+		done := make(chan struct{})
+		syncing = done
+		go func() {
+			syncFS()
+			syncMu.Lock()
+			syncing = nil
+			syncMu.Unlock()
+			close(done)
+		}()
+	}
+	done := syncing
+	syncMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(toolTimeout):
+		log.Printf("sync did not end within %s; going on without it", toolTimeout)
+		return fmt.Errorf("the flush to disk did not end within %s", toolTimeout)
+	}
+}
+
+// flushed adds to *err a flush that did not end: a result labd reboots or
+// resets on goes out only once the change is on disk.
+func flushed(err *error) { *err = errors.Join(*err, syncDisks()) }
+
+var (
+	syncFS  = func() { unix.Sync() }
+	syncMu  sync.Mutex
+	syncing chan struct{}
+)
 
 // guiEnv finds the GUI user's Wayland session so tests can drive Hyprland.
 func guiEnv(name string, wait time.Duration) (*user.User, []string, error) {
@@ -457,7 +503,7 @@ func guiEnv(name string, wait time.Duration) (*user.User, []string, error) {
 			env := []string{"XDG_RUNTIME_DIR=" + run, "WAYLAND_DISPLAY=" + sock, "HOME=" + u.HomeDir, "USER=" + u.Username,
 				"DBUS_SESSION_BUS_ADDRESS=unix:path=" + run + "/bus"}
 			// The user's desktop session, so a test counts as run at the Mac's own seat.
-			if o, err := exec.Command("loginctl", "show-user", u.Username, "--property=Display", "--value").Output(); err == nil {
+			if o, err := toolOutput("loginctl", "show-user", u.Username, "--property=Display", "--value"); err == nil {
 				if id := strings.TrimSpace(string(o)); id != "" {
 					env = append(env, "XDG_SESSION_ID="+id)
 				}
@@ -577,9 +623,9 @@ func kmsgrab(ctx context.Context, path string) error {
 	var last error = fmt.Errorf("no DRM card")
 	for _, card := range displayCards() {
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		out, err := exec.CommandContext(cctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		out, err := combinedGroup(exec.CommandContext(cctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
 			"-device", card, "-f", "kmsgrab", "-i", "-", "-frames:v", "1",
-			"-vf", "hwdownload,format=bgr0", "-q:v", "4", path).CombinedOutput()
+			"-vf", "hwdownload,format=bgr0", "-q:v", "4", path))
 		cancel()
 		if err == nil {
 			if st, serr := os.Stat(path); serr == nil && st.Size() > 0 {
@@ -618,7 +664,7 @@ func (l *Linux) grim(ctx context.Context, path string, wait time.Duration) (int,
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	args := append([]string{"-u", u.Username, "--", "env"}, append(env, "grim", "-t", "jpeg", "-q", "80", tmp)...)
-	if out, err := exec.CommandContext(cctx, "runuser", args...).CombinedOutput(); err != nil {
+	if out, err := combinedGroup(exec.CommandContext(cctx, "runuser", args...)); err != nil {
 		return 0, 0, fmt.Errorf("grim: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	b, err := os.ReadFile(tmp)
@@ -661,7 +707,7 @@ func (l *Linux) Logs(ctx context.Context, a api.LogsArgs) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown log source %q", a.Source)
 	}
-	out, err := exec.CommandContext(ctx, "journalctl", args...).CombinedOutput()
+	out, err := combinedGroup(exec.CommandContext(ctx, "journalctl", args...))
 	if err != nil {
 		return string(out), fmt.Errorf("journalctl: %v", err)
 	}
@@ -711,9 +757,8 @@ func (l *Linux) Exec(ctx context.Context, a api.ExecArgs) api.ExecResult {
 	cmd := exec.CommandContext(cctx, "bash", "-c", a.Command)
 	var out, errb capped
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	cmd.WaitDelay = 3 * time.Second
 	t0 := time.Now()
-	err := cmd.Run()
+	err := runGroup(cmd)
 	res := api.ExecResult{Stdout: out.String(), Stderr: errb.String(), Seconds: time.Since(t0).Seconds(), Via: "agent"}
 	if cctx.Err() == context.DeadlineExceeded {
 		res.ExitCode = 124

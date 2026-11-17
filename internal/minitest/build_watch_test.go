@@ -280,11 +280,21 @@ func TestTheBuildWatchGivesTheCoresEmptiesTheCacheAndWatchesEachBuild(t *testing
 
 	// What lab-builder builds with is looked for too: its scratch folder
 	// and its two images.
-	os.Remove(m.state("image.maclab-kbuild:1"))
-	if out := m.refused("build-watch", "--cpus", "8", "--builds", "1", "--wait", "1"); !strings.Contains(out, "the Builder's image maclab-kbuild:1 is not there") || strings.Contains(out, "@gate ready") {
+	kernel := m.builderRuns("--image")
+	os.Remove(m.state("image." + kernel))
+	if out := m.refused("build-watch", "--cpus", "8", "--builds", "1", "--wait", "1"); !strings.Contains(out, "the Builder's image "+kernel+" is not there") || strings.Contains(out, "@gate ready") {
 		t.Errorf("with an image missing it said:\n%s", out)
 	}
-	m.touch("image.maclab-kbuild:1")
+	m.touch("image." + kernel)
+	// A Deploy whose builder/ is other, and no set-up since: the Builder
+	// runs an image of the build before.
+	plist := m.path("Library/LaunchDaemons/" + builderLabel + ".plist")
+	installed := read(t, plist)
+	write(t, plist, strings.Replace(installed, kernel, "maclab-kbuild:0123456789ab", 1), 0o644)
+	if out := m.refused("build-watch", "--cpus", "8", "--builds", "1", "--wait", "1"); !strings.Contains(out, "the Builder runs maclab-kbuild:0123456789ab, not "+kernel) || strings.Contains(out, "@gate ready") {
+		t.Errorf("with the Builder on an image of another build it said:\n%s", out)
+	}
+	write(t, plist, installed, 0o644)
 	if err := os.Rename(m.path("usr/local/lab/io"), m.path("usr/local/lab/io.away")); err != nil {
 		t.Fatal(err)
 	}

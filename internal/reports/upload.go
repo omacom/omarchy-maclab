@@ -85,7 +85,7 @@ func (u *Uploads) receive(body []byte, installURL string, lab *Lab) (*Stored, *R
 		return nil, refusal, nil
 	}
 	if lab != nil && lab.Machine != "" && judged.MachineID != lab.Machine {
-		return nil, &Refusal{Status: http.StatusForbidden, Error: "The report is signed by another Machine key than the Mac's own: it is not this Mac's report."}, nil
+		return nil, &Refusal{Status: http.StatusForbidden, Error: AnotherMachineKey}, nil
 	}
 	heldAs, held, err := u.store.held(Digest(judged.MachineID, judged.Body))
 	if err != nil {
@@ -107,6 +107,29 @@ func (u *Uploads) receive(body []byte, installURL string, lab *Lab) (*Stored, *R
 		return nil, alreadyUploaded(heldAs), nil
 	}
 	return stored, nil, nil
+}
+
+// AnotherMachineKey is why a lab run's report signed by a key other than
+// its Mac's is not published.
+const AnotherMachineKey = "The report is signed by another Machine key than the Mac's own: it is not this Mac's report."
+
+// SignedBy is the machine id of the Machine key whose valid signature body
+// carries; false for a body with none. It stores and counts nothing: the lab
+// reads it when it collects a run, to bind the Mac's key at its first report.
+func (u *Uploads) SignedBy(body []byte) (string, bool) {
+	payload, err := Parse(body)
+	if err != nil {
+		return "", false
+	}
+	report, _ := payload.(*Object)
+	if report == nil {
+		return "", false
+	}
+	key, err := VerifySignature(report, NamespaceReport)
+	if err != nil {
+		return "", false
+	}
+	return u.rules.MachineID(key), true
 }
 
 var notStored = &Refusal{Status: http.StatusInternalServerError, Error: "The lab could not store the report. Try again later; the report is saved on your Mac."}

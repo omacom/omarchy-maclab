@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("module-build.py")
+KBUILD = Path(__file__).with_name("kbuild")
 
 
 class ModuleBuildTests(unittest.TestCase):
@@ -18,7 +20,8 @@ class ModuleBuildTests(unittest.TestCase):
         self.src = self.root / "src"
         self.obj = self.root / "obj"
         self.io = self.root / "io"
-        for p in (self.src, self.obj, self.io):
+        self.inp = self.root / "in"
+        for p in (self.src, self.obj, self.io, self.inp):
             p.mkdir()
         self.put(
             self.src,
@@ -59,7 +62,7 @@ printf 'fixture host modpost' > "$1/scripts/mod/modpost"
             "include/generated/utsrelease.h",
             '#define UTS_RELEASE "future-test-release"\n',
         )
-        self.put(self.io, "config", 'CONFIG_LOCALVERSION="input"\n')
+        self.put(self.inp, "config", 'CONFIG_LOCALVERSION="input"\n')
         subprocess.run(["git", "init", "-q", str(self.src)], check=True)
         subprocess.run(["git", "-C", str(self.src), "add", "."], check=True)
         subprocess.run(
@@ -88,6 +91,7 @@ printf 'fixture host modpost' > "$1/scripts/mod/modpost"
                 str(SCRIPT),
                 str(self.src),
                 str(self.obj),
+                str(self.inp / "config"),
                 str(self.io),
                 str(self.src / ".git"),
             ],
@@ -119,7 +123,7 @@ printf 'fixture host modpost' > "$1/scripts/mod/modpost"
                 ("build/Module.symvers", (self.obj / "Module.symvers").read_bytes()),
                 ("build/vmlinux", (self.obj / "vmlinux").read_bytes()),
                 ("build/.config", (self.obj / ".config").read_bytes()),
-                ("input.config", (self.io / "config").read_bytes()),
+                ("input.config", (self.inp / "config").read_bytes()),
                 (
                     "build/include/linux/module.h",
                     (self.src / "include/linux/module.h").read_bytes(),
@@ -138,6 +142,27 @@ printf 'fixture host modpost' > "$1/scripts/mod/modpost"
                 identity["files"]["input.config"]["sha256"],
                 identity["files"]["build/.config"]["sha256"],
             )
+
+    def test_kbuild_package_stage_finds_the_config_lab_builder_put_in(self):
+        # lab-builder mounts the build's input read-only at /in and an empty
+        # /io for outputs: the config the build used is /in/config, never /io/config.
+        inp = self.inp
+        (self.root / "git").symlink_to(self.src / ".git")
+        lines = [l for l in KBUILD.read_text().splitlines() if "module-build.py" in l]
+        self.assertEqual(len(lines), 1, lines)
+        line = lines[0].replace("/usr/local/bin/module-build.py", str(SCRIPT))
+        line = re.sub(r"(?<![\w$/])/in\b", str(inp), line)
+        line = re.sub(r"(?<![\w$/])/io\b", str(self.io), line)
+        env = dict(os.environ, SHA=self.sha, URL="https://example.invalid/kernel.git",
+                   C=str(self.root), O=str(self.obj))
+        r = subprocess.run(["bash", "-c", line], env=env, text=True, capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        archive = self.io / "out/module-build.tar.zst"
+        raw = subprocess.check_output(["zstd", "-dq", "-c", str(archive)])
+        tar_path = self.root / "artifact.tar"
+        tar_path.write_bytes(raw)
+        with tarfile.open(tar_path) as t:
+            self.assertEqual(t.extractfile("input.config").read(), (inp / "config").read_bytes())
 
     def test_space_separated_compiler_identity_still_packages(self):
         self.put(self.obj, "include/generated/compile.h",
@@ -166,7 +191,6 @@ printf 'fixture host modpost' > "$1/scripts/mod/modpost"
             self.skipTest("a second writable filesystem is unavailable")
         with tempfile.TemporaryDirectory(dir=shared) as output:
             self.io = Path(output)
-            self.put(self.io, "config", 'CONFIG_LOCALVERSION="input"\n')
             r = self.run_pack()
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertTrue((self.io / "out/module-build.tar.zst").is_file())

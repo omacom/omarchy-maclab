@@ -42,6 +42,10 @@ FAILED=0
 good() { echo "ok    $*"; }
 bad() { echo "FAIL  $*"; FAILED=$((FAILED + 1)); }
 indent() { sed 's/^/        /'; }
+# nomac CONNECTED TRANSPORTS PRODUCT: a port connected on CC alone, with no
+# USB-PD product id, is a display or power: the tool reaches no Mac there.
+nomac() { [[ $1 == Yes && $2 != *USB2* && $2 != *CIO* && -z $3 ]]; }
+NOMAC="not a Mac (a display or power on CC only), left alone"
 
 registry="$(ioreg -l -w0 -r -c AppleHPM)" || fail "ioreg could not read the port controllers"
 
@@ -119,7 +123,9 @@ for rid in "${RIDS[@]}"; do
   (( ! controller )) || continue
   out="$("$tool" --rid "$rid" nop 2>&1)"
   code=$?
-  if [[ $active == Yes && $code != 0 ]]; then
+  if [[ $code != 0 ]] && nomac "$active" "$transports" "$product" && grep -q 'No connection detected' <<<"$out"; then
+    good "RID $rid: $NOMAC"
+  elif [[ $active == Yes && $code != 0 ]]; then
     bad "RID $rid: the tool failed on a connected port (exit $code)"
     indent <<<"$out"
   elif [[ $active == Yes ]]; then
@@ -166,8 +172,10 @@ else
   }
   for rid in "${RIDS[@]}"; do
     answer="$(ask "/v1/ports/$rid/status?probe=1")"
-    IFS='|' read -r _ active _ <<<"$(seen "$rid")"
-    if [[ "$(tail -n 1 <<<"$answer")" == 200 && $active == Yes && $answer == *'"tool_failed":true'* ]]; then
+    IFS='|' read -r _ active _ _ transports product <<<"$(seen "$rid")"
+    if [[ "$(tail -n 1 <<<"$answer")" == 200 && $answer == *'No connection detected'* ]] && nomac "$active" "$transports" "$product"; then
+      good "RID $rid: $NOMAC"
+    elif [[ "$(tail -n 1 <<<"$answer")" == 200 && $active == Yes && $answer == *'"tool_failed":true'* ]]; then
       bad "RID $rid: the tool failed on a connected port: $(sed '$d' <<<"$answer" | tr -d '\n')"
     elif [[ "$(tail -n 1 <<<"$answer")" == 200 ]]; then
       good "RID $rid: $(sed '$d' <<<"$answer" | tr -d '\n')"

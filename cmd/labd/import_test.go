@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 
 	"crypto/sha256"
+	"encoding/pem"
 
 	"github.com/omacom/omarchy-maclab/internal/githubtest"
 	"github.com/omacom/omarchy-maclab/internal/oldsite"
@@ -40,8 +41,9 @@ type importLab struct {
 	github string
 	gh     *githubtest.Server
 	// opened is every address the command opened a Postgres at.
-	opened []string
-	said   bytes.Buffer
+	opened  []string
+	caFiles []string
+	said    bytes.Buffer
 }
 
 type fakeOldSite struct{ oldsite.Source }
@@ -65,8 +67,9 @@ func newImportLab(t *testing.T) *importLab {
 	l.github, l.gh = fake.URL, gh
 	was := openOldSite
 	t.Cleanup(func() { openOldSite = was })
-	openOldSite = func(address string) (oldSiteDB, error) {
+	openOldSite = func(address, caFile string) (oldSiteDB, error) {
 		l.opened = append(l.opened, address)
+		l.caFiles = append(l.caFiles, caFile)
 		return fakeOldSite{l.corpus}, nil
 	}
 	return l
@@ -96,12 +99,12 @@ func TestTheImportCommandDumpsTheOldSiteThenImportsFromTheFileAlone(t *testing.T
 	l := newImportLab(t)
 	dump := filepath.Join(t.TempDir(), "old-site.dump")
 
-	code, out := l.run(typedAddress+"\n", "dump", "--to", dump)
+	code, out := l.run(typedAddress+"\n/var/lab/import/old-site-ca.pem\n", "dump", "--to", dump)
 	if code != 0 || !strings.Contains(out, "20 reports, 4 tester_bindings, 6 testers") {
 		t.Fatalf("dump: exit %d, %s", code, out)
 	}
-	if len(l.opened) != 1 || l.opened[0] != typedAddress {
-		t.Fatalf("the reader was opened at %d addresses, not the one typed", len(l.opened))
+	if len(l.opened) != 1 || l.opened[0] != typedAddress || l.caFiles[0] != "/var/lab/import/old-site-ca.pem" {
+		t.Fatalf("the reader was opened at %d addresses, not the one typed, or not with the CA file typed: %q", len(l.opened), l.caFiles)
 	}
 	if st, err := os.Stat(dump); err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatalf("the dump file: %v", err)
@@ -111,7 +114,7 @@ func TestTheImportCommandDumpsTheOldSiteThenImportsFromTheFileAlone(t *testing.T
 	}
 
 	// From here on the old site is never read.
-	openOldSite = func(string) (oldSiteDB, error) {
+	openOldSite = func(string, string) (oldSiteDB, error) {
 		t.Error("the import opened the old site's Postgres")
 		return nil, errors.New("no")
 	}
@@ -230,7 +233,7 @@ func TestTheAddressIsNeverAnArgumentAndNeverRepeated(t *testing.T) {
 
 func TestAnAddressTheReaderRefusesIsNotRepeated(t *testing.T) {
 	l := newImportLab(t)
-	openOldSite = func(address string) (oldSiteDB, error) { return pgOpen(address) }
+	openOldSite = pgOpen
 	dump := filepath.Join(t.TempDir(), "old-site.dump")
 	code, out := l.run("postgres://postgres:hunter2-not-real@old.site.example/railway?sslmode=disable\n", "dump", "--to", dump)
 	if code != 1 || !strings.Contains(out, "TLS") || strings.Contains(out, "hunter2") || strings.Contains(out, "old.site.example") {
@@ -347,5 +350,64 @@ func TestTheCountsCheckFailsWhenAPersonIsMissing(t *testing.T) {
 	code, out := l.run("", "check", "counts", "--from", path, "--data", l.data)
 	if code != 1 || !strings.Contains(out, "0 are people") || !strings.Contains(out, "do not match") {
 		t.Errorf("exit %d, %s", code, out)
+	}
+}
+
+// Beyond this machine the dump asks for the CA file the old site's
+// certificate chains to, and reads nothing without it.
+func TestTheDumpReadsNothingBeyondThisMachineWithoutTheCAFile(t *testing.T) {
+	l := newImportLab(t)
+	openOldSite = pgOpen
+	dump := filepath.Join(t.TempDir(), "old-site.dump")
+	for _, typed := range []string{typedAddress + "\n", typedAddress + "\n\n"} {
+		code, out := l.run(typed, "dump", "--to", dump)
+		if code != 1 || !strings.Contains(out, "CA file") || strings.Contains(out, "hunter2") || strings.Contains(out, "old.site.example") {
+			t.Errorf("no CA file: exit %d, %s", code, out)
+		}
+		if _, err := os.Stat(dump); !os.IsNotExist(err) {
+			t.Error("a dump was written")
+		}
+	}
+}
+
+// check certificate shows the chain the old site's Postgres presents, to be
+// looked at before its CA file is trusted, and with --save keeps the
+// chain's last certificate as that file. Neither user nor password is sent.
+func TestCheckCertificateShowsTheChainAndKeepsItsLastCertificate(t *testing.T) {
+	l := newImportLab(t)
+	a := oldsitetest.NewAuthority(t)
+	ca, leaf := a.CA, a.Leaf
+	port, heard := a.TLSPostgres(t)
+	address := "postgresql://postgres:hunter2-not-real@127.0.0.1:" + port + "/railway"
+	saved := filepath.Join(t.TempDir(), "old-site-ca.pem")
+
+	code, out := l.run(address+"\n", "check", "certificate", "--save", saved)
+	if code != 0 {
+		t.Fatalf("exit %d, %s", code, out)
+	}
+	for _, want := range []string{"2 certificates", "1. ", "2. ", "throwaway root", fingerprint(leaf.Raw), fingerprint(ca.Raw), "Wrote " + saved} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the check says nothing of %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("the check repeats the password: %s", out)
+	}
+	if got := <-heard; len(got) != 8 {
+		t.Errorf("the server heard %d bytes, more than the request for TLS", len(got))
+	}
+	text, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block, _ := pem.Decode(text); block == nil || !bytes.Equal(block.Bytes, ca.Raw) {
+		t.Error("the file saved is not the chain's last certificate")
+	}
+	// The file is never replaced.
+	if code, out := l.run(address+"\n", "check", "certificate", "--save", saved); code != 1 || !strings.Contains(out, "already there") {
+		t.Errorf("a second save onto the file: exit %d, %s", code, out)
+	}
+	if len(l.opened) != 0 {
+		t.Error("the check opened the old site's Postgres as the dump does")
 	}
 }

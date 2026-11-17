@@ -79,6 +79,9 @@ fi
 need_root
 deployed
 no_planted_link
+# From the stage and the import's mark to labd's answer: the import never
+# empties the reports in between.
+hold_lab
 is="$(lab_stage)"
 case "$is" in
   "live "*)

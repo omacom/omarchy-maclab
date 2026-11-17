@@ -49,8 +49,8 @@ func checkInstall(a api.InstallArgs) error {
 	return nil
 }
 
-func (l *Linux) Install(ctx context.Context, job string, a api.InstallArgs, fetch Fetcher) error {
-	defer syncDisks()
+func (l *Linux) Install(ctx context.Context, job string, a api.InstallArgs, fetch Fetcher) (err error) {
+	defer flushed(&err)
 	if strings.ContainsAny(job, "/. ") || job == "" {
 		return fmt.Errorf("bad job id %q", job)
 	}
@@ -75,7 +75,7 @@ func (l *Linux) Install(ctx context.Context, job string, a api.InstallArgs, fetc
 	var out capped
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = 5 * time.Second
-	if err := cmd.Run(); err != nil {
+	if err := runGroup(cmd); err != nil {
 		return fmt.Errorf("pacman -U %s: %v: %s", strings.Join(files, " "), err, lastLines(out.String(), 10))
 	}
 	return nil

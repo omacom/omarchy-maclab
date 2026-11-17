@@ -439,7 +439,7 @@ func TestEveryLinkNamesTheLabAddress(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != 200 {
 			t.Fatalf("%s: an invite: %d %s", c.name, w.Code, w.Body)
 		}
-		if !strings.Contains(resp.JoinCommand, "U='"+labAddress+"'") || strings.Contains(resp.JoinCommand, "127.0.0.1") || strings.Contains(resp.JoinCommand, aliasHost) {
+		if !strings.Contains(resp.JoinCommand, " "+labAddress+"/join ") || strings.Contains(resp.JoinCommand, "127.0.0.1") || strings.Contains(resp.JoinCommand, aliasHost) {
 			t.Errorf("%s: the join line doesn't name the Lab address alone:\n%s", c.name, resp.JoinCommand)
 		}
 	}

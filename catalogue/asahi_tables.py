@@ -2,8 +2,7 @@
 """Asahi layer of the feature catalogue: parse Asahi's feature tables, seed and check for drift.
 
 Asahi Linux publishes per-chip feature-support tables as Markdown in
-github.com/AsahiLinux/docs (docs/platform/feature-support/m1.md ... m4.md),
-licensed CC-BY-3.0. This script turns them into the catalogue's Asahi layer:
+github.com/AsahiLinux/docs (docs/platform/feature-support/m1.md ... m4.md). This script turns them into the catalogue's Asahi layer:
 one feature per table row, with an Asahi state per chip generation and,
 where a Mac model's column differs from its generation, per board.
 
@@ -12,8 +11,8 @@ where a Mac model's column differs from its generation, per board.
   asahi_tables.py update [--source DIR | --live]   rewrite the catalogue's Asahi layer
                                                    (Aurora and Omarchy fields are kept)
 
---source defaults to catalogue/asahi-snapshot/, the pinned copy recorded in
-the catalogue's sources.asahi.commit. --live reads Asahi's main branch.
+By default it reads the tables at the commit pinned in the catalogue's
+sources.asahi.commit. --live reads Asahi's main branch; --source reads a local copy.
 
 Unknown table columns (a new Mac model), unknown rows (a new feature) and cells
 this parser can't read are drift too: add them to COLUMNS / ROWS below.
@@ -35,11 +34,10 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATALOGUE = os.path.join(HERE, "catalogue.json")
-SNAPSHOT = os.path.join(HERE, "asahi-snapshot")
 PAGES = ("m1", "m2", "m3", "m4")
-LIVE_URL = "https://raw.githubusercontent.com/AsahiLinux/docs/main/docs/platform/feature-support/{page}.md"
+PAGE_URL = "https://raw.githubusercontent.com/AsahiLinux/docs/{ref}/docs/platform/feature-support/{page}.md"
 DEVICES = "device-list"
-DEVICES_URL = "https://raw.githubusercontent.com/AsahiLinux/docs/main/docs/hw/devices/device-list.md"
+DEVICES_URL = "https://raw.githubusercontent.com/AsahiLinux/docs/{ref}/docs/hw/devices/device-list.md"
 # Asahi's device list prints the MacBook Neo's SoC as T8040; its feature table,
 # its device tree and the catalogue say t8140.
 SOC_FIXES = {"j700": "t8140"}
@@ -417,16 +415,16 @@ def update(catalogue: dict, layer: dict[str, dict], devices: dict[str, dict]) ->
     return catalogue
 
 
-def read_pages(source: str | None, live: bool) -> dict[str, str]:
+def read_pages(source: str | None, ref: str) -> dict[str, str]:
     pages = {}
     for page in (*PAGES, DEVICES):
-        if live:
-            url = DEVICES_URL if page == DEVICES else LIVE_URL.format(page=page)
+        if source:
+            with open(os.path.join(source, f"{page}.md"), encoding="utf-8") as f:
+                pages[page] = f.read()
+        else:
+            url = DEVICES_URL.format(ref=ref) if page == DEVICES else PAGE_URL.format(ref=ref, page=page)
             with urllib.request.urlopen(url, timeout=30) as response:
                 pages[page] = response.read().decode("utf-8")
-        else:
-            with open(os.path.join(source or SNAPSHOT, f"{page}.md"), encoding="utf-8") as f:
-                pages[page] = f.read()
     return pages
 
 
@@ -434,16 +432,17 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=["check", "update"])
     where = parser.add_mutually_exclusive_group()
-    where.add_argument("--source", help="directory with m1.md..m4.md (default: the pinned snapshot)")
+    where.add_argument("--source", help="directory with m1.md..m4.md and device-list.md (default: the pinned commit)")
     where.add_argument("--live", action="store_true", help="read Asahi's main branch")
     parser.add_argument("--catalogue", default=CATALOGUE)
     args = parser.parse_args(argv)
 
-    origin = "Asahi's main branch" if args.live else (args.source or "the pinned snapshot")
     with open(args.catalogue, encoding="utf-8") as f:
         catalogue = json.load(f)
+    ref = "main" if args.live else catalogue["sources"]["asahi"]["commit"]
+    origin = args.source or ("Asahi's main branch" if args.live else f"Asahi commit {ref[:12]}")
     try:
-        pages = read_pages(args.source, args.live)
+        pages = read_pages(args.source, ref)
         layer = asahi_layer(pages)
         devices = parse_devices(pages[DEVICES], catalogue["chips"])
     except Drift as problem:

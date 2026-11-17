@@ -141,6 +141,9 @@ class FakeLabd:
             assert body['manifest'] in self.artifacts and body['payload'] in self.artifacts
             man = json.loads(self.artifacts[body['manifest']])
             assert man['release'] == rel
+            ids = man.get('approved_by') or []
+            if any(type(a) is not int or a <= 0 for a in ids) or len(set(ids)) != len(ids):
+                raise labd_mod.APIError(400, 'manifest: approved_by names each approver by account id', path)
             if rel in self.frozen:
                 raise labd_mod.APIError(409, 'already frozen', path)
             self.frozen[rel] = {'manifest': man, 'manifest_sha256': body['manifest'], 'approved_by': body['approved_by']}

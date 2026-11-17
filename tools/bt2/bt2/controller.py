@@ -891,7 +891,7 @@ class Controller:
         dev = self.device
         if self.manifest_mode == 'reuse':
             cohort = installed.source_cohort(self.prof['manifest_source_release'], dev)
-            man, raw = installed.new_manifest(cohort, self.release, dev)
+            man, raw = installed.new_manifest(cohort, self.release, dev, self.approved_by)
             payload = cohort['payload_raw']
             rows = {a['name']: a for a in man['artifacts']}
             for i in self.cands:
@@ -1694,7 +1694,8 @@ class Controller:
             raise UsageError('run dir %s already exists' % rd)
         self.artifact_paths = [str(Path(p).resolve()) for p in artifact_paths]
         self.extra_packages = [str(Path(p).resolve()) for p in extra_packages]
-        self.approved_by = list(approved_by) or [holder]
+        # Account ids, as labd takes them from 2026-11-16: never a handle.
+        self.approved_by = [int(a) for a in approved_by]
         self.manifest_mode = manifest_mode
         self.extra, self.extra_sha, self.extra_inputs, self.extra_outcome = None, None, {}, {}
         if extra_test:
@@ -2091,7 +2092,8 @@ def build_parser():
     r.add_argument('--run-id', default=None)
     r.add_argument('--extra-package', action='append', default=[],
                    help='extra local archive usable as original/kept package (not installed as a candidate)')
-    r.add_argument('--approved-by', action='append', default=[])
+    r.add_argument('--approved-by', action='append', default=[], type=int,
+                   help="an approver's account id (the number on their People page); give it once for each")
     r.add_argument('--extra-test', default=None, help='campaign-local python runner added as the last script test of '
                    'both jobs (needs a fresh baseline)')
     r.add_argument('--extra-assets', default=None, help='JSON object of frozen asset paths/hashes for --extra-test')

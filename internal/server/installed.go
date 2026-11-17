@@ -564,6 +564,13 @@ func (ir *installedRun) dmesg(got []byte) *installed.DmesgCompare {
 var installedEvidence = []string{"identity-before.json", "identity-booted.json", "identity-after.json",
 	"omt-compare.json", "dmesg-compare.json", "dmesg-errors.txt"}
 
+// comparedEvidence are the files of an Installed run's evidence a Promotion
+// checks again by their digests: the kernel's own error lines and the two
+// comparisons made from them. They name no person: a forgetting leaves them
+// as they were, as it leaves a pinned file, where a handle that is also a
+// word of a kernel line would change them.
+var comparedEvidence = []string{"omt-compare.json", "dmesg-compare.json", "dmesg-errors.txt"}
+
 // seal writes installed/job.json and the frozen store's append-only copy, and
 // returns the job's final outcome: a pass whose evidence is missing, couldn't
 // be written or couldn't be copied is not a pass. job.json is the record the
@@ -587,15 +594,26 @@ func (ir *installedRun) seal(outcome, summary string, at time.Time) (string, str
 		downgrade(strings.Join(ir.errs, "; "))
 	}
 	dst := filepath.Join(ir.c.dir, "installed", ir.r.j.Spec.Device, ir.r.j.ID)
+	// The record is read, written and published while no forgetting runs:
+	// one between the read and the publishing would sweep neither copy.
+	ir.r.s.forgetting.RLock()
+	defer ir.r.s.forgetting.RUnlock()
 	record := func() error {
+		jobMu.Lock()
 		j, err := ir.r.s.store.job(ir.r.j.ID)
+		if err == nil {
+			res := ir.res
+			j.State, j.Outcome, j.Summary = api.JobDone, outcome, summary
+			j.Events = append(j.Events, api.JobEvent{Time: at, Msg: "done: " + outcome + ": " + summary})
+			j.Result.Installed = &res
+			// The last fields can name a forgotten person too (who ended
+			// the Mac's enrollment): the forgettings go over the whole record.
+			ir.r.s.forgottenLocked(j)
+		}
+		jobMu.Unlock()
 		if err != nil {
 			return err
 		}
-		res := ir.res
-		j.State, j.Outcome, j.Summary = api.JobDone, outcome, summary
-		j.Events = append(j.Events, api.JobEvent{Time: at, Msg: "done: " + outcome + ": " + summary})
-		j.Result.Installed = &res
 		b, err := json.MarshalIndent(j, "", "  ")
 		if err != nil {
 			return err
@@ -790,6 +808,10 @@ func (s *Server) hFreezeManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := m.Validate(pb); err != nil {
+		httpErr(w, 400, "manifest: %v", err)
+		return
+	}
+	if err := s.approversOf(&m); err != nil {
 		httpErr(w, 400, "manifest: %v", err)
 		return
 	}
@@ -1010,7 +1032,7 @@ func (s *Server) hFreezeEntry(w http.ResponseWriter, r *http.Request) {
 			return nil, refuse(409, "%v", err)
 		}
 		if err := s.store.addEntryFrozen(release, device, esha, at, by); err != nil {
-			s.log.Printf("who froze %s's installer entry for Release %s (%s) was not recorded: %v", device, release, by.Handle, err)
+			s.log.Printf("who froze %s's installer entry for Release %s (%s) was not recorded: %v", device, release, accountOr(by.AccountID, "someone"), err)
 		}
 		return map[string]any{"device": device, "release": release, "entry": e, "entry_sha256": esha, "pins": pins, "frozen_by": by.Handle, "frozen_at": at}, nil
 	})
@@ -1169,7 +1191,7 @@ func (s *Server) promotion(ctx context.Context, by Person, release string, req p
 	}
 	p := api.ReleasePromotion{Time: s.now(), Mac: d.Name, Job: j.ID, Kernel: j.Result.BootKernel, AccountID: by.AccountID, Handle: by.Handle}
 	if err := s.store.addPromotion(release, d.ID, p); err != nil {
-		s.log.Printf("the Promotion of %s from Release %s by %s is in its ledger but not in the Release's record: %v", d.Name, release, by.Handle, err)
+		s.log.Printf("the Promotion of %s from Release %s by %s is in its ledger but not in the Release's record: %v", d.Name, release, accountOr(by.AccountID, "someone"), err)
 	}
 	return map[string]any{"promoted": req.Device, "job": j.ID, "known_good": j.Result.BootKernel, "log": strings.TrimSpace(line), "warnings": warnings}, nil
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,12 +33,51 @@ import (
 // noteMax is how long a verdict's note may be.
 const noteMax = 1000
 
-func (st *store) addRelease(r api.Release) error {
+// addRelease lists the Release with who approved its manifest, in its
+// order, all at once. An approver who is not a person the lab knows when
+// it is written, forgotten since the manifest was checked, is left out: the
+// read follows a write, so a forgetting commits before all of it or after.
+// An account id of 0, an approver a manifest frozen before named by handle,
+// is kept as it was.
+func (st *store) addRelease(r api.Release, approvers ...int64) error {
 	pkgs, _ := json.Marshal(r.Packages)
 	macs, _ := json.Marshal(r.Macs)
-	_, err := st.db.Exec(`INSERT INTO releases (name, frozen_at, frozen_by_id, frozen_by, manifest_sha256, kernel, packages, macs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Name, r.FrozenAt.UnixMicro(), r.FrozenByID, r.FrozenBy, r.ManifestSHA256, r.Kernel, string(pkgs), string(macs))
-	return err
+	tx, err := st.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO releases (name, frozen_at, frozen_by_id, frozen_by, manifest_sha256, kernel, packages, macs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Name, r.FrozenAt.UnixMicro(), r.FrozenByID, r.FrozenBy, r.ManifestSHA256, r.Kernel, string(pkgs), string(macs)); err != nil {
+		return err
+	}
+	for i, id := range approvers {
+		if _, err := tx.Exec(`INSERT INTO release_approvals (release, position, account_id) SELECT ?1, ?2, ?3
+			WHERE ?3 = 0 OR EXISTS (SELECT 1 FROM people WHERE account_id = ?3 AND handle != '')`, r.Name, i, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// approvers are the handles of who approved the Release's manifest, as
+// the lab knows them now: a forgotten person is not among them.
+func (st *store) approvers(release string) ([]string, error) {
+	rows, err := st.db.Query(`SELECT p.handle FROM release_approvals a JOIN people p ON p.account_id = a.account_id
+		WHERE a.release = ? AND a.account_id != 0 AND p.handle != '' ORDER BY a.position`, release)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 const releaseColumns = `name, frozen_at, frozen_by_id, frozen_by, manifest_sha256, kernel, packages, macs`
@@ -195,7 +235,35 @@ func (s *Server) listRelease(m *installed.Manifest, manifestSHA string, by Perso
 		r.Macs = append(r.Macs, mac)
 	}
 	sort.Slice(r.Macs, func(i, j int) bool { return r.Macs[i].Mac < r.Macs[j].Mac })
-	return s.store.addRelease(r)
+	var ids []int64
+	for _, a := range m.ApprovedBy {
+		ids = append(ids, a.AccountID)
+	}
+	return s.store.addRelease(r, ids...)
+}
+
+// approversOf is why the manifest's approved_by is refused, or nil: from
+// 2026-11-16 it names each approver by the account id of a person the lab
+// knows, once.
+func (s *Server) approversOf(m *installed.Manifest) error {
+	seen := map[int64]bool{}
+	for _, a := range m.ApprovedBy {
+		if a.Handle != "" || a.AccountID <= 0 {
+			what := strconv.FormatInt(a.AccountID, 10)
+			if a.Handle != "" {
+				what = strconv.Quote(a.Handle)
+			}
+			return refuse(400, "approved_by names each approver by account id (the number on their People page): %s is not one", what)
+		}
+		if seen[a.AccountID] {
+			return refuse(400, "approved_by names account id %d twice", a.AccountID)
+		}
+		seen[a.AccountID] = true
+		if k, err := s.store.knownPerson(a.AccountID); err != nil || k.Handle == "" {
+			return refuse(400, "approved_by names account id %d, whom the lab does not know", a.AccountID)
+		}
+	}
+	return nil
 }
 
 // adoptReleases lists every Release whose manifest is frozen in the data
@@ -278,6 +346,9 @@ func (s *Server) releaseNow(name string) (*api.Release, error) {
 func (s *Server) fillRelease(r *api.Release) error {
 	var err error
 	if r.Verdicts, err = s.store.verdicts(r.Name); err != nil {
+		return err
+	}
+	if r.ApprovedBy, err = s.store.approvers(r.Name); err != nil {
 		return err
 	}
 	r.State = api.ReleaseNoVerdict
@@ -462,7 +533,7 @@ func (s *Server) verdict(by Person, release string, req api.VerdictRequest) (api
 	if err := s.store.addVerdict(r.Name, api.ReleaseVerdict{Time: s.now(), State: req.State, Note: note, AccountID: by.AccountID, Handle: by.Handle, Warnings: warnings}); err != nil {
 		return a, err
 	}
-	s.log.Printf("Release %s: %s recorded by %s", r.Name, stateWords(req.State), by.Handle)
+	s.log.Printf("Release %s: %s recorded by %s", r.Name, stateWords(req.State), accountOr(by.AccountID, "someone"))
 	if a.Release, err = s.releaseNow(r.Name); err != nil {
 		return a, err
 	}

@@ -30,6 +30,7 @@
 <p>Kernel {{if .Kernel}}{{.Kernel}}{{else}}<span class="dim">not named</span>{{end}}</p>
 {{if .Packages}}<ul>{{range .Packages}}<li class="release-package">{{.Name}} <span class="dim">{{.Version}}</span></li>{{end}}</ul>
 {{else}}<p class="dim">No package.</p>
+{{end}}{{if .ApprovedBy}}<p class="release-approved">Approved by {{range $i, $h := .ApprovedBy}}{{if $i}}, {{end}}@{{$h}}{{end}}</p>
 {{end}}</div>
 <div class="wide release-macs">
 <h3>Its Macs</h3>

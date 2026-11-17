@@ -15,7 +15,6 @@ import (
 const (
 	LicenseID  = "CC0-1.0"
 	LicenseURL = "https://creativecommons.org/publicdomain/zero/1.0/"
-	AsahiNote  = "Expected Asahi states come from the Asahi Linux feature-support tables, CC BY 3.0; see the catalogue's sources."
 )
 
 func license() *Object { return obj("id", LicenseID, "url", LicenseURL) }
@@ -97,7 +96,7 @@ func (p *Published) ReportsJSON(filter *Filter, urlFor func(*Run) string, at tim
 	for _, run := range filter.Runs(p.runs) {
 		list = append(list, obj("id", run.PublicID, "url", urlFor(run), "uploaded_at", iso8601(run.CreatedAt), "build", buildJSON(run), "report", run.doc).compact())
 	}
-	export := obj("license", license(), "note", AsahiNote, "generated_at", iso8601(at), "catalogue_version", p.cat.version)
+	export := obj("license", license(), "generated_at", iso8601(at), "catalogue_version", p.cat.version)
 	if filter.Any() {
 		export.put("filters", filter.Values())
 	}

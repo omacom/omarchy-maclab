@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
@@ -288,5 +289,69 @@ func TestTheBuildersFetchFollowsNoRedirect(t *testing.T) {
 		if !strings.Contains(line, "-c http.followRedirects=false") {
 			t.Errorf("kbuild fetches with redirects followed: %s", strings.TrimSpace(line))
 		}
+	}
+}
+
+// A source's host that takes the request and never answers holds git's
+// https helper, not git: labd's time limit on ls-remote ends both, so
+// resolving gives up when it says it does (the mini's POST /api/builds once
+// waited 126 s on GitHub, past the edge's 100 s, and was answered 524).
+func TestResolvingASourceWhoseHostStallsEndsAtItsTimeLimit(t *testing.T) {
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(stalled.Close)
+	t.Cleanup(func() { close(release) })
+	old := resolveWait
+	resolveWait = time.Second
+	t.Cleanup(func() { resolveWait = old })
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := resolve(context.Background(), api.Source{Repo: stalled.URL + "/o/r.git", Ref: "main"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no answer") {
+			t.Fatalf("a stalled host: %v", err)
+		}
+		if took := time.Since(start); took > 6*time.Second {
+			t.Fatalf("resolving took %s with a 1s limit", took)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("resolving a stalled host had not ended 15s into a 1s limit")
+	}
+}
+
+// POST /api/builds answers when git's helper outlives git: what git left
+// running is ended with it, and the build is refused with why.
+func TestAskingForABuildAnswersWhenGitsHelperHangs(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nsleep 30 &\nsleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := resolveWait
+	resolveWait = time.Second
+	t.Cleanup(func() { resolveWait = old })
+	b := newBuilderLab(t)
+	config, _, err := b.s.storeArtifact(strings.NewReader("CONFIG_X=y\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(api.BuildRequest{Source: "https://github.com/o/r", Config: config})
+	start := time.Now()
+	code, data := b.do(b.ctx, "POST", "/api/builds", "lab_mtok", strings.NewReader(string(body)))
+	if took := time.Since(start); took > 6*time.Second {
+		t.Fatalf("POST /api/builds answered after %s with a 1s limit on git", took)
+	}
+	if code != 400 || !strings.Contains(string(data), "no answer") || !strings.Contains(string(data), "github.com/o/r") {
+		t.Fatalf("%d %q", code, data)
 	}
 }

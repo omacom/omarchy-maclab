@@ -1,17 +1,18 @@
 #!/bin/bash
 # Out-of-band wiring's test 7: the controller as a root LaunchDaemon: after
-# an Unlock and after a planned restart, Sightings rebuild unaided (spec
-# section 16, Ready item 2; section 7 "Sighting"; section 13 "Unlock and
-# restarts").
+# labd alone restarts, after an Unlock and after a planned restart of the
+# mini, every Sighting is kept (spec section 16, Ready item 2; section 7
+# "Sighting"; section 13 "Unlock and restarts").
 #
 #   oob07-restart [--dry-run | --local | --lab --mini USER@HOST] [--lab-back MINUTES]
 #                 [--m1 NAME] [--m2 NAME] [--records DIR]
 #
-# A Mac the lab sighted by the name it shows must be sighted again, on the
-# same port, by nobody's doing, once the mini is back: first after a restart
-# from cold, which needs the Unlock, then after a planned restart, which
-# needs none. A Mac that was placed by a Proving reset shows no name and is
-# not sighted again by itself; the record says so, and it is no failure.
+# labd keeps its Sightings in its data. Each Mac the lab has placed, by the
+# name it shows or by a Proving reset, must keep its Sighting, the same one,
+# on the same port, by nobody's doing: after labd alone restarts, as a
+# Deploy does, after a restart of the mini from cold, which needs the
+# Unlock, and after a planned restart, which needs none. A Mac the lab has
+# not placed has nothing to keep; the record says so, and it is no failure.
 # Nothing is reset.
 #
 #   --lab-back MINUTES  how long the lab may take to answer again after
@@ -19,7 +20,7 @@
 set -euo pipefail
 # shellcheck source=scripts/cutover/out-of-band/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 oob_options "$@"
 lab_back=15
@@ -29,40 +30,48 @@ if (( ${#REST[@]} )); then
 fi
 COLD="Restart the mini from cold: on the mini, sudo shutdown -r now. When it is up, do the Unlock (FileVault's password at the mini, or from outside the house through omarchy-gpu). Touch no cable and no test Mac."
 PLANNED="Restart the mini as a Maintenance run does: on the mini, sudo fdesetup authrestart. It needs no Unlock. Touch no cable and no test Mac."
+LABD="Restart labd alone, as a Deploy does: on the mini, sudo launchctl kickstart -k system/$LABD_LABEL. Touch no cable and no test Mac."
 
 if [[ $MODE == dry ]]; then
   cat <<PLAN
 $ME: dry run. Through $ADDRESS, under the saved login of a Maintainer, and on the mini over SSH, it would:
-  1. note which of $M1 and $M2 the lab sights by the name they show (lab oob)
+  1. note which of $M1 and $M2 the lab has placed, by their name or by a Proving reset, and since when (lab oob)
      expects: at least one
   2. look at the controller on the mini: launchctl print system/$OOBD_LABEL, and who owns $OOBD_PLIST
      expects: a LaunchDaemon that runs, as root, from a file that is root's
-  3. STOP, by hand: $COLD
+  3. STOP, by hand: $LABD
   4. wait for the lab to answer again, up to $lab_back minutes, then up to 2 minutes more
-     expects: each Mac noted in step 1 is sighted again on the same port, with a Sighting newer than the restart, and the controller is healthy; nobody did anything
-  5. STOP, by hand: $PLANNED
+     expects: each Mac placed in step 1 is placed on the same port by the Sighting it had (the same since), and the controller is healthy; nobody did anything
+  5. STOP, by hand: $COLD
   6. wait as in step 4
      expects: the same
-  7. write docs/acceptance/$(today)-out-of-band-07.md and its line in docs/acceptance/$RESULTS_NAME
+  7. STOP, by hand: $PLANNED
+  8. wait as in step 4
+     expects: the same
+  9. write docs/acceptance/$(today)-out-of-band-07.md and its line in docs/acceptance/$RESULTS_NAME
 Nothing was sent and nothing is reset by this test.
 PLAN
   exit 0
 fi
 
-begin 07 "the controller as a root LaunchDaemon: after an Unlock and after a planned restart, Sightings rebuild unaided"
+begin 07 "the controller as a root LaunchDaemon: after labd restarts alone, after an Unlock and after a planned restart, every Sighting is kept"
 
-named=""
+placed=()
 for mac in "$M1" "$M2"; do
   wait_until "$(if playing; then echo 25; else echo 45; fi)" is_placed "$mac" || true
   port="$(port_of "$mac")"
-  if [[ -n $port ]] && by_name "$mac" "$port"; then
-    named="$named $mac:$port"
+  if [[ -z $port ]]; then
+    rec "before: $mac is $(cable_of "$mac"): it shows the lab no name, and has no Sighting to keep"
+    continue
+  fi
+  placed+=("$mac|$port|$(since_of "$mac")")
+  if by_name "$mac" "$port"; then
     rec "before: $mac is sighted on the $port port by the name it shows"
   else
-    rec "before: $mac is $(cable_of "$mac"): it shows the lab no name, so no restart can sight it again by itself; a Maintainer proves its port again"
+    rec "before: $mac is placed on the $port port by a Proving reset"
   fi
 done
-[[ -n $named ]] || give_up "no Mac is sighted by the name it shows: there is no Sighting that could rebuild by itself"
+(( ${#placed[@]} )) || give_up "the lab has placed neither Mac: there is no Sighting to keep"
 
 if playing; then
   rec "the controller: made up here, and no LaunchDaemon"
@@ -78,27 +87,27 @@ else
   rec "the controller: $OOBD_LABEL runs under launchd in the system domain, as root, from a file that is root's ($owner)"
 fi
 
-# after WHAT INSTRUCTION: one restart of the mini and what must follow.
+# after WHAT INSTRUCTION [mini]: one restart, of labd alone or of the mini,
+# and every Sighting the lab held kept, the same one.
 after() {
-  local pair mac port asked since
-  asked="$(date '+%Y-%m-%d %H:%M:%S')"
+  local entry mac port was since
   hands "$2"
   if playing; then
-    fake restart
+    [[ ${3:-} != mini ]] || fake restart
     restart_labd
   fi
   wait_until "$((lab_back * 60))" "$LAB_CMD" status "$M1" > /dev/null 2>&1 || give_up "$1: the lab did not answer again within $lab_back minutes"
-  for pair in $named; do
-    mac="${pair%%:*}"
-    port="${pair##*:}"
-    wait_until 120 by_name "$mac" "$port" || give_up "$1: $mac was not sighted again on the $port port within 2 minutes of the lab answering: $(cable_of "$mac")"
-    since="$("$LAB_CMD" oob "$mac" 2>/dev/null | sed -n 's/^  since: *//p')"
-    [[ -n $since && ! $since < $asked ]] || give_up "$1: the Sighting of $mac is from $since, before the restart was asked at $asked: labd did not start again"
-    rec "$1: $mac is sighted again on the $port port, since $since, unaided"
+  for entry in "${placed[@]}"; do
+    IFS='|' read -r mac port was <<<"$entry"
+    wait_until 120 is_placed "$mac" "$port" || give_up "$1: $mac is not placed on the $port port within 2 minutes of the lab answering: $(cable_of "$mac")"
+    since="$(since_of "$mac")"
+    [[ $since == "$was" ]] || give_up "$1: the Sighting of $mac is from $since, not the $was it had: the lab did not keep it"
+    rec "$1: $mac kept its Sighting on the $port port, since $since"
   done
   "$LAB_CMD" oob "$M1" 2>/dev/null | grep '^  controller:  *healthy' >/dev/null || give_up "$1: the lab does not say the controller is healthy: $("$LAB_CMD" oob "$M1" 2>/dev/null | sed -n 's/^  controller: *//p')"
   rec "$1: the lab says the controller is healthy"
 }
-after "after an Unlock" "$COLD"
-after "after a planned restart" "$PLANNED"
+after "after labd restarted alone" "$LABD"
+after "after an Unlock" "$COLD" mini
+after "after a planned restart" "$PLANNED" mini
 passed

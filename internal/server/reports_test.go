@@ -261,6 +261,7 @@ func TestAReportsOldLinkShowsTheMachineAndEachCheck(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Header().Get("Content-Type"))
 	}
 	page := w.Body.String()
+	offersToCopy(t, page, "the report id", got.ID)
 	for _, want := range []string{
 		`<h1>Apple MacBook Pro (16-inch, M2 Max, 2023)</h1>`,
 		`<dd>M2 Max (t6021, board j416c)</dd>`,
@@ -271,11 +272,13 @@ func TestAReportsOldLinkShowsTheMachineAndEachCheck(t *testing.T) {
 		`<span class="badge badge-works outcome outcome-works">works</span>`,
 		`<span class="feature">Device tree, asahi layer</span>`,
 		`<dd>feature catalogue v18</dd>`,
-		`CC BY 3.0`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the report's page lacks %q", want)
 		}
+	}
+	if strings.Contains(page, "CC BY") {
+		t.Error("the report's page credits Asahi")
 	}
 	if strings.Contains(page, `id="unattended"`) {
 		t.Error("an attended report says unattended")

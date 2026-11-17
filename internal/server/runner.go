@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent"
@@ -49,6 +51,8 @@ type jobRun struct {
 	noAppleWDT bool // the test kernel was built without apple_wdt
 
 	volunteerTold bool // a Volunteer was told this job is starting, so they are told when it is done
+
+	cancel *jobCancel // a person's cancel, nil for a run no Mac's loop started
 }
 
 func (r *jobRun) ev(format string, args ...any) {
@@ -81,11 +85,16 @@ func (s *Server) deviceLoop(v *dev) {
 			// Its cancel is set before it is read again: cancelJob either
 			// finds the cancel or has marked the job done by that read.
 			ctx, cancel := context.WithCancel(s.ctx)
+			c := &jobCancel{}
 			s.mu.Lock()
-			s.cancels[id] = cancel
+			s.cancels[id] = func() { c.ask(s, v, id); cancel() }
 			s.mu.Unlock()
 			if j, err = s.store.job(id); err == nil && j.State != api.JobDone {
-				s.runJob(ctx, v, j)
+				c.hold(j)
+				s.runJobAsked(ctx, v, j, c)
+				jobMu.Lock()
+				delete(jobEnded, j)
+				jobMu.Unlock()
 			}
 			cancel()
 			s.mu.Lock()
@@ -97,13 +106,30 @@ func (s *Server) deviceLoop(v *dev) {
 			v.mu.Lock()
 			// A Mac waiting for its Volunteer to accept changed terms takes
 			// nothing from the lab, this clean-up as root included.
-			need := v.dirty && !v.termsWait && v.aliveLocked() && (v.d.State == api.StateReady || v.d.State == api.StateNew)
+			// Nor while lab agent-update holds it, whose restart could cut
+			// it; and one under way keeps lab agent-update off (cleaning).
+			// One whose result labd stopped waiting for may still run there:
+			// it holds cleaning until the agent says it ended (heartbeat).
+			need := !v.cleanupAway && v.dirty && !v.termsWait && v.updating == nil && v.aliveLocked() && (v.d.State == api.StateReady || v.d.State == api.StateNew)
+			if !v.cleanupAway {
+				v.cleaning, v.cleanupCmd = need, ""
+			}
+			wait := cmp.Or(v.cleanupWait, 2*time.Minute)
 			v.mu.Unlock()
 			if need {
-				if err := v.call(s.ctx, api.CmdCleanup, "", api.CleanupArgs{All: true}, 2*time.Minute, nil); err == nil {
-					v.mu.Lock()
+				err := v.call(s.ctx, api.CmdCleanup, "", api.CleanupArgs{All: true}, wait, nil)
+				var said agentError
+				v.mu.Lock()
+				if err == nil || errors.As(err, &said) || v.cleanupCmd == "" {
+					v.cleaning, v.cleanupCmd = false, ""
+				} else {
+					v.cleanupAway = true
+				}
+				if err == nil {
 					v.dirty = false
-					v.mu.Unlock()
+				}
+				v.mu.Unlock()
+				if err == nil {
 					s.log.Printf("%s: removed leftover lab kernels", v.d.Name)
 				}
 			}
@@ -111,8 +137,67 @@ func (s *Server) deviceLoop(v *dev) {
 	}
 }
 
-func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
-	r := &jobRun{s: s, v: v, j: j, boot: s.cfg.BootTimeout}
+// jobCancel is a cancel asked of the job a Mac's loop has taken. It is
+// stored before cancelJob answers, on the copy of the job its run saves, so
+// no later save of the run writes it away; and the run honours it where a
+// stop would otherwise keep the job for the next labd.
+type jobCancel struct {
+	mu    sync.Mutex
+	asked bool
+	j     *api.Job // the run's copy, once it has one
+}
+
+// ask records the cancel, whatever the job's state: one already given its
+// Mac may still be queued in the store, and a labd that ends before its next
+// save must not run it again.
+func (c *jobCancel) ask(s *Server, v *dev, id string) {
+	c.mu.Lock()
+	c.asked = true
+	j := c.j
+	c.mu.Unlock()
+	mark := func(j *api.Job) {
+		if j.State != api.JobDone {
+			j.Canceled = true
+		}
+	}
+	if j != nil {
+		// The run's copy was read before: a Leave or another cancel may have
+		// ended the job in the store since, and the copy must not reopen it.
+		s.updateJobUnlessDone(j, mark)
+	} else {
+		s.updateJobByID(id, mark) // hold, which comes after, finds it asked
+	}
+}
+
+// hold gives c the run's copy of the job, a cancel stored before included.
+func (c *jobCancel) hold(j *api.Job) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.asked && j.State != api.JobDone {
+		j.Canceled = true
+	}
+	c.asked = c.asked || j.Canceled
+	c.j = j
+}
+
+func (c *jobCancel) wasAsked() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.asked
+}
+
+func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) { s.runJobAsked(ctx, v, j, nil) }
+
+func (s *Server) runJobAsked(ctx context.Context, v *dev, j *api.Job, c *jobCancel) {
+	r := &jobRun{s: s, v: v, j: j, boot: s.cfg.BootTimeout, cancel: c}
+	if r.cancel.wasAsked() {
+		// canceled before labd stopped, and the job kept then
+		r.finish(api.OutcomeCanceled, "canceled before it started")
+		return
+	}
 	// A job runs only on the enrollment it was submitted for: never on a Mac
 	// that took the name later, nor, when labd didn't record which, on any.
 	v.mu.Lock()
@@ -142,6 +227,19 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 		return
 	}
 	if err := s.beginJobRecoveryMode(ctx, v, j); err != nil {
+		if r.kept() {
+			return
+		}
+		// The Mac left the lab, or was forgotten, as the job started: its
+		// row is gone and the job has no Mac to run on.
+		if errors.Is(err, errForgotten) {
+			r.finish(api.OutcomeCanceled, "not run: "+j.Spec.Device+" left the lab before the job started")
+			return
+		}
+		if ctx.Err() != nil {
+			r.finish(api.OutcomeCanceled, "canceled before device commands")
+			return
+		}
 		r.finish(api.OutcomeInfra, "recovery mode admission failed before device commands: "+err.Error())
 		return
 	}
@@ -167,7 +265,7 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 			r.state(api.JobQueued)
 			r.ev("%s", jobsDrained)
 			err := v.waitFor(ctx, 0, func() bool { return !s.drained() })
-			if s.stopping() {
+			if r.kept() {
 				return
 			}
 			if gone := v.goneReason(); gone != "" {
@@ -180,8 +278,13 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 			}
 		}
 		if outcome, summary := r.build(ctx); outcome != "" {
-			if outcome == api.OutcomeCanceled && s.stopping() {
-				return // never sent: the next labd queues it again
+			// Resolving the source, the Mac's config and the build all end
+			// when labd stops: whatever they say then, the job was never sent.
+			if r.kept() {
+				return
+			}
+			if ctx.Err() != nil && outcome != api.OutcomeCanceled {
+				outcome, summary = api.OutcomeCanceled, "canceled while preparing: "+summary
 			}
 			if why := v.leaving(); why != "" {
 				outcome, summary = api.OutcomeCanceled, "canceled: "+why
@@ -212,6 +315,13 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 			// it would cut the job's power
 			return fmt.Sprintf("waiting: a Hard reset of %s is on its way", v.d.Name)
 		}
+		if v.proving {
+			// its reset would cut the job
+			return fmt.Sprintf("waiting: a Proving reset of %s is under way", v.d.Name)
+		}
+		if v.updating != nil {
+			return fmt.Sprintf("waiting: %s's %s", v.d.Name, agentBeingUpdated)
+		}
 		if needs != "" && v.d.Limited && v.d.AccessLevel == api.AccessFull {
 			// lab-agent, which knows nothing of the site, would run it.
 			return fmt.Sprintf("%s is limited to Access level Qualification by its Volunteer, which allows no %s, until they remove the limit", v.d.Name, needs)
@@ -239,8 +349,8 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 			r.state(api.JobQueued) // a job built from source waits as queued, too
 			r.ev("%s", why)
 			err := v.waitFor(ctx, 0, func() bool { return holdLocked() != why })
-			if s.stopping() {
-				return false // never sent: it stays queued for the next labd
+			if r.kept() {
+				return false
 			}
 			if v.leaving() != "" {
 				break
@@ -315,9 +425,9 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 			return
 		}
 	}
-	if under {
-		s.updateJob(j, func(j *api.Job) { j.UnderLease = true })
-	}
+	// Staging in the store before the Mac's first command: a labd that ends
+	// from here on does not queue the job again.
+	s.updateJob(j, func(j *api.Job) { j.State, j.UnderLease = api.JobStaging, j.UnderLease || under })
 	r.started = s.now()
 	r.tellVolunteerJobStarting()
 	if r.serialEnabled() {
@@ -327,7 +437,10 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 		if r.serialEnabled() {
 			s.copySerial(v.d.Name, r.serial0, j.ID)
 		}
+		// The job stops counting for a drain in the step that frees the
+		// Mac, as it started counting in the one that gave it the Mac.
 		v.mu.Lock()
+		s.endJob()
 		v.d.ActiveJob, v.siteCut = "", siteCut{}
 		if v.d.State == api.StateBusy || v.d.State == api.StateRecovering {
 			v.setStateLocked(v.idleStateLocked(), "")
@@ -335,7 +448,6 @@ func (s *Server) runJob(ctx context.Context, v *dev, j *api.Job) {
 		v.sendOwedDoneLocked()
 		v.saveLocked()
 		v.mu.Unlock()
-		s.endJob()
 		s.lapse(v) // a Lease extended for this job ends with it
 	}()
 
@@ -501,6 +613,12 @@ func (r *jobRun) finish(outcome, summary string) { r.finishAt(outcome, summary, 
 // then left as it is in the store, for the next labd to queue again.
 func (s *Server) stopping() bool { return s.ctx.Err() != nil }
 
+// kept is whether the job, not yet sent to its Mac, is left unfinished in
+// the store for the next labd to queue again, as it is when labd stops:
+// the stop cut short its preparation or its wait, not the job.
+// A cancel asked before is honoured instead: the job ends canceled.
+func (r *jobRun) kept() bool { return r.s.stopping() && !r.cancel.wasAsked() }
+
 func (r *jobRun) finishAt(outcome, summary string, at time.Time) {
 	// The Mac's authority over the job ends before anyone can see the job
 	// done: no more fetching its artifacts or adding its files.
@@ -628,7 +746,9 @@ func (r *jobRun) execute(ctx context.Context) (string, string) {
 		r.armedAt = t0
 	}
 	r.ev("one-shot armed, rebooting into %s", sr.Entry)
-	steps, ok, neverLeft, err := v.waitBack(ctx, oldBoot, t0, r.boot, r.selfRecovery())
+	// A Mac that is going down stops talking within seconds. Only one still
+	// checking in well after the reboot request never went down at all.
+	steps, ok, neverLeft, err := v.waitBack(ctx, oldBoot, t0, t0.Add(r.s.cfg.RebootGrace), r.boot, r.selfRecovery())
 	r.addRecovery(steps)
 	if err != nil {
 		return api.OutcomeCanceled, "canceled while booting"
@@ -1208,7 +1328,9 @@ func (r *jobRun) lostDuringTest(ctx context.Context, test string) (string, strin
 	lost := r.s.now()
 	// A hang has already had quietGrace of silence to show itself.
 	timeout := max(r.boot-r.s.quietGrace(), time.Minute)
-	steps, ok, neverLeft, err := r.v.waitBack(ctx, r.bootID, r.bootedAt, timeout, r.watchdogRecovery(timeout))
+	// Heard again on the same boot after the silence it was lost to: back.
+	lastHeard := r.v.heardAt()
+	steps, ok, neverLeft, err := r.v.waitBack(ctx, r.bootID, r.bootedAt, lastHeard, timeout, r.watchdogRecovery(timeout))
 	r.addRecovery(steps)
 	// Only this boot's events: an earlier boot's are not the test kernel's.
 	events := r.v.eventsOnBoot(r.bootedAt.Add(-time.Second), r.bootID)
@@ -1270,7 +1392,7 @@ func (r *jobRun) crashTest(ctx context.Context) (string, string) {
 	t0 := r.s.now()
 	r.ev("triggering a deliberate kernel %s", r.j.Spec.Crash)
 	r.v.send(api.CmdCrash, r.j.ID, api.CrashArgs{Mode: r.j.Spec.Crash})
-	steps, ok, _, err := r.v.waitBack(ctx, old, t0, r.boot, 0)
+	steps, ok, _, err := r.v.waitBack(ctx, old, t0, t0.Add(r.s.cfg.RebootGrace), r.boot, 0)
 	r.addRecovery(steps)
 	if err != nil {
 		return api.OutcomeCanceled, "canceled during crash test"
@@ -1373,7 +1495,7 @@ func (r *jobRun) restore(ctx context.Context) error {
 		v.mu.Unlock()
 		if pending {
 			r.ev("waiting for %s to finish rebooting before restoring", r.j.Spec.Device)
-			steps, _, _, err := v.waitBack(ctx, r.armedBoot, r.armedAt, r.boot, r.selfRecovery())
+			steps, _, _, err := v.waitBack(ctx, r.armedBoot, r.armedAt, r.armedAt.Add(r.s.cfg.RebootGrace), r.boot, r.selfRecovery())
 			r.addRecovery(steps)
 			if err != nil {
 				return err
@@ -1387,7 +1509,7 @@ func (r *jobRun) restore(ctx context.Context) error {
 		v.send(api.CmdReboot, r.j.ID, nil)
 		// A Lab boot that can't hear the reboot (no network) is reset by
 		// lab-agent's watchdog: give it that before asking for hands.
-		steps, ok, _, err := v.waitBack(ctx, d.BootID, t0, r.boot, r.watchdogRecovery(r.boot))
+		steps, ok, _, err := v.waitBack(ctx, d.BootID, t0, t0.Add(r.s.cfg.RebootGrace), r.boot, r.watchdogRecovery(r.boot))
 		r.addRecovery(steps)
 		if err != nil {
 			return err
@@ -1419,9 +1541,19 @@ func (r *jobRun) restore(ctx context.Context) error {
 // outcome only on failure.
 func (r *jobRun) build(ctx context.Context) (string, string) {
 	r.state(api.JobBuilding)
-	r.ev("resolving %s", r.j.Spec.Source)
-	b, err := r.s.EnsureBuild(ctx, api.BuildRequest{Source: r.j.Spec.Source, Device: r.j.Spec.Device, Config: r.j.Spec.Config,
-		AskedBy: orStr(r.j.Maintainer, "labd"), AskedByID: r.j.AccountID})
+	var b *api.Build
+	var err error
+	if id := r.j.Spec.Build; id != "" {
+		// queued again at the start: the build it recorded says what it builds
+		r.ev("resuming from build %s", id)
+		if b, err = r.s.getBuild(id); err == nil {
+			b, err = r.s.againFrom(b)
+		}
+	} else {
+		r.ev("resolving %s", r.j.Spec.Source)
+		b, err = r.s.EnsureBuild(ctx, api.BuildRequest{Source: r.j.Spec.Source, Device: r.j.Spec.Device, Config: r.j.Spec.Config,
+			AskedBy: orStr(r.j.Maintainer, "labd"), AskedByID: r.j.AccountID})
+	}
 	if err != nil {
 		return api.OutcomeBuildFailed, err.Error()
 	}

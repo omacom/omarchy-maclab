@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
@@ -232,8 +233,11 @@ func TestInstalledJobUnattendedSkip(t *testing.T) {
 	}
 }
 
+// Four jobs on a lab at wall speed: a check-in a loaded machine is slow to
+// make must not lose the Mac in the middle (the harness's quietGrace is 3 s),
+// as it once did collecting the last job's logs. Nothing here is about losing it.
 func TestOMTMissingCoverageSurvivesReferenceRewrite(t *testing.T) {
-	l := newLab(t, true)
+	l := newLabWith(t, labConfig{oob: true, config: func(c *Config) { c.QuietGrace = time.Minute }})
 	l.s.cfg.OMT = true
 	unattended := false
 	l.sim.OMTReport = func(kernel string) []byte { return omtModeReport(kernel, unattended, "pass") }

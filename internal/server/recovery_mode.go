@@ -37,6 +37,11 @@ func (v *dev) resetOOB(ctx context.Context) (port string, err error) {
 	v.oobCallMu.Lock()
 	defer v.oobCallMu.Unlock()
 	v.mu.Lock()
+	if v.forgotten {
+		name := v.d.Name
+		v.mu.Unlock()
+		return "", refuse(http.StatusNotFound, "no Hard reset was sent: %s is leaving the lab", name)
+	}
 	op, cancel := context.WithCancel(ctx)
 	v.oobCallCancel = cancel
 	v.mu.Unlock()
@@ -57,7 +62,12 @@ func (s *Server) beginJobRecoveryMode(ctx context.Context, v *dev, j *api.Job) e
 	if e := s.transitionRecoveryMode(ctx, v, j.Spec.RecoveryMode, "", "", j.ID); e != nil {
 		return e
 	}
-	j.EffectiveRecoveryMode = v.snapshot().EffectiveRecoveryMode
+	mode := v.snapshot().EffectiveRecoveryMode
+	// As updateJob saves the run's copy: without the people forgotten since.
+	jobMu.Lock()
+	defer jobMu.Unlock()
+	j.EffectiveRecoveryMode = mode
+	s.forgottenLocked(j)
 	if err := s.store.saveJob(j); err != nil {
 		return fmt.Errorf("persist effective job recovery mode: %w", err)
 	}
@@ -98,7 +108,10 @@ func (s *Server) transitionRecoveryMode(ctx context.Context, v *dev, requested, 
 	if mode == api.RecoveryNetworkOnly && v.oobCallCancel != nil {
 		v.oobCallCancel()
 	}
-	if err := v.s.store.saveDevice(&v.d, v.secretHash); err != nil {
+	// storeLocked, not saveDevice: once the Mac has left (or was
+	// forgotten) its row is gone, and a job starting just then must not
+	// write it back, where it would hold the name a new Mac enrolls under.
+	if err := v.storeLocked(); err != nil {
 		v.d.EffectiveRecoveryMode = previous
 		v.d.RecoveryTransaction, v.d.RecoveryHolder, v.d.RecoveryModeJob = previousTransaction, previousHolder, previousJob
 		v.mu.Unlock()
@@ -126,7 +139,7 @@ func (s *Server) liftRecoveryHold(v *dev) error {
 	defer v.mu.Unlock()
 	mode, transaction, holder, job := v.d.EffectiveRecoveryMode, v.d.RecoveryTransaction, v.d.RecoveryHolder, v.d.RecoveryModeJob
 	v.d.EffectiveRecoveryMode, v.d.RecoveryTransaction, v.d.RecoveryHolder, v.d.RecoveryModeJob = "", "", "", ""
-	if err := s.store.saveDevice(&v.d, v.secretHash); err != nil {
+	if err := v.storeLocked(); err != nil {
 		v.d.EffectiveRecoveryMode, v.d.RecoveryTransaction, v.d.RecoveryHolder, v.d.RecoveryModeJob = mode, transaction, holder, job
 		return fmt.Errorf("persist the lifted recovery policy: %w", err)
 	}

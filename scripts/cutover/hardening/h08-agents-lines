@@ -33,7 +33,7 @@ if [[ $MODE == dry ]]; then
 $ME: dry run. Through $ADDRESS, as the owner's browser (the session cookie typed at a hidden prompt), it would:
   1. make the Lab token h08-... on $ADDRESS/me, then revoke it there
      expects: "Agents" gets: <you> made the Lab token "h08-...", which expires on ...
-  2. mark ${other:-HANDLE} as M team on People
+  2. mark ${other:-HANDLE} as M team on People; before anything, it stops if People shows ${other:-HANDLE} on the M team already
      expects: "Agents" gets: <you> marked ${other:-HANDLE} as M team.
   3. use "End all access" on ${other:-HANDLE} on People
      expects: "Agents" gets: <you> used "End all access" on ${other:-HANDLE}.
@@ -46,16 +46,14 @@ PLAN
   exit 0
 fi
 
-begin 08 "a people change, a new Lab token and a cut each appear in \"Agents\""
-if playing; then
-  people
-  other=member
-  rec "the owner marked @member and @other as M team"
-  told_agents "member as M team." "a people change (the M team mark)"
-else
-  owner_session
-fi
-tag="h08-$(nonce)"
+# kind_of HANDLE: the person's kind on People (M team, Maintainer, Admin,
+# External volunteer, no role), or nothing when People has no row for them.
+# It fails when People does not open.
+kind_of() {
+  "$PROBE" page --session "$OWNER_SESSION" --find "(?i)<b>@$1</b></a>[^\\n]*</td>\\s*<td data-label=\"Kind\"><span class=\"badge[^\"]*\">([^<]*)</span>" /people > "$WORK/kind.out" 2>&1 || true
+  grep -qx 'status=200' "$WORK/kind.out" || return 1
+  sed -n 's/^found=//p' "$WORK/kind.out" | head -n 1
+}
 
 # account_of HANDLE: the person's account id, read from their row on People.
 account_of() {
@@ -65,18 +63,101 @@ account_of() {
   fi
   sed -n 's/^found=//p' "$WORK/pid.out" | head -n 1
 }
-# undo_mark HANDLE: the M team mark taken off the person again.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+# owner_handle: the handle of the owner's browser, from their own page.
+owner_handle() {
+  "$PROBE" page --session "$OWNER_SESSION" --find "<h1>@([A-Za-z0-9-]+)</h1>" /me > "$WORK/me-handle.out" 2>&1 || true
+  sed -n 's/^found=//p' "$WORK/me-handle.out" | head -n 1
+}
+# marked_by HANDLE ID: who gave the person's newest M team mark, as their
+# record on People says it (newest first), or nothing.
+marked_by() {
+  "$PROBE" page --session "$OWNER_SESSION" --find "(?i)<li><span class=\"when\">[^<]*</span> @([A-Za-z0-9-]+) marked as M team[^<]* @$1</li>" "/people?open=$2" > "$WORK/marked-by.out" 2>&1 || true
+  sed -n 's/^found=//p' "$WORK/marked-by.out" | head -n 1
+}
+# check_mark HANDLE OWNER [DONE]: a mark the test posted, taken off again
+# only if it is the test's own: People shows HANDLE on the M team and their
+# newest mark in its record is OWNER's, whose browser the test is. It looks
+# right before the post that takes the mark off, at the end and in the
+# cleanup alike: a mark another Maintainer gave in the test's place stays
+# theirs. DONE is the record's line once the mark is off. MARK says how it
+# went: off, left (not the test's, or gone) or unsure.
+MARK=""
+# The mark's post: SENT once it is out, POST its process while it is.
+MARK_SENT=""
+MARK_POST=""
+# mark_answered: labd answered the mark's post, so its request has ended.
+mark_answered() {
+  [[ -z $MARK_SENT ]] || { [[ -f $WORK/mark.out ]] && [[ "$(status_of mark)" =~ ^[1-9] ]]; }
+}
 # shellcheck disable=SC2329
-undo_mark() {
-  local id
+check_mark() {
+  local kind id by="" done="${3:-undone: the M team mark was taken off $1}"
+  MARK=unsure
+  if [[ -n $MARK_POST ]]; then
+    say "waiting for labd's answer to the mark on $1 before looking at it (at most 2 minutes)"
+    wait "$MARK_POST" 2>/dev/null || true
+    MARK_POST=""
+  fi
+  if ! kind="$(kind_of "$1")"; then
+    rec "NOT UNDONE: $1 may still be marked M team: People did not open at $ADDRESS/people; if its record shows @$2 marked $1, take the mark off there"
+    return 0
+  fi
+  case "$kind" in
+    "M team") ;;
+    Maintainer | Admin) MARK=left; rec "left: People shows $1 as $kind, which is not this test's to change"; return 0 ;;
+    *)
+      if mark_answered; then
+        MARK=left
+        rec "undone: People shows no M team mark on $1"
+      else
+        rec "NOT UNDONE: the post that marks $1 as M team had no answer, so labd may still write the mark: if People's record shows @$2 marked $1, take the mark off on $ADDRESS/people"
+      fi
+      return 0 ;;
+  esac
   id="$(account_of "$1")"
-  [[ -n $id ]] && form undo-mark --session "$OWNER_SESSION" --page /people "/people/$id/m-team/remove" sure=yes
-  if [[ -n $id && "$(status_of undo-mark)" == 303 ]]; then
-    rec "undone: the M team mark was taken off $1"
+  [[ -z $id ]] || by="$(marked_by "$1" "$id")"
+  if [[ -z $by ]]; then
+    rec "NOT UNDONE: $1 is marked M team and People's record does not say by whom: if it was @$2, this test, take the mark off on $ADDRESS/people"
+    return 0
+  fi
+  if [[ "$(lower "$by")" != "$(lower "$2")" ]]; then
+    MARK=left
+    rec "left: @$by marked $1 as M team, not this test"
+    return 0
+  fi
+  form undo-mark --session "$OWNER_SESSION" --page /people "/people/$id/m-team/remove" sure=yes
+  if [[ "$(status_of undo-mark)" == 303 ]]; then
+    MARK=off
+    rec "$done"
   else
     rec "NOT UNDONE: $1 may still be marked M team: take the mark off on $ADDRESS/people"
   fi
 }
+
+begin 08 "a people change, a new Lab token and a cut each appear in \"Agents\""
+if playing; then
+  people
+  other=member
+  rec "the owner marked @member and @other as M team"
+  [[ "$(kind_of member)" == "M team" ]] || fail "People does not show @member as M team: the test would not see a member named with --other"
+  told_agents "member as M team." "a people change (the M team mark)"
+  # Through the Lab address the undo knows its own mark by the record.
+  me="$(owner_handle)"
+  [[ -n $me && "$(lower "$(marked_by member "$(account_of member)")")" == "$(lower "$me")" ]] || fail "People's record does not show @member marked by @${me:-the owner}: the test would not know its own mark"
+  rec "People's record shows @$me marked @member"
+else
+  owner_session
+  if [[ -n $other ]]; then
+    # The test marks the person and takes the mark off again: someone who
+    # has a mark already would lose theirs.
+    kind="$(kind_of "$other")" || stopped "People did not open at $ADDRESS/people: whether $other is on the M team already is not known"
+    case "$kind" in
+      "M team" | Maintainer | Admin) stopped "@$other is on the M team already ($kind): the test would take their mark off at its end. Run it again with --other naming an account with no mark" ;;
+    esac
+  fi
+fi
+tag="h08-$(nonce)"
 
 # A new Lab token, then revoked by its own person (no line for that).
 arm token undo_own_token "$tag"
@@ -97,8 +178,23 @@ if [[ -z $other ]]; then
   stopped "a people change and a cut need a person who is not the owner: run it again with --other HANDLE, a GitHub account the owner names"
 fi
 if ! playing; then
-  arm mark undo_mark "$other"
-  form mark --session "$OWNER_SESSION" --page /people /people/mark "handle=$other" as=m-team
+  me="$(owner_handle)"
+  [[ -n $me ]] || give_up "$ADDRESS/me does not say your handle: the test could not tell its own mark from another's. Nothing was marked"
+  # Armed before the post: whatever its answer, or none (a Ctrl-C while it
+  # is out), the mark is looked at in the end, and taken off only if it is
+  # the test's own. A refusal (4xx) changed nothing. The post goes in the
+  # background, where a Ctrl-C does not stop it: the run then ends once
+  # labd has answered, or the post's own deadline passed, and the look
+  # comes after labd's write; with no answer a mark not seen is NOT UNDONE.
+  arm mark check_mark "$other" "$me"
+  MARK_SENT=1
+  # It ignores SIGINT itself: bash 5.2 gives a background job of a script
+  # that traps INT the default action, so the Ctrl-C ended the post.
+  (trap '' INT; form mark --session "$OWNER_SESSION" --page /people /people/mark "handle=$other" as=m-team) &
+  MARK_POST=$!
+  wait "$MARK_POST" || true
+  MARK_POST=""
+  [[ "$(status_of mark)" != 4?? ]] || disarm mark
   [[ "$(status_of mark)" == 303 ]] || give_up "$other was not marked M team: $(status_of mark) $(said_of mark)"
   rec "the owner marked $other as M team on People"
   told_agents "marked $other as M team." "a people change (the M team mark)"
@@ -119,9 +215,12 @@ form cut --session "$OWNER_SESSION" --page /people "/people/$account/end-all-acc
 [[ "$(status_of cut)" == 303 ]] || give_up "\"End all access\" on $other was not done: $(status_of cut) $(said_of cut)"
 rec "the owner used \"End all access\" on $other on People"
 told_agents "used \"End all access\" on $other." "a cut (\"End all access\" on another person)"
-form unmark --session "$OWNER_SESSION" --page /people "/people/$account/m-team/remove" sure=yes
-[[ "$(status_of unmark)" == 303 ]] || give_up "the M team mark was not taken off $other: $(status_of unmark) $(said_of unmark)"
 disarm mark
-rec "the owner took the M team mark off $other again"
+check_mark "$other" "$me" "the owner took the M team mark off $other again"
+case "$MARK" in
+  off) ;;
+  left) stopped "the M team mark on $other is not this test's now, so it was left and its line in \"Agents\" not asked about" ;;
+  *) give_up "the M team mark was not taken off $other" ;;
+esac
 told_agents "removed the M team mark from $other." "a people change (the mark taken off)"
 passed

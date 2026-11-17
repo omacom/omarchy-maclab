@@ -491,10 +491,11 @@ func TestTheMaintenanceRunStopsWhenHomebrewOrTheSetUpFails(t *testing.T) {
 		t.Errorf("\"Agents\" was told %q", got)
 	}
 
-	// A new version that still leads back into Homebrew: the set-up refuses
-	// the copy, and the run stops with the tools as they were.
+	// A new version that still leads back into Homebrew, to a keg the copy
+	// does not hold: the set-up refuses the copy, and the run stops with the
+	// tools as they were.
 	os.Remove(r.path("opt/homebrew/upgrade.fails"))
-	r.newer("cloudflared", "2.0", "#!/bin/sh\nexec "+r.path("opt/homebrew")+"/opt/cloudflared/libexec/cloudflared \"$@\"\n")
+	r.newer("cloudflared", "2.0", "#!/bin/sh\nexec "+r.path("opt/homebrew")+"/opt/other/libexec/cloudflared \"$@\"\n")
 	os.Remove(r.log)
 	out = r.stopped()
 	if !strings.Contains(out, "the set-up failed") || r.version("cloudflared") != "1.0" || len(r.copies()) != 1 || strings.Contains(r.calls(), "fdesetup authrestart") {
@@ -721,6 +722,134 @@ func TestASetUpThatFailsKeepsWhatWasUpgraded(t *testing.T) {
 	}
 }
 
+// A run started again that upgrades another tool makes another copy: the
+// copy that holds the version to switch back to is kept, and the switch back
+// takes that version from it.
+func TestARerunThatUpgradesAnotherToolStillSwitchesBackToTheRightVersion(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.newer("cloudflared", "2.0", "#!/bin/sh\n# bad\necho cloudflared 2.0\n")
+	write(t, filepath.Join(filepath.Dir(r.root), "state", "bootstrap.fails."+cloudflaredLabel), "1", 0o644)
+	r.stopped()
+	r.newer("restic", "0.20.0", listingRestic)
+
+	r.went()
+
+	if got := read(t, r.path("usr/local/lab/maintenance/upgraded")); got != "cloudflared 1.0 2.0\nrestic 0.19.1 0.20.0\n" {
+		t.Fatalf("what was upgraded: %q", got)
+	}
+	r.ops.set(func(o *ops) { o.lines = nil })
+	out := r.stopped("--after-restart")
+	tools := r.path("usr/local/lab/tools")
+	if got := read(t, tools+"/current/cloudflared/bin/cloudflared"); !strings.Contains(got, "cloudflared 1.0") || r.version("cloudflared") != "1.0" {
+		t.Fatalf("switched back to %q, VERSIONS says %s\n%s", got, r.version("cloudflared"), out)
+	}
+	if !strings.Contains(out, "it was switched back to 1.0 from the previous copy, and 1.0 passes") {
+		t.Errorf("the report:\n%s", out)
+	}
+	// Once the record is closed, the next set-up keeps two copies again.
+	r.newer("cloudflared", "3.0", "")
+	brew := exec.Command(r.path("opt/homebrew/bin/brew"), "upgrade", "cloudflared")
+	brew.Env = r.env
+	if out, err := brew.CombinedOutput(); err != nil {
+		t.Fatalf("brew: %v\n%s", err, out)
+	}
+	if out := r.ok("setup"); len(r.copies()) != 2 {
+		t.Errorf("copies after the record closed: %v\n%s", r.copies(), out)
+	}
+}
+
+// A run started again that upgrades the same tool once more keeps the
+// version the first one started from: a failed 3.0 goes back to 1.0, which
+// passed, never to the 2.0 nobody checked, and the copy of 1.0 is kept.
+func TestARerunThatUpgradesTheSameToolAgainSwitchesBackToTheFirstVersion(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.newer("cloudflared", "2.0", "#!/bin/sh\n# bad\necho cloudflared 2.0\n")
+	write(t, filepath.Join(filepath.Dir(r.root), "state", "bootstrap.fails."+cloudflaredLabel), "1", 0o644)
+	r.stopped()
+	r.newer("cloudflared", "3.0", "#!/bin/sh\n# bad\necho cloudflared 3.0\n")
+
+	r.went()
+
+	if got := read(t, r.path("usr/local/lab/maintenance/upgraded")); got != "cloudflared 1.0 3.0\n" {
+		t.Fatalf("what was upgraded: %q", got)
+	}
+	r.ops.set(func(o *ops) { o.lines = nil })
+	out := r.stopped("--after-restart")
+	if got := read(t, r.path("usr/local/lab/tools/current/cloudflared/bin/cloudflared")); !strings.Contains(got, "cloudflared 1.0") || r.version("cloudflared") != "1.0" {
+		t.Fatalf("switched back to %q, VERSIONS says %s\n%s", got, r.version("cloudflared"), out)
+	}
+	if !strings.Contains(out, "it was switched back to 1.0 from the previous copy, and 1.0 passes") {
+		t.Errorf("the report:\n%s", out)
+	}
+}
+
+// A switch back takes only the version its record names: a previous copy
+// that holds another is not copied.
+func TestASwitchBackFindsNoCopyOfTheVersionAndChangesNothing(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.newer("cloudflared", "2.0", "#!/bin/sh\n# bad\necho cloudflared 2.0\n")
+	r.went()
+	r.ops.set(func(o *ops) { o.lines = nil })
+	write(t, r.path("usr/local/lab/maintenance/upgraded"), "cloudflared 0.9 2.0\n", 0o644)
+
+	r.stopped("--after-restart")
+
+	if got := read(t, r.path("usr/local/lab/tools/current/cloudflared/bin/cloudflared")); !strings.Contains(got, "cloudflared 2.0") || r.version("cloudflared") != "2.0" {
+		t.Errorf("a version the record does not name was copied: %q, VERSIONS %s", got, r.version("cloudflared"))
+	}
+	if !r.tunnelLoaded() || !strings.Contains(r.report(), "could not be switched back to 0.9") {
+		t.Errorf("tunnel loaded %v; the report:\n%s", r.tunnelLoaded(), r.report())
+	}
+}
+
+// signal-cli on Java, switched back and then carried into a new copy, runs
+// from the copy it is in: its wrapper names no copy that is pruned.
+func TestSignalCLIOnJavaStartsAfterASwitchBackAndANewCopy(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.signalCLIOnJava()
+	r.ok("setup")
+	tools := r.path("usr/local/lab/tools")
+	// labd's test line goes through the sender: here it runs signal-cli.
+	write(t, r.path("usr/local/lab/current/bin/labd"), "#!/bin/sh\nexec \"$LAB_SYSROOT/usr/local/lab/tools/current/signal-cli/bin/signal-cli\" >/dev/null\n", 0o755)
+	write(t, r.path("var/lab/secrets/signal-agents-group"), groupID+"\n", 0o600)
+	r.newer("signal-cli", "0.13.25", "#!/bin/sh\nexit 1\n")
+	r.went()
+	r.ops.set(func(o *ops) { o.lines = nil })
+
+	out := r.stopped("--after-restart")
+
+	if r.version("signal-cli") != "0.13.24" || !strings.Contains(out, "it was switched back to 0.13.24 from the previous copy, and 0.13.24 passes") {
+		t.Fatalf("signal-cli was not switched back:\n%s", out)
+	}
+	r.newer("restic", "0.20.0", listingRestic)
+	brew := exec.Command(r.path("opt/homebrew/bin/brew"), "upgrade", "restic")
+	brew.Env = r.env
+	if out, err := brew.CombinedOutput(); err != nil {
+		t.Fatalf("brew: %v\n%s", err, out)
+	}
+	if out := r.ok("setup"); r.version("signal-cli") != "0.13.24" || r.version("restic") != "0.20.0" || len(r.copies()) != 2 {
+		t.Fatalf("the next copy: %v\n%s", r.copies(), out)
+	}
+	current, _ := os.Readlink(tools + "/current")
+	if text := read(t, tools+"/current/signal-cli/bin/signal-cli"); strings.Count(text, tools+"/"+current+"/") != 2 {
+		t.Errorf("the wrapper does not run its own copy (%s):\n%s", current, text)
+	}
+	prefix := r.path("opt/homebrew")
+	if err := os.Rename(prefix, prefix+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Rename(prefix+".gone", prefix)
+	run := exec.Command(tools + "/current/signal-cli/bin/signal-cli")
+	run.Env = []string{"PATH=/usr/bin:/bin"}
+	if out, err := run.CombinedOutput(); err != nil || string(out) != "openjdk 23.0.2\n" {
+		t.Errorf("signal-cli from the copy: %v\n%s", err, out)
+	}
+}
+
 // A first half that ends before the restart, here at a restart refused,
 // lifts the drain and tells "Agents": jobs do not wait for a restart that is
 // not coming.
@@ -796,6 +925,76 @@ func TestASwitchBackThatCannotCopyLeavesTheToolAsItWas(t *testing.T) {
 	}
 	if !strings.Contains(r.report(), "tool cloudflared 2.0 fails its check, and it could not be switched back to 1.0") {
 		t.Errorf("the report:\n%s", r.report())
+	}
+}
+
+// A stop while a tool is switched back, its daemon stopped, waits until the
+// switch back is done and the daemon started again: the run then ends.
+func TestAStopDuringASwitchBackLeavesTheDaemonStarted(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.newer("cloudflared", "2.0", "#!/bin/sh\n# bad\necho cloudflared 2.0\n")
+	r.went()
+	r.ops.set(func(o *ops) { o.lines = nil })
+	if err := os.Rename(r.bin+"/launchctl", r.bin+"/launchctl.stub"); err != nil {
+		t.Fatal(err)
+	}
+	write(t, r.bin+"/launchctl", "#!/bin/bash\n[[ \"$1 $2\" != \"bootout system/"+cloudflaredLabel+"\" ]] || kill -TERM $PPID\nexec \"$(dirname \"$0\")/launchctl.stub\" \"$@\"\n", 0o755)
+	os.Remove(r.log)
+
+	out, code := r.maintenance("--after-restart")
+
+	if code == 0 || !strings.Contains(r.calls(), "launchctl bootout system/"+cloudflaredLabel) {
+		t.Fatalf("exit %d\n%s\n%s", code, out, r.calls())
+	}
+	if !r.tunnelLoaded() {
+		t.Errorf("the tunnel was left stopped:\n%s\n%s", out, r.calls())
+	}
+	if r.version("cloudflared") != "1.0" || !strings.Contains(read(t, r.path("usr/local/lab/tools/current/cloudflared/bin/cloudflared")), "cloudflared 1.0") {
+		t.Errorf("the switch back was cut short:\n%s", read(t, r.path("usr/local/lab/tools/current/VERSIONS")))
+	}
+	if strings.Contains(r.calls(), "ports ") {
+		t.Errorf("the run went on after the stop:\n%s", r.calls())
+	}
+}
+
+// A second stop while the first half's way out lifts the drain does not cut
+// it short: jobs start again and "Agents" is told.
+func TestASecondStopDuringTheWayOutStillLiftsTheDrain(t *testing.T) {
+	t.Parallel()
+	r := maintained(t)
+	r.ops.set(func(o *ops) { o.drain = []string{"1 0"} })
+	r.env = append(r.env, "LAB_DRAIN_STEP=1")
+	cmd := exec.Command(r.path("usr/local/lab/current/scripts/mini/maintenance"), "--wait", "5")
+	cmd.Env = r.env
+	cmd.Dir = filepath.Dir(r.tree)
+	// The lift comes from the run, so after Start; started says so to Go too.
+	started := make(chan struct{})
+	r.ops.set(func(o *ops) {
+		o.onLift = func() {
+			<-started
+			cmd.Process.Signal(syscall.SIGTERM)
+			time.Sleep(300 * time.Millisecond)
+		}
+	})
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	close(started)
+	for deadline := time.Now().Add(20 * time.Second); !strings.Contains(r.callsOrNone(), "ops POST /drain"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			t.Fatalf("the run never drained:\n%s", r.callsOrNone())
+		}
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("a stopped run ended as done")
+	}
+
+	order(t, r.calls(), "ops POST /drain", "ops DELETE /drain")
+	if got := r.ops.told(); len(got) == 0 || !strings.Contains(got[len(got)-1], "jobs start again") {
+		t.Errorf("\"Agents\" was told %q", got)
 	}
 }
 
