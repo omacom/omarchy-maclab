@@ -400,6 +400,12 @@ class LockedScreenTest(unittest.TestCase):
                 self.assertEqual(run(host)[CHECKS[0]]["status"], "fail")
                 self.assertEqual(host.commands_run.count(MONITORS), 1)
 
+    def test_wrong_colours_from_software_decode_still_fail_on_a_screen_that_locks(self):
+        host = at_desktop(desktop(GREEN, mpv_log(None, "gpu", "wayland"), screen=(UNLOCKED, LOCKED)))
+
+        self.assertEqual(run(host)[CHECKS[0]]["status"], "fail")
+        self.assertEqual(host.commands_run.count(MONITORS), 1)
+
     def test_a_pass_stays_a_pass_when_the_second_read_would_say_locked_or_covered(self):
         for screen, overlays in (((UNLOCKED, LOCKED), (NO_OVERLAY,)), ((UNLOCKED,), (NO_OVERLAY, SCREENSAVER))):
             with self.subTest(screen=screen, overlays=overlays):

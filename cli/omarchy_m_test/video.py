@@ -320,7 +320,8 @@ def _play(ctx: Context, directory: str, codec: str, label: str, check_id: str, r
         lines.append("on screen: every bar in its colour")
     if not hardware:
         lines.append("hardware decode: not used, mpv decoded the test card in software")
-    if wrong:
+    # mpv's log shows software decode whatever is on screen, so a lock can't excuse it.
+    if wrong and hardware:
         taken = _since_taken(ctx.host)
         if taken:
             return _skip(check_id, taken, lines)
