@@ -67,11 +67,13 @@ Ordered by time saved per effort. Each is one pull request, mergeable alone, wit
 
 1. **Route labd's remaining waits through the clock** (small). `runner.go`, `recovery_mode.go`, `agent_software.go`, `leaving.go`, `sighting.go`, `gc.go`, `drain.go`, `recover.go`, `server.go:1599`; add `Clock.AfterFunc`, `agent.WithTimeout`; repotest check for `internal/server` and for SQL `now()`. Saves ~0 alone; unblocks 2.
 2. **Sim sleeps on the clock** (small). `internal/agent/sim.go`, `rebootwarning.go`, `lockscreen.go`, `limine.go`, `agent.go` watchdog loop; repotest check for `internal/agent`. Saves ~0 alone; unblocks 3.
-3. **Shared test lab on a scaled clock** (medium). `agent/clock.go` (`ScaledClock`), `server/server_test.go` `newLabWith` default, restore real knob values, drop the `testKnobs` shrink; fix tests that assumed wall time. `internal/server` serial 1911 s → ~250 s; CI wall 12–17 min → ~2 min. The big one.
+3. **Shared test lab on a scaled clock** (medium). `agent/clock.go` (`ScaledClock`), `server/server_test.go` `newLabWith` default (k=10, `LAB_TEST_CLOCK_SCALE`); tests that time labd against wall-clock sleeps keep the wall clock (`wallClock(t)`, 24 tests). Knob values unchanged. **Measured**: `internal/server` wall 187 s → 117 s on the owner's Mac, serial 1911 s → 1248 s. Less than first estimated: most of what is left is the tests' own `time.Sleep`s and wall deadlines, and `FakeClock` tests pumped in wall time (the reboot-warning ones, 15–23 s each).
 4. **Drop the server shards** (small). With 3 in, `main_test.go`'s copy-of-itself sharding costs more than it saves; remove it, keep `t.Parallel` where safe. Saves the shard start-up (~10–20 s) and a lot of code.
 5. **Runbook waits from the environment** (medium). `scripts/cutover/out-of-band/{oob08-refusals,lib.sh}`, `front-door/{fd11-cut-job-wait,fd13-cache}`, `builder-gate`, `dark-recordings`, `alias-rehearsal`, `mini.sh`; suites in `internal/cutovertest/...` set them low. `outofband` 374 s → ~60 s, `cutovertest` 278 s → ~80 s.
 6. **Mini scripts' waits from the environment** (medium). `scripts/mini/{lib.sh,check,deploy,setup,transport,hold,container,maintenance,backup,restore-drill,rehearsal-alias}`; `internal/minitest` sets them. 538 s → ~150 s.
 7. **Scaled clock for the binaries the suites start** (medium). `-tags labtest` read of `MACLAB_TEST_CLOCK_SCALE` in `cmd/labd`, `cmd/lab-agent`; `internal/carrytest`, `cloudtest`, `cutovertest/hardening` set it. 94 + 91 + 48 s → ~60 s together.
+9. **Tests' own waits on the lab clock** (medium, added after ticket 3). Replace test-side `time.Sleep`/wall deadlines in `internal/server` tests with the lab's clock, move the 24 `wallClock(t)` tests back, and speed `pumpClock`. Expected `internal/server` serial 1248 s → ~400 s.
+
 8. **Agent package off the wall clock** (small). Remaining `internal/agent` waits that tests hit (`linux.go` boot/network loops, `leave.go`, `uninstall.go`); `internal/agent` 46 s → ~15 s.
 
 ## Expected result
@@ -80,9 +82,9 @@ Go test packages run in parallel, so the suite's wall time is its slowest packag
 
 | | Now (this Mac) | After all tickets (estimate) |
 |---|---|---|
-| `internal/server` | 187 s (CI 12–17 min) | ~60 s (CI ~2–3 min) |
+| `internal/server` | 187 s (CI 12–17 min) | 117 s after ticket 3 (measured); ~60 s after ticket 9 |
 | `internal/minitest` | 538 s | ~150 s |
 | `internal/cutovertest/outofband` | 374 s | ~60 s |
 | Whole suite, wall | ~9 min here, ~17 min on CI | ~3 min here, ~4–5 min on CI |
 
-The estimates assume the scaled clock at k≈20–50 and runbook waits at 0–0.05 s; ticket 3 measures the real figure first and the rest are corrected from it.
+Ticket 3 is measured; the rest are estimates. They assume the scaled clock at k≈10–20 and runbook waits at 0–0.05 s.
