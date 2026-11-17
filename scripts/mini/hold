@@ -59,7 +59,7 @@ for (( n = 0; n < ${LAB_READY_TRIES:-30}; n++ )); do
   else
     ! curl -fsS -o /dev/null --max-time 5 "http://$LABD_LISTEN/healthz" 2>/dev/null || break
   fi
-  sleep 2
+  pause 2
 done
 (( n < ${LAB_READY_TRIES:-30} )) || fail "$1 was started again and is not back yet: look at $LAB_HOME/log/"
 echo "back $(date +%s)"

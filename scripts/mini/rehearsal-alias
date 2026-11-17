@@ -77,7 +77,7 @@ up() {
     elif curl -fsS -o /dev/null --max-time 5 --unix-socket "$LABD_SOCKET" -H 'X-Forwarded-Proto: https' "http://$LAB_HOST/healthz" 2>/dev/null; then
       return 0
     fi
-    sleep 2
+    pause 2
   done
   return 1
 }

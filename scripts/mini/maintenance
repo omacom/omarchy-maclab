@@ -511,7 +511,7 @@ second_half() {
   # labd tells "Agents" nothing before it runs.
   for (( n = ${LAB_BACK_TRIES:-300}; n > 0; n-- )); do
     [[ ! -S $OPS_SOCKET ]] || ! loaded "$LABD_LABEL" || break
-    sleep 1
+    pause 1
   done
   tell "Maintenance run on the mini: back after the planned restart, on macOS $(macos_now). Checking every service and tool."
 

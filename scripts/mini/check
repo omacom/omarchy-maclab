@@ -528,7 +528,7 @@ services() {
       say "every service is up"
       exit 0
     fi
-    (( n == 1 )) || sleep 1
+    (( n == 1 )) || pause 1
   done
   echo "$out"
   fail "$(grep -c '^FAIL' <<<"$out") services are not as they should be"
@@ -597,7 +597,7 @@ tool() {
       fi
       exit 0
     fi
-    (( n == 1 )) || sleep 1
+    (( n == 1 )) || pause 1
   done
   fail "$1 fails its check: $why"
 }

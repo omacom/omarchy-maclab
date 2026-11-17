@@ -344,6 +344,10 @@ sshd_match() {
 # power_value KEY: one of pmset's settings in use.
 power_value() { sys pmset -g 2>/dev/null | awk -v key="$1" '$1 == key && !seen { print $2; seen = 1 }' || true; }
 
+# pause N: wait N seconds between two looks at something that is not ready
+# yet. The tests set LAB_PAUSE to look again sooner; the mini never does.
+pause() { sleep "${LAB_PAUSE:-$1}"; }
+
 # loaded LABEL: whether launchd has that daemon.
 loaded() { launchctl print "system/$1" >/dev/null 2>&1; }
 
@@ -354,7 +358,7 @@ stopped() {
   launchctl bootout "system/$1" 2>/dev/null || true
   for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     loaded "$1" || return 0
-    sleep 1
+    pause 1
   done
   return 1
 }
@@ -368,7 +372,7 @@ boot_in() {
   for n in 1 2 3; do
     launchctl bootstrap system "$2" 2>/dev/null || true
     ! loaded "$1" || return 0
-    (( n == 3 )) || sleep 1
+    (( n == 3 )) || pause 1
   done
   return 1
 }
@@ -525,7 +529,7 @@ tell() {
       return 0
     fi
     if (( n == 1 )) || ! loaded "$LABD_LABEL"; then break; fi
-    sleep 1
+    pause 1
   done
   if (( kept )); then
     say "that line did not reach \"Agents\": it is in $log"

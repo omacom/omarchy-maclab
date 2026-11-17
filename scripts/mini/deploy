@@ -286,7 +286,7 @@ verify() {
       through_the_front_door; then
       break
     fi
-    sleep 1
+    pause 1
   done
   if (( n == 0 )); then
     loaded "$LABD_LABEL" || say "launchd does not have $LABD_LABEL loaded"
@@ -303,7 +303,7 @@ verify() {
   for (( n = ${LAB_PARTS_TRIES:-90}; n > 0; n-- )); do
     wrong="$(parts_bad)"
     [[ -n $wrong ]] || return 0
-    sleep 1
+    pause 1
   done
   say "labd answers, and $(tr '\n' ';' <<<"$wrong" | sed 's/;$//; s/;/; /g')"
   return 1

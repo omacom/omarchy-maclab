@@ -80,7 +80,7 @@ started() {
   as_user system start --enable-kernel-install || return 1
   for (( n = 0; n < ${LAB_START_TRIES:-15}; n++ )); do
     running && return 0
-    sleep 2
+    pause 2
   done
   return 1
 }

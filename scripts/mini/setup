@@ -625,7 +625,7 @@ start_oobd() {
   launchctl bootout "system/$OOBD_LABEL" 2>/dev/null || true
   for n in 1 2 3 4 5 6 7 8 9 10; do
     oobd_loaded || break
-    sleep 1
+    pause 1
   done
   ! oobd_loaded || fail "$OOBD_LABEL did not stop ($n s)"
   launchctl enable "system/$OOBD_LABEL" || true
@@ -1191,7 +1191,7 @@ start_tailscaled() {
   start_daemon "$TAILSCALED_LABEL"
   for n in 1 2 3 4 5 6 7 8 9 10; do
     [[ -z "$(on_tailnet)" ]] || return 0
-    sleep 1
+    pause 1
   done
   fail "tailscaled does not answer $n s after its start: see /var/log/lab-tailscaled.log"
 }

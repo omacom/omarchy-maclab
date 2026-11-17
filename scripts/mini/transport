@@ -90,7 +90,7 @@ connected() {
   local n
   for (( n = 0; n < ${LAB_READY_TRIES:-30}; n++ )); do
     if curl -fsS -o /dev/null --max-time 5 "$TUNNEL_READY" 2>/dev/null; then return 0; fi
-    sleep 2
+    pause 2
   done
   return 1
 }
