@@ -161,7 +161,7 @@ func main() {
 	defer stop()
 	// The Join command downloads the lab-agent built alongside labd.
 	exe, _ := os.Executable()
-	s, err := server.New(ctx, server.Config{DataDir: *data,
+	s, err := server.New(ctx, server.Config{DataDir: *data, Clock: labClock(),
 		PublicURL: pub, Alias: *alias, Preview: *preview, Release: version, GitHub: app, Admins: admins, OOB: controller, MachineIDKey: idKey, Signal: sender, SignalDir: *signalDir, Watch: watch,
 		OMT: *omt, OMTPublish: *omtPublish, OMTEvery: *omtEvery,
 		BootTimeout: *bootTimeout, OfflineAfter: *offlineAfter, AliveWindow: *aliveWindow, QuietGrace: *quietGrace, StageTimeout: *stageTimeout, WatchdogOpenTimeout: *watchdogOpenTimeout, RebootWarning: *rebootWarning, NtfyURL: *ntfy, NotifyCmd: *notifyCmd,

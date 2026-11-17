@@ -29,6 +29,10 @@ var (
 // No test here reads or writes the home of whoever runs the tests.
 func TestMain(m *testing.M) {
 	exit := testhome.Set()
+	// The labd these tests build runs on the wall clock sped up this much.
+	if os.Getenv("MACLAB_TEST_CLOCK_SCALE") == "" {
+		os.Setenv("MACLAB_TEST_CLOCK_SCALE", "10")
+	}
 	code := m.Run()
 	if binDir != "" {
 		os.RemoveAll(binDir)
@@ -61,7 +65,7 @@ func bins(t *testing.T) string {
 			return
 		}
 		for _, build := range [][]string{
-			{"", "-o", binDir + "/", "./cmd/labd", "./cmd/lab", "./tools/fake-mini"},
+			{"", "-tags", "labtest", "-o", binDir + "/", "./cmd/labd", "./cmd/lab", "./tools/fake-mini"},
 			{"GOOS=linux GOARCH=arm64", "-o", binDir + "/lab-agent-linux-arm64", "./cmd/lab-agent"},
 		} {
 			cmd := exec.Command("go", append([]string{"build"}, build[1:]...)...)

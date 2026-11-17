@@ -35,6 +35,10 @@ import (
 // No test here reads or writes the home of whoever runs the tests.
 func TestMain(m *testing.M) {
 	exit := testhome.Set()
+	// The labd these tests build runs on the wall clock sped up this much.
+	if os.Getenv("MACLAB_TEST_CLOCK_SCALE") == "" {
+		os.Setenv("MACLAB_TEST_CLOCK_SCALE", "10")
+	}
 	code := m.Run()
 	if labdDir != "" {
 		os.RemoveAll(labdDir)
@@ -85,7 +89,7 @@ func labd(t *testing.T) string {
 			return
 		}
 		labdDir = dir
-		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, "labd"), "./cmd/labd")
+		cmd := exec.Command("go", "build", "-tags", "labtest", "-o", filepath.Join(dir, "labd"), "./cmd/labd")
 		cmd.Dir = repo(t)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			labdErr = err.Error() + "\n" + string(out)
