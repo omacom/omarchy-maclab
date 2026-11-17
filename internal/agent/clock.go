@@ -197,3 +197,8 @@ type scaledTicker struct {
 
 func (t *scaledTicker) C() <-chan time.Time { return t.c }
 func (t *scaledTicker) Stop()               { t.once.Do(func() { close(t.stop) }) }
+
+// Scaled is how long d of wall time is on this clock.
+func (c *ScaledClock) Scaled(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * c.k)
+}

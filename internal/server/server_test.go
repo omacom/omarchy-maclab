@@ -155,7 +155,13 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	if name == "" {
 		name = "sim-mac"
 	}
-	var clock agent.Clock = labClock()
+	// With the controller a Mac has to come back over real HTTP within
+	// BootTimeout, which a scaled clock makes too short: such a lab keeps the
+	// wall clock.
+	var clock agent.Clock = agent.WallClock
+	if !withOOB {
+		clock = labClock()
+	}
 	if c.clock != nil {
 		clock = c.clock
 	}
@@ -170,7 +176,9 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	l := &lab{t: t, cancel: cancel, name: name, ctx: ctx, logs: &logBuf{}}
 	sim := agent.NewSim(t.TempDir())
 	sim.RebootDelay = 300 * time.Millisecond
-	sim.Clock = clock
+	if sc, ok := clock.(*agent.ScaledClock); ok {
+		sim.Clock = sc
+	}
 	l.sim = sim
 	l.oob = newFakeMini(t)
 	var logw io.Writer = l.logs
@@ -181,6 +189,10 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	cfg := Config{DataDir: t.TempDir(), Interval: 200 * time.Millisecond,
 		BootTimeout: 4 * time.Second, OfflineAfter: time.Hour, Clock: clock,
 		RebootGrace: 2 * time.Second, LabClockSkew: time.Second, WatchdogIdleReset: 2 * time.Second}
+	if sc, ok := clock.(*agent.ScaledClock); ok {
+		// A Mac comes back over real HTTP: give it the same wall time as ever.
+		cfg.BootTimeout = sc.Scaled(cfg.BootTimeout)
+	}
 	if withOOB {
 		cfg.OOB, cfg.SightEvery = l.oob.client, 200*time.Millisecond
 	}
