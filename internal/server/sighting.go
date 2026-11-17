@@ -372,13 +372,13 @@ func (s *Server) sightLoop() {
 		every = sightEvery
 	}
 	s.sight(s.ctx)
-	t := time.NewTicker(every)
+	t := s.clock().NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-		case <-t.C:
+		case <-t.C():
 			s.sight(s.ctx)
 		}
 	}

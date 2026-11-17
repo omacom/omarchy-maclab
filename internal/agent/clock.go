@@ -12,6 +12,7 @@ type Clock interface {
 	After(d time.Duration) <-chan time.Time
 	NewTicker(d time.Duration) Ticker
 	Sleep(d time.Duration)
+	AfterFunc(d time.Duration, f func())
 }
 
 type Ticker interface {
@@ -28,6 +29,7 @@ func (wallClock) Now() time.Time                         { return time.Now() }
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 func (wallClock) Sleep(d time.Duration)                  { time.Sleep(d) }
 func (wallClock) NewTicker(d time.Duration) Ticker       { return wallTicker{time.NewTicker(d)} }
+func (wallClock) AfterFunc(d time.Duration, f func())   { time.AfterFunc(d, f) }
 
 type wallTicker struct{ t *time.Ticker }
 
@@ -58,6 +60,11 @@ func (f *FakeClock) Now() time.Time {
 func (f *FakeClock) After(d time.Duration) <-chan time.Time { return f.wait(d, 0).c }
 
 func (f *FakeClock) Sleep(d time.Duration) { <-f.After(d) }
+
+func (f *FakeClock) AfterFunc(d time.Duration, fn func()) {
+	c := f.After(d)
+	go func() { <-c; fn() }()
+}
 
 func (f *FakeClock) NewTicker(d time.Duration) Ticker { return &fakeTicker{f, f.wait(d, d)} }
 

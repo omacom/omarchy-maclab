@@ -225,7 +225,7 @@ func (v *dev) holdUpdating(mark *agentUpdating) {
 	v.mu.Lock()
 	hold := cmp.Or(v.updateHold, agentUpdateWait)
 	v.mu.Unlock()
-	time.AfterFunc(hold, func() { v.endUpdating(mark) })
+	v.s.clock().AfterFunc(hold, func() { v.endUpdating(mark) })
 }
 
 // endUpdating lets the Mac go, if mark still holds it.

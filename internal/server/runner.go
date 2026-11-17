@@ -1032,7 +1032,7 @@ func (r *jobRun) stage(ctx context.Context, args api.StageArgs) (sr api.StageRes
 		select {
 		case <-ctx.Done():
 			return sr, api.OutcomeStageFailed, "canceled between staging attempts"
-		case <-time.After(stageBackoff[n-1]):
+		case <-r.v.s.clock().After(stageBackoff[n-1]):
 		}
 	}
 }

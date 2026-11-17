@@ -265,7 +265,7 @@ func (s *Server) endEnrollmentsOf(accountID int64, l leaving) error {
 	if accountID == 0 {
 		return nil
 	}
-	deadline := time.Now().Add(retiringWait)
+	deadline := s.now().Add(retiringWait)
 	for {
 		names, err := scanNames(s.store.db.Query(`SELECT name FROM devices WHERE json_extract(data, '$.volunteer_id') = ? ORDER BY name`, accountID))
 		if err != nil {
@@ -284,7 +284,7 @@ func (s *Server) endEnrollmentsOf(accountID int64, l leaving) error {
 		if len(errs) > 0 || len(names) == 0 {
 			return errors.Join(errs...)
 		}
-		if time.Now().After(deadline) {
+		if s.now().After(deadline) {
 			return fmt.Errorf("%s is leaving the lab already, and has not left yet", strings.Join(names, ", "))
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -1596,7 +1596,7 @@ func (s *Server) hardResetBy(ctx context.Context, v *dev, p Person) (said string
 	}
 	v.resetting = true
 	v.mu.Unlock()
-	rctx, cancel := context.WithTimeout(ctx, s.cfg.ResetWait)
+	rctx, cancel := s.withTimeout(ctx, s.cfg.ResetWait)
 	go s.fenceWhileWaiting(rctx, cancel, v, p)
 	// The Mac as it is when the controller sends the reset: one that
 	// restarted by itself while the reset waited is not taken as back.

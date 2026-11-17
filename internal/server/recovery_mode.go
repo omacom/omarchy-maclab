@@ -125,7 +125,7 @@ func (s *Server) transitionRecoveryMode(ctx context.Context, v *dev, requested, 
 		case <-drained:
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-v.s.clock().After(5 * time.Second):
 			return errors.New("prior controller call did not stop; no device command issued")
 		}
 	}
