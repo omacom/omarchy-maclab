@@ -186,7 +186,7 @@ func New(base string) (*Site, error) {
 	if err := s.loadAssets(); err != nil {
 		return nil, err
 	}
-	funcs := template.FuncMap{"href": s.Href, "asset": s.Asset}
+	funcs := template.FuncMap{"href": s.Href, "asset": s.Asset, "copy": copyOf}
 	shared := template.New("shared").Funcs(funcs)
 	var pages []string
 	err := fs.WalkDir(templateFiles, "templates", func(f string, d fs.DirEntry, err error) error {
@@ -293,6 +293,24 @@ func (v view) Take(action, label, sentence string, fields ...string) Take {
 func (v view) With(data any) view {
 	v.Data = data
 	return v
+}
+
+// Copyable is a value a person is meant to copy, what the pieces "copy",
+// "copy-block" and "copy-title" of layout.html read: the text, what its Copy
+// button names ("the Join command"), and an id for a value a link points at.
+// The button is rendered hidden and app.js shows it, so a browser that runs
+// no script shows the text alone, still selectable.
+type Copyable struct {
+	What, Text, ID string
+}
+
+// copyOf is the template function copy: copy WHAT TEXT [ID].
+func copyOf(what string, text any, id ...string) Copyable {
+	c := Copyable{What: what, Text: fmt.Sprint(text)}
+	if len(id) > 0 {
+		c.ID = id[0]
+	}
+	return c
 }
 
 // Asking is what the page "ask_twice" reads: the server asking the second

@@ -104,12 +104,18 @@ func tokenConnKey(id int64) string      { return "token:" + strconv.FormatInt(id
 // on (see tokenUseOf). A use is written down with its time and address, and
 // pushes the token's date out; an expired token is passed on as expired and
 // is not a use, and neither is the token of a Blocked person.
+//
+// The body of a request that can change something is read through liveBody,
+// held to the token as it is when each part comes: still there, unexpired,
+// its person not Blocked and in the role they had when it was let in. A body
+// held back across a cut does nothing after it.
 func (s *Server) labTokenRequest(r *http.Request) *http.Request {
 	secret, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || !strings.HasPrefix(secret, labTokenPrefix) {
 		return r
 	}
-	p, t, err := s.store.labTokenByHash(hashSecret(secret))
+	hash := hashSecret(secret)
+	p, t, err := s.store.labTokenByHash(hash)
 	if err != nil {
 		return r
 	}
@@ -125,8 +131,40 @@ func (s *Server) labTokenRequest(r *http.Request) *http.Request {
 		if !t.told {
 			s.tellOfServerMintedToken(p, t, now)
 		}
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if r.Body != nil && r.Body != http.NoBody {
+				r.Body = &liveBody{ReadCloser: r.Body, live: func() *bodyCut { return s.tokenCut(hash, t.ID, p) }}
+			}
+		}
 	}
 	return r.WithContext(context.WithValue(r.Context(), tokenUseKey{}, u))
+}
+
+// tokenCut is nil while the token with this hash is still the one let in as
+// id, unexpired, and its person neither Blocked nor in another role than
+// was's; otherwise it is why not.
+func (s *Server) tokenCut(hash string, id int64, was Person) *bodyCut {
+	p, t, err := s.store.labTokenByHash(hash)
+	switch {
+	case err != nil || t.ID != id:
+		return &bodyCut{http.StatusUnauthorized, "refused: the Lab token that asked was revoked while its request was on the way, and what it sent was not done"}
+	case p.Blocked:
+		return &bodyCut{http.StatusForbidden, blockedSentence}
+	case t.expired(s.now()):
+		return &bodyCut{http.StatusUnauthorized, "refused: the Lab token that asked expired while its request was on the way, and what it sent was not done"}
+	}
+	s.fillIn(&p)
+	if p.Role() != was.Role() {
+		return roleCut(p)
+	}
+	return nil
+}
+
+// roleCut is why a body of p's was cut when p's role changed on its way.
+func roleCut(p Person) *bodyCut {
+	return &bodyCut{http.StatusForbidden, fmt.Sprintf("refused: @%s's role in the lab changed while the request was on the way, and what it sent was not done", p.Handle)}
 }
 
 // tellOfServerMintedToken writes what a token made on a page has from the

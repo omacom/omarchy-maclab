@@ -16,7 +16,8 @@
 #
 # A record of that name that is not a CNAME of the Lab address is not the
 # rehearsal's: it is neither written over nor deleted. Porkbun's two keys
-# come from the login Keychain (omarchy-mac-lab); Cloudflare is not called.
+# come from --porkbun-keys FILE, a file only you can read (see lib.sh);
+# Cloudflare is not called.
 
 # shellcheck source=scripts/cloud/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -29,12 +30,12 @@ WANT=present
 while (( $# )); do
   case "$1" in
     --name)
-      [[ $# -ge 2 ]] || usage 2 20
+      [[ $# -ge 2 ]] || usage 2 21
       NAME="$2"
       shift
       ;;
     --remove) WANT=absent ;;
-    *) usage 2 20 ;;
+    *) usage 2 21 ;;
   esac
   shift
 done

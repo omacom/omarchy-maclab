@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,15 +53,23 @@ type softwareLab struct {
 	*lab
 	installed string
 	restarts  int
+	// beforeRestart, when set, runs as the Mac's lab-agent is about to restart.
+	beforeRestart func()
 }
 
 func newSoftwareLab(t *testing.T, k *sshsigtest.Key, volunteer bool, number string, config func(*Config)) *softwareLab {
+	t.Helper()
+	return newWrappedSoftwareLab(t, k, volunteer, number, config, nil)
+}
+
+// newWrappedSoftwareLab is newSoftwareLab with wrap in front of labd.
+func newWrappedSoftwareLab(t *testing.T, k *sshsigtest.Key, volunteer bool, number string, config func(*Config), wrap func(http.Handler) http.Handler) *softwareLab {
 	t.Helper()
 	sl := &softwareLab{installed: filepath.Join(t.TempDir(), "lab-agent")}
 	if err := os.WriteFile(sl.installed, []byte("#!/bin/sh\necho "+number+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sl.lab = newLabWith(t, labConfig{volunteer: volunteer, config: config, agent: func(c *agent.Config) {
+	sl.lab = newLabWith(t, labConfig{volunteer: volunteer, config: config, wrap: wrap, agent: func(c *agent.Config) {
 		c.Self = &agent.Self{Path: sl.installed, Version: number, Key: k.Public, Restart: func() error { return sl.restart(t, k) }}
 	}})
 	return sl
@@ -69,6 +78,9 @@ func newSoftwareLab(t *testing.T, k *sshsigtest.Key, volunteer bool, number stri
 // restart is what restarting lab-agent.service does: the running agent
 // stops, and the one installed starts and says its own number.
 func (sl *softwareLab) restart(t *testing.T, k *sshsigtest.Key) error {
+	if sl.beforeRestart != nil {
+		sl.beforeRestart()
+	}
 	sl.restarts++
 	out, err := exec.Command(sl.installed, "version").Output()
 	if err != nil {
@@ -304,6 +316,257 @@ func TestAMaintainerUpdatesALabOwnedMacsAgentWhileItIsIdle(t *testing.T) {
 	}
 }
 
+// While lab agent-update is on its way, and until the Mac's lab-agent is
+// back as the new one, nothing new starts on the Mac: no Lease, no job, no
+// exec (spec: "while it is idle").
+func TestAgentUpdateReservesTheMacUntilTheNewAgentIsBack(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, "0.11.0")
+	fetching, fetch := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	wrap := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && r.URL.Path == "/api/agent/lab-agent" {
+				once.Do(func() { close(fetching); <-fetch })
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	sl := newWrappedSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, "0.11.0" }, wrap)
+	restarting, restart := make(chan struct{}), make(chan struct{})
+	sl.beforeRestart = func() { close(restarting); <-restart }
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	leasePath, execPath := "/api/devices/"+sl.name+"/lease", "/api/devices/"+sl.name+"/exec"
+
+	type answer struct {
+		code int
+		body string
+	}
+	updated := make(chan answer, 1)
+	go func() {
+		resp, body := sl.post("/api/devices/"+sl.name+"/agent-update", nil)
+		updated <- answer{resp.StatusCode, body}
+	}()
+	select {
+	case <-fetching:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the Mac never fetched the lab's lab-agent")
+	}
+
+	reserved := func(when string) {
+		t.Helper()
+		if resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"}); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "lab-agent is being updated") {
+			t.Errorf("a Lease %s: %d %s", when, resp.StatusCode, body)
+			sl.as(harnessToken, "DELETE", leasePath, nil)
+		}
+		if resp, body := sl.post(execPath, api.ExecArgs{Command: "true"}); resp.StatusCode == 200 {
+			t.Errorf("an exec %s: %d %s", when, resp.StatusCode, body)
+		}
+	}
+	reserved("while the update downloads")
+	sl.sim.SetTestLength(0)
+	j, _, err := sl.s.Submit(api.JobSpec{Device: sl.name, Tests: []api.TestSpec{{Name: "boot-health", Builtin: "boot-health"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	if d := sl.s.dev(sl.name).snapshot(); d.ActiveJob != "" {
+		t.Errorf("job %s was sent while the update downloads", d.ActiveJob)
+	}
+
+	close(fetch)
+	var res api.AgentUpdate
+	if a := <-updated; a.code != 200 || json.Unmarshal([]byte(a.body), &res) != nil || !res.Changed || res.To != "0.11.0" {
+		t.Fatalf("agent-update: %d %s", a.code, a.body)
+	}
+	select {
+	case <-restarting:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the Mac's lab-agent never restarted")
+	}
+	reserved("before the new lab-agent is back")
+	if d := sl.s.dev(sl.name).snapshot(); d.ActiveJob != "" {
+		t.Errorf("job %s was sent before the new lab-agent was back", d.ActiveJob)
+	}
+
+	close(restart)
+	sl.waitAgent("0.11.0")
+	if got := sl.wait(j.ID, 60*time.Second); got.Outcome != api.OutcomePass {
+		t.Errorf("the job held back by the update: %s %s", got.Outcome, got.Summary)
+	}
+	sl.waitDevice(func(d api.Device) bool { return d.ActiveJob == "" && d.State == api.StateReady })
+	if resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"}); resp.StatusCode != 200 {
+		t.Fatalf("a Lease once the new lab-agent is back: %d %s", resp.StatusCode, body)
+	}
+	if resp, body := sl.post(execPath, api.ExecArgs{Command: "true"}); resp.StatusCode != 200 {
+		t.Errorf("an exec once the new lab-agent is back: %d %s", resp.StatusCode, body)
+	}
+}
+
+// The usual update hands out new bytes of the same lab-agent number: the
+// Mac stays reserved until the restarted lab-agent checks in, not from the
+// moment the answer comes, when the number labd holds already matches.
+func TestASameVersionUpdateHoldsTheMacUntilTheRestartedAgentChecksIn(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, agentUpdateMinAgent)
+	sl := newSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, agentUpdateMinAgent })
+	restarting, restart := make(chan struct{}), make(chan struct{})
+	sl.beforeRestart = func() { close(restarting); <-restart }
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	leasePath := "/api/devices/" + sl.name + "/lease"
+
+	resp, body := sl.post("/api/devices/"+sl.name+"/agent-update", nil)
+	var res api.AgentUpdate
+	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &res) != nil || !res.Changed || res.To != agentUpdateMinAgent {
+		t.Fatalf("agent-update: %d %s", resp.StatusCode, body)
+	}
+	select {
+	case <-restarting:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the Mac's lab-agent never restarted")
+	}
+	time.Sleep(500 * time.Millisecond) // the old agent's check-ins go on meanwhile
+	if resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"}); resp.StatusCode != http.StatusConflict || !strings.Contains(body, agentBeingUpdated) {
+		t.Fatalf("a Lease before the restarted lab-agent is back: %d %s", resp.StatusCode, body)
+	}
+	close(restart)
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"})
+		if resp.StatusCode == 200 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the Mac stayed reserved after its restarted lab-agent checked in: %d %s", resp.StatusCode, body)
+		}
+	}
+}
+
+// A Maintainer who goes away mid-update cuts labd's wait, not the Mac's
+// download: the Mac stays reserved for the hold after the call ends, and the
+// update labd gave up on installs without restarting lab-agent.
+func TestADisconnectedUpdateHoldsTheMacAndRestartsNothing(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, "0.11.0")
+	fetching, fetch := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	letFetch := func() { let.Do(func() { close(fetch) }) }
+	wrap := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && r.URL.Path == "/api/agent/lab-agent" {
+				once.Do(func() { close(fetching); <-fetch })
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	sl := newWrappedSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, "0.11.0" }, wrap)
+	t.Cleanup(letFetch) // before the lab's own cleanup, which waits on the download
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	v := sl.s.dev(sl.name)
+	v.mu.Lock()
+	v.updateHold = 3 * time.Second
+	v.mu.Unlock()
+	leasePath := "/api/devices/" + sl.name + "/lease"
+
+	ctx, cut := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", sl.url+"/api/devices/"+sl.name+"/agent-update", nil)
+	req.Header.Set("Authorization", "Bearer "+harnessToken)
+	go func() {
+		if resp, err := sl.client().Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-fetching:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the Mac never fetched the lab's lab-agent")
+	}
+	cut()
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		v.mu.Lock()
+		gaveUp := len(v.gaveUp)
+		v.mu.Unlock()
+		if gaveUp > 0 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("labd never stopped waiting for the update its Maintainer left")
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	if resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"}); resp.StatusCode != http.StatusConflict || !strings.Contains(body, agentBeingUpdated) {
+		sl.as(harnessToken, "DELETE", leasePath, nil)
+		t.Fatalf("a Lease just after the Maintainer left, the download still going: %d %s", resp.StatusCode, body)
+	}
+
+	letFetch()
+	for end := time.Now().Add(15 * time.Second); !strings.Contains(sl.logs.String(), "labd gave up waiting for it"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("the Mac never heard labd gave up on the update:\n%s", sl.logs.String())
+		}
+	}
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		resp, body := sl.post(leasePath, api.LeaseRequest{Holder: "t"})
+		if resp.StatusCode == 200 {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the Mac stayed reserved past the hold: %d %s", resp.StatusCode, body)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	if sl.restarts != 0 {
+		t.Fatalf("an update labd gave up on restarted lab-agent %d times", sl.restarts)
+	}
+}
+
+// The idle clean-up rewrites boot entries as root: it is not sent while lab
+// agent-update holds the Mac, whose restart could cut it.
+func TestAnIdleCleanUpIsNotSentWhileTheAgentIsUpdated(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, "0.11.0")
+	fetching, fetch := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	letFetch := func() { let.Do(func() { close(fetch) }) }
+	wrap := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && r.URL.Path == "/api/agent/lab-agent" {
+				once.Do(func() { close(fetching); <-fetch })
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	sl := newWrappedSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, "0.11.0" }, wrap)
+	t.Cleanup(letFetch)
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	v := sl.s.dev(sl.name)
+	updated := make(chan struct{})
+	go func() {
+		sl.post("/api/devices/"+sl.name+"/agent-update", nil)
+		close(updated)
+	}()
+	select {
+	case <-fetching:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the Mac never fetched the lab's lab-agent")
+	}
+	v.mu.Lock()
+	v.dirty = true // a lab kernel left staged
+	v.mu.Unlock()
+	time.Sleep(11 * time.Second) // past the Mac's loop's look at it
+	v.mu.Lock()
+	dirty := v.dirty
+	v.mu.Unlock()
+	if !dirty || strings.Contains(sl.logs.String(), "removed leftover lab kernels") {
+		t.Fatal("the idle clean-up was sent while lab agent-update held the Mac")
+	}
+	letFetch()
+	<-updated
+}
+
 func TestAgentUpdateRefusesWhatItCannotDo(t *testing.T) {
 	k := sshsigtest.NewKey(t)
 
@@ -320,6 +583,10 @@ func TestAgentUpdateRefusesWhatItCannotDo(t *testing.T) {
 	}
 	if now, _ := os.ReadFile(sl.installed); !bytes.Equal(now, was) || sl.restarts != 0 {
 		t.Error("the Mac took an agent signed by another key")
+	}
+	// A failed update holds the Mac no longer.
+	if resp, body := sl.post("/api/devices/"+sl.name+"/lease", api.LeaseRequest{Holder: "t"}); resp.StatusCode != 200 {
+		t.Errorf("a Lease after a failed update: %d %s", resp.StatusCode, body)
 	}
 
 	// The lab hands out an agent older than the Mac's.
@@ -416,9 +683,11 @@ func TestMacsShowsAnAgentOlderThanTheLabsAndWhoUpdatesIt(t *testing.T) {
 		t.Errorf("a Maintainer's page of a Volunteer's Mac: %s", got)
 	}
 	own := part(t, linus.macPage("vol-air", ""), `id="mac-facts"`, "</section>")
-	if !strings.Contains(own, "<code>sudo lab-agent update</code>") || strings.Count(own, "lab-agent update") != 1 {
+	if !strings.Contains(own, "<code data-copy>sudo lab-agent update</code>") || strings.Count(own, "lab-agent update") != 1 {
 		t.Errorf("the Volunteer's own page does not give the one line: %s", rowText(own))
 	}
+	offersToCopy(t, own, "the update command", "sudo lab-agent update")
+	offersToCopy(t, part(t, ravi.macPage("m1-pro", ""), `id="mac-facts"`, "</section>"), "the update command", "lab agent-update m1-pro")
 	if got := facts(ravi, "m2-air"); strings.Contains(got, "older than") || strings.Contains(got, "agent-update") {
 		t.Errorf("a Mac on the lab's agent: %s", got)
 	}
@@ -432,14 +701,10 @@ func TestMacsShowsAnAgentOlderThanTheLabsAndWhoUpdatesIt(t *testing.T) {
 }
 
 // The Join command checks the first agent against the release key written
-// into the line itself.
-func TestTheJoinCommandChecksTheAgentsSignatureAgainstTheKeyInTheLine(t *testing.T) {
+// into the script labd serves at /join for the current release.
+func TestTheJoinCommandChecksTheAgentsSignatureAgainstTheKeyInItsScript(t *testing.T) {
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
 		t.Skip("no ssh-keygen")
-	}
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash")
 	}
 	k, other := sshsigtest.NewKey(t), sshsigtest.NewKey(t)
 	handed := signedAgent(t, k, agent.Version)
@@ -450,49 +715,29 @@ func TestTheJoinCommandChecksTheAgentsSignatureAgainstTheKeyInTheLine(t *testing
 	}
 	const token = "enr_0123456789abcdef0123456789abcdef"
 	line := s.joinCommand(httptest.NewRequest("POST", "https://lab.omarchy-mac.org/api/enroll-tokens", nil), token)
-	for _, want := range []string{`"$U/api/join/lab-agent.sig"`, "ssh-keygen -Y verify", k.Public, `-n '` + agent.ReleaseNamespace + `'`, `-I '` + agent.ReleaseSigner + `'`,
-		`-s "$D/lab-agent.sig" < "$D/lab-agent"`, "sha256sum -c --quiet"} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("the Join command lacks %q:\n%s", want, line)
+	script := string(s.joinScript(httptest.NewRequest("GET", "https://lab.omarchy-mac.org/join", nil)))
+	for _, want := range []string{`"$u/api/join/lab-agent.sig"`, "ssh-keygen -Y verify", agent.ReleaseSigner + ` namespaces="` + agent.ReleaseNamespace + `" ` + k.Public,
+		`-n '` + agent.ReleaseNamespace + `'`, `-I '` + agent.ReleaseSigner + `'`, `-s "$d/lab-agent.sig" < "$d/lab-agent"`, "sha256sum -c --quiet"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("the Join command's script lacks %q:\n%s", want, script)
 		}
 	}
-	if strings.Count(line, token) != 1 || strings.Contains(line, "\n") {
-		t.Errorf("the token is in the line more than once, or the line is more than one:\n%s", line)
+	if strings.Count(line, token) != 1 || strings.Contains(line, "\n") || strings.Contains(script, token) {
+		t.Errorf("the token is in the line more than once, or in the script, or the line is more than one:\n%s", line)
 	}
-	if i, j := strings.Index(line, "ssh-keygen -Y verify"), strings.Index(line, "sudo "); i < 0 || j < i {
-		t.Errorf("the signature is not checked before anything runs as root:\n%s", line)
+	if i, j := strings.Index(script, "ssh-keygen -Y verify"), strings.Index(script, "sudo "); i < 0 || j < i {
+		t.Errorf("the signature is not checked before anything runs as root:\n%s", script)
 	}
 
 	// The line itself, run by bash: curl hands out what the lab would, sudo
 	// records that it was reached.
-	bin, rec := t.TempDir(), t.TempDir()
 	agentBody, _ := os.ReadFile(handed)
 	sig, _ := os.ReadFile(handed + ".sig")
-	stand := func(name, script string) {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/bash\n"+script), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stand("curl", `cat > /dev/null
-out= url=
-while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; http*) url=$1 ;; esac; shift; done
-case "$url" in *.sig) cp "$REC/sig" "$out" ;; *) cp "$REC/agent" "$out"; printf 200 ;; esac
-`)
-	stand("sudo", `cat > /dev/null
-echo reached > "$REC/sudo"
-`)
-	if runtime.GOOS != "linux" { // the line runs on Omarchy and calls GNU sha256sum
-		stand("sha256sum", "exec shasum -a 256 -c -s\n")
-	}
+	jr := newJoinRun(t, []byte(script), agentBody, sig)
 	run := func(agentBody, sig []byte) (string, bool) {
-		os.Remove(filepath.Join(rec, "sudo"))
-		os.WriteFile(filepath.Join(rec, "agent"), agentBody, 0o600)
-		os.WriteFile(filepath.Join(rec, "sig"), sig, 0o600)
-		cmd := exec.Command(bash, "-c", line)
-		cmd.Env = []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "REC=" + rec, "USER=owner", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
-		out, _ := cmd.CombinedOutput()
-		_, err := os.Stat(filepath.Join(rec, "sudo"))
-		return string(out), err == nil
+		jr.put("agent", agentBody)
+		jr.put("sig", sig)
+		return jr.run(line)
 	}
 	if out, reached := run(agentBody, sig); !reached {
 		t.Fatalf("the signed agent was not run:\n%s", out)
@@ -855,5 +1100,167 @@ func TestBothInstallLinesServeTheReleaseCandidateInPreviewAndTheLatestAfter(t *t
 	}
 	if !edgeKeeps("/install/lab") {
 		t.Error("the edge is not told it may keep /install/lab")
+	}
+	// The Join command's script leads from the Alias to the Lab address
+	// too, which curl -L follows.
+	if w := l.do("GET", "/join", "", "Host", aliasHost); w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != labAddress+"/join" {
+		t.Errorf("/join on the Alias: %d to %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+// lab agent-update counts on the agent's start number to know when the new
+// one is back. A labd that has heard none since it started cannot tell an
+// old run from a new one, and waits for a check-in; an agent that sends none
+// (every lab-agent before the start number) would restart after the hold
+// ended, and is Joined again instead.
+func TestAgentUpdateWaitsForAStartNumberHeardSinceLabdStarted(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, "0.11.0")
+	sl := newSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, "0.11.0" })
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	why := func(v *dev) string {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return v.notUpdatableLocked(true)
+	}
+
+	// labd started again: the Mac's lab-agent has not checked in with it.
+	fresh, err := New(sl.ctx, sl.s.cfg, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fv := fresh.dev(sl.name)
+	fv.mu.Lock()
+	fv.d.LastSeen = fresh.now() // as alive as it gets
+	fv.mu.Unlock()
+	if got := why(fv); !strings.Contains(got, "not checked in since labd started") {
+		t.Errorf("agent-update before the first check-in since labd started: %q", got)
+	}
+	d := fv.snapshot()
+	fv.heartbeat(api.Checkin{BootID: d.BootID, Kernel: d.Kernel, AgentStart: "a-new-run"})
+	if got := why(fv); got != "" {
+		t.Errorf("agent-update once the Mac checked in with its start number: %q", got)
+	}
+
+	// An agent that sends no start number.
+	sl.stopAgent()
+	v := sl.s.dev(sl.name)
+	d = v.snapshot()
+	v.heartbeat(api.Checkin{BootID: d.BootID, Kernel: d.Kernel})
+	if got := why(v); !strings.Contains(got, "sends no start number") || !strings.Contains(got, "Join the Mac again") {
+		t.Errorf("agent-update of an agent that sends no start number: %q", got)
+	}
+}
+
+// labd's answer to the update's result can come late (the agent waits up to
+// two minutes for it). The new lab-agent starts only within the time labd
+// gave with the update, counted from when the agent sent its result: one
+// started later could cut what labd has given the Mac since it let it go.
+func TestAnUpdateWhoseAnswerComesPastTheHoldRestartsNothing(t *testing.T) {
+	k := sshsigtest.NewKey(t)
+	handed := signedAgent(t, k, "0.11.0")
+	slow := make(chan struct{})
+	var slowOnce sync.Once
+	wrap := func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-slow:
+				if r.Method == "POST" && r.URL.Path == "/api/agent/report" {
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, r)
+					time.Sleep(4 * time.Second)
+					for key, vals := range rec.Header() {
+						w.Header()[key] = vals
+					}
+					w.WriteHeader(rec.Code)
+					w.Write(rec.Body.Bytes())
+					return
+				}
+			default:
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+	sl := newWrappedSoftwareLab(t, k, false, agentUpdateMinAgent, func(c *Config) { c.AgentBinary, c.LabAgent = handed, "0.11.0" }, wrap)
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	v := sl.s.dev(sl.name)
+	v.mu.Lock()
+	v.updateHold = 3 * time.Second
+	v.mu.Unlock()
+	slowOnce.Do(func() { close(slow) })
+	resp, body := sl.post("/api/devices/"+sl.name+"/agent-update", nil)
+	var res api.AgentUpdate
+	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &res) != nil || !res.Changed {
+		t.Fatalf("agent-update: %d %s", resp.StatusCode, body)
+	}
+	for end := time.Now().Add(15 * time.Second); !strings.Contains(sl.logs.String(), "starts when lab-agent next restarts"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(end) || sl.restarts != 0 {
+			t.Fatalf("an update whose answer came past labd's hold: restarts %d\n%s", sl.restarts, sl.logs.String())
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	if sl.restarts != 0 {
+		t.Fatalf("an update whose answer came past labd's hold restarted lab-agent %d times", sl.restarts)
+	}
+}
+
+// The idle clean-up rewrites boot entries as root, with no deadline of its
+// own on the Mac: when labd's wait for it ends first, lab agent-update stays
+// off until the agent says the clean-up has ended.
+func TestAnIdleCleanUpPastLabdsWaitKeepsAgentUpdateOffUntilItEnds(t *testing.T) {
+	l := newLab(t, false)
+	l.baseline()
+	l.stopAgent()
+	v := l.s.dev(l.name)
+	d := v.snapshot()
+	var running []string
+	cleanup := ""
+	checkIn := func() {
+		v.heartbeat(api.Checkin{BootID: d.BootID, Kernel: d.Kernel, AgentStart: "run-1", Running: running})
+		for _, c := range v.deliver(d.BootID).Commands {
+			if c.Kind == api.CmdCleanup && c.JobID == "" {
+				cleanup, running = c.ID, []string{c.ID}
+			}
+		}
+	}
+	cleaning := func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return strings.Contains(v.notUpdatableLocked(true), "removing leftover lab kernels")
+	}
+	checkIn()
+	v.mu.Lock()
+	v.cleanupWait, v.dirty = time.Second, true
+	v.mu.Unlock()
+	for end := time.Now().Add(25 * time.Second); cleanup == ""; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("the idle clean-up never reached the Mac")
+		}
+		checkIn()
+	}
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		checkIn()
+		v.mu.Lock()
+		_, gaveUp := v.gaveUp[cleanup]
+		v.mu.Unlock()
+		if gaveUp {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("labd never stopped waiting for the clean-up")
+		}
+	}
+	checkIn()
+	time.Sleep(200 * time.Millisecond)
+	checkIn()
+	if !cleaning() {
+		t.Fatal("lab agent-update is let on while the clean-up labd stopped waiting for still runs")
+	}
+	running = nil
+	checkIn()
+	if cleaning() {
+		t.Fatal("lab agent-update is still kept off after the agent said the clean-up ended")
 	}
 }

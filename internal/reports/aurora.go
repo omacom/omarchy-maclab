@@ -177,7 +177,7 @@ func (a *AuroraSupport) JSON(urlFor func(*Run) string) *Object {
 	}
 	asahi := obj()
 	if source, _ := member(cat.data, "sources", "asahi").(*Object); source != nil {
-		for _, key := range []string{"title", "url", "license", "credit"} {
+		for _, key := range []string{"title", "url"} {
 			if value, ok := source.Get(key); ok {
 				asahi.put(key, value)
 			}
@@ -192,7 +192,7 @@ func (a *AuroraSupport) JSON(urlFor func(*Run) string) *Object {
 
 // AuroraJSON is the Aurora export.
 func (p *Published) AuroraJSON(urlFor func(*Run) string, at time.Time) []byte {
-	export := obj("license", license(), "note", AsahiNote, "generated_at", iso8601(at))
+	export := obj("license", license(), "generated_at", iso8601(at))
 	body := p.Aurora().JSON(urlFor)
 	for _, key := range body.keys {
 		export.put(key, body.members[key])

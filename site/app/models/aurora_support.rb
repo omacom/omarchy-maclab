@@ -64,7 +64,7 @@ class AuroraSupport
       sources: {
         runs: "tester-verified reports on this site, linked per cell",
         aurora: Catalogue.data.dig("sources", "aurora"),
-        asahi: Catalogue.data.dig("sources", "asahi").slice("title", "url", "license", "credit")
+        asahi: Catalogue.data.dig("sources", "asahi").slice("title", "url")
       },
       features: features.map { |feature| { id: feature["id"], name: feature["name"], layer: feature["layer"] } },
       chips: chips.map do |chip|

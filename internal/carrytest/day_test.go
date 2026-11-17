@@ -37,13 +37,19 @@ const (
 )
 
 // daySSH stands in for ssh on the owner's Mac: it writes down what it was
-// asked and runs the mini's script on the made-up mini. sudo's own prompt
-// is not played: nothing here types a password.
+// asked and runs the mini's script on the made-up mini. With DAY_SUDO_ASKS
+// sudo's prompt comes back on the terminal as over ssh -t, with no end of
+// line until the password is typed; nothing here types one.
 const daySSH = `#!/bin/bash
 echo "ssh $*" >> "$DAY_SSH_LOG"
 [[ $1 == -t ]] && shift
 cmd="$2"
 [[ $cmd == "sudo ~/lab-cutover/"* ]] || { echo "ssh stand-in: not one of the Cutover's scripts with sudo: $cmd" >&2; exit 64; }
+if [[ -n ${DAY_SUDO_ASKS:-} ]]; then
+  printf 'Password for owner on the mini:'
+  sleep 0.2
+  printf '\r\n'
+fi
 cmd="${cmd#sudo }"
 cmd="${cmd/#\~\/lab-cutover/$DAY_REPO/scripts/cutover}"
 cmd="${cmd//\~/$DAY_MINI_HOME}"
@@ -1061,6 +1067,30 @@ func TestTheWayBackAsksTheMiniWhetherTheLabOpened(t *testing.T) {
 	}
 	if d.done() != "18 19 20 21 22a 22 23 24 24a" {
 		t.Errorf("the record changed: %q", d.done())
+	}
+}
+
+// Asking the mini's stage, sudo's prompt reaches the owner: the way back and
+// a lost opening's recovery show it, and still read the answer after it.
+func TestSudosPromptOnTheMiniIsShownWhenTheStageIsAsked(t *testing.T) {
+	const prompt = "Password for owner on the mini:"
+	m, s := opening(t, 14)
+	m.ok("open", "--m-team", "14")
+	at, _ := s.Live()
+	d := newDay(t, m)
+	d.env = append(d.env, "DAY_SUDO_ASKS=1")
+	o := d.o
+	o.set(func() { o.stage, o.siteUp, o.app = "dark", false, existingApp })
+	d.days(strings.Fields("18 19 20 21 22a 22 23 24 24a")...)
+	out, code := d.script("", "back", "--state", d.state, "--mini", "owner@mini.test", "--run")
+	if code != 1 || !strings.Contains(out, prompt) || !strings.Contains(out, "the mini says the lab opened") {
+		t.Errorf("back: exit %d\n%s", code, out)
+	}
+	o.set(func() { o.stage = "open" })
+	d.stops(3, "", []string{"--go"}, prompt, "the lab opened at", "step 25 is yours")
+	zone, _ := time.LoadLocation("Australia/Brisbane")
+	if want := "25a\t" + at.In(zone).Format("2006-01-02 15:04") + "\t"; !strings.Contains(read(t, d.state), want) {
+		t.Errorf("25a is not written down at the opening's time %q:\n%s", want, read(t, d.state))
 	}
 }
 

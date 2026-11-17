@@ -40,6 +40,7 @@ JOB_SCRIPT="$FD_HERE/transfer-file.sh"
 JOB_FILE="test-transfer-file/transfer.bin"
 JOB_FILE_BYTES=$((80 << 20))
 MINI_SCRIPTS=/usr/local/lab/current/scripts/mini
+MINI_DATA=/var/lab/data
 TUNNEL_METRICS=http://127.0.0.1:20241/metrics
 
 WORK=""
@@ -132,7 +133,16 @@ plain() {
   fi
 }
 
+# Processes a test stops (SIGSTOP) while it runs. A stopped process takes no
+# signal but KILL, so the cleanup kills these first: its wait would wait for
+# them for good.
+HALTED_PIDS=()
+
 cleanup() {
+  local pid
+  for pid in ${HALTED_PIDS[@]+"${HALTED_PIDS[@]}"}; do
+    kill -9 "$pid" 2>/dev/null || true
+  done
   [[ -z $SIM_PID ]] || kill "$SIM_PID" 2>/dev/null || true
   [[ -z $LABD_PID ]] || kill "$LABD_PID" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -161,7 +171,10 @@ local_lab() {
   LOCAL_DATA="$LOCAL_ROOT/var/lab/data"
   mkdir -p "$HOME" "$TMPDIR" "$WORK/sign-in" "$LOCAL_ROOT/var/lab"
   echo 1 > "$WORK/sign-in/admins"
-  "$BIN/labd" --listen=127.0.0.1:0 --data="$LOCAL_DATA" --sign-in="$WORK/sign-in" --omt=false > "$WORK/labd.log" 2>&1 &
+  # The log is made before labd starts: a background job opens its redirect
+  # only once it runs, and the first read below can come before.
+  : > "$WORK/labd.log"
+  "$BIN/labd" --listen=127.0.0.1:0 --data="$LOCAL_DATA" --sign-in="$WORK/sign-in" --omt=false >> "$WORK/labd.log" 2>&1 &
   LABD_PID=$!
   port=""
   for n in $(seq 100); do

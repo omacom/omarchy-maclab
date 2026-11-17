@@ -186,11 +186,15 @@ switching=0
 
 # shellcheck disable=SC2317,SC2329
 put_back() {
-  local f
+  local f bad="" running=""
   switching=0
   say "the switch stopped part-way: putting the lab's directory back"
-  stopped "$LABD_LABEL" || true
-  stopped "$LITESTREAM_LABEL" || true
+  stopped "$LABD_LABEL" || running="labd"
+  stopped "$LITESTREAM_LABEL" || running+="${running:+ and }Litestream"
+  # Nothing moves under a daemon that still has the directory open.
+  if [[ -d $kept && -n $running ]]; then
+    fail "the way back could not stop $running (20 s), so it moved nothing, and the lab is Dark. The lab's own directory is $kept, with its reports.db and callers wherever the switch left them ($LAB_DATA or $new). Stop $running (launchctl bootout system/$LABD_LABEL, system/$LITESTREAM_LABEL), put them back in it, make it $LAB_DATA again, then start labd (launchctl bootstrap system $LABD_PLIST) and Litestream"
+  fi
   if [[ -d $kept ]]; then
     # What moved over goes back first, from where it is now: in the lab's
     # directory once the upgraded one took its place, or still in the
@@ -198,13 +202,17 @@ put_back() {
     for f in reports.db reports.db-wal reports.db-shm callers; do
       [[ ! -e $kept/$f ]] || continue
       if [[ -e $LAB_DATA/$f ]]; then
-        as_lab mv "$LAB_DATA/$f" "$kept/$f"
+        as_lab mv "$LAB_DATA/$f" "$kept/$f" || bad+=" $f"
       elif [[ -e $new/$f ]]; then
-        as_lab mv "$new/$f" "$kept/$f"
+        as_lab mv "$new/$f" "$kept/$f" || bad+=" $f"
       fi
     done
-    [[ ! -d $LAB_DATA ]] || as_lab mv "$LAB_DATA" "$new"
-    as_lab mv "$kept" "$LAB_DATA"
+    if [[ -z $bad && -d $LAB_DATA ]] && ! as_lab mv "$LAB_DATA" "$new"; then bad=" $LAB_DATA"; fi
+    if [[ -z $bad ]] && ! as_lab mv "$kept" "$LAB_DATA"; then bad=" $kept"; fi
+  fi
+  # labd never starts on a directory that is not whole.
+  if [[ -n $bad ]]; then
+    fail "the way back could not move${bad}: labd is left stopped, with Litestream, and the lab is Dark. Nothing was removed: the lab's own directory is $kept, with its reports.db and callers wherever the move left them ($LAB_DATA or $new). Put them back in it, make it $LAB_DATA again, then start labd (launchctl bootstrap system $LABD_PLIST) and Litestream"
   fi
   if start_lab; then
     fail "the old lab's data is not in: labd runs again on the directory it had. The upgraded copy is in $new, for a look"

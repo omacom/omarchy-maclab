@@ -5,7 +5,8 @@
 #   import-reports [--data DIR] --machine-id-key FILE --public-key FILE DUMP
 #
 #   1. labd import dump: reads the old site's Postgres into DUMP. It asks
-#      for the Postgres address at its own prompt and does not show it.
+#      for the Postgres address at its own prompt and does not show it,
+#      then for the CA file its certificate is checked against.
 #      Skipped when DUMP is already there: the import then needs no Postgres.
 #   2. labd import load: fills an empty reports.db from DUMP.
 #   3. The three checks: the row counts; one Mac's machine id recomputed

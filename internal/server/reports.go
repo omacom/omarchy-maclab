@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"time"
 
 	"github.com/omacom/omarchy-maclab/catalogue"
 	"github.com/omacom/omarchy-maclab/internal/reports"
@@ -101,6 +102,9 @@ func (s *Server) hReportDeletion(w http.ResponseWriter, r *http.Request) {
 // hReportDelete is the confirmation, sent: the form of the deletion page,
 // which carries the link's secret in its body.
 func (s *Server) hReportDelete(w http.ResponseWriter, r *http.Request) {
+	// Anyone may send this form: it must come whole soon, as a signed-in
+	// browser's must.
+	readBodyBy(w, r.Context(), time.Now().Add(formWait))
 	r.Body = http.MaxBytesReader(w, r.Body, formMax)
 	if err := r.ParseForm(); err != nil || r.PostForm.Get("_method") != "delete" {
 		http.NotFound(w, r)

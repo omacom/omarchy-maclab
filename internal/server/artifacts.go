@@ -18,7 +18,12 @@ import (
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
-const artifactChunkBytes = 1 << 20
+const (
+	// artifactChunkBytes is the most written at once.
+	artifactChunkBytes = 1 << 20
+	// artifactSyncBytes is the most written between syncs: a part's size.
+	artifactSyncBytes = 32 << 20
+)
 
 type artifactTemp interface {
 	io.ReadWriteSeeker
@@ -51,21 +56,26 @@ func artifactDiskOps() artifactDisk {
 	}
 }
 
-// Sync each bounded write rather than leaving a whole package in delalloc.
-// This does not repair an unhealthy filesystem: any I/O error refuses upload.
-type artifactChunkWriter struct{ file artifactTemp }
+// Write in bounded chunks and sync each artifactSyncBytes rather than leaving
+// a whole package in delalloc; the caller syncs what is left. This does not
+// repair an unhealthy filesystem: any I/O error refuses upload.
+type artifactChunkWriter struct {
+	file     artifactTemp
+	unsynced int
+}
 
-func (w artifactChunkWriter) Write(p []byte) (int, error) {
+func (w *artifactChunkWriter) Write(p []byte) (int, error) {
 	total := 0
 	for len(p) > 0 {
-		chunk := p[:min(len(p), artifactChunkBytes)]
+		chunk := p[:min(len(p), artifactChunkBytes, artifactSyncBytes-w.unsynced)]
 		n, err := w.file.Write(chunk)
 		total += n
+		w.unsynced += n
 		if err == nil && n != len(chunk) {
 			err = io.ErrShortWrite
 		}
-		if err == nil {
-			err = w.file.Sync()
+		if err == nil && w.unsynced == artifactSyncBytes {
+			err = w.sync()
 		}
 		if err != nil {
 			return total, err
@@ -73,6 +83,11 @@ func (w artifactChunkWriter) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return total, nil
+}
+
+func (w *artifactChunkWriter) sync() error {
+	w.unsynced = 0
+	return w.file.Sync()
 }
 
 // writeVerifiedArtifact closes the file on every path. A hash is returned only
@@ -86,13 +101,14 @@ func writeVerifiedArtifact(file artifactTemp, body io.Reader, drop func(artifact
 	}()
 	buffer := make([]byte, artifactChunkBytes)
 	incoming := sha256.New()
-	size, err = io.CopyBuffer(io.MultiWriter(artifactChunkWriter{file}, incoming), body, buffer)
+	w := &artifactChunkWriter{file: file}
+	size, err = io.CopyBuffer(io.MultiWriter(w, incoming), body, buffer)
 	if err != nil {
 		return "", 0, fmt.Errorf("artifact write/sync: %w", err)
 	}
-	if size == 0 {
-		if err = file.Sync(); err != nil {
-			return "", 0, fmt.Errorf("empty artifact sync: %w", err)
+	if size == 0 || w.unsynced > 0 {
+		if err = w.sync(); err != nil {
+			return "", 0, fmt.Errorf("artifact sync: %w", err)
 		}
 	}
 	if err = drop(file); err != nil {

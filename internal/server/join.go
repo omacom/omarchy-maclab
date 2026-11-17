@@ -2,32 +2,39 @@ package server
 
 // Joining a Mac with a Join command. The person who lends the Mac makes it,
 // signed in, on "Lend a Mac"; a Maintainer makes one for a Lab-owned Mac
-// with lab enroll (POST /api/enroll-tokens). It is one line to run on the
-// Mac. It downloads lab-agent with the enrollment token
-// (GET /api/join/lab-agent), which tests the token before anything changes:
-// a refusal is said once, by its case, and nothing is tried again. It checks
-// the download's sha256 against the one written into it and, in a Lab
-// release, its signature against the release key written into it, and runs
+// with lab enroll (POST /api/enroll-tokens). It is one short line to run on
+// the Mac: curl fetches the Join command's script from GET /join, which
+// holds no secret, and bash runs it with the enrollment token in LAB_JOIN.
+// The script downloads lab-agent with the token (GET /api/join/lab-agent),
+// which tests the token before anything changes: a refusal is said once, by
+// its case, and nothing is tried again. It checks the download's sha256
+// against the one written into the script and, in a Lab release, its
+// signature against the release key written into it, and runs
 // `sudo lab-agent setup`, the token going to it on stdin. Setup runs its
 // pre-checks, which reach no lab, then shows the lab's terms
-// (GET /api/join/terms), which the owner accepts by typing yes. Only then
-// does it bind the token to the Mac (POST /api/join/check) and change
-// anything; then the Mac enrolls, using the token up (see hEnroll).
+// (GET /api/join/terms), which the owner accepts by typing yes on the
+// terminal. Only then does it bind the token to the Mac
+// (POST /api/join/check) and change anything; then the Mac enrolls, using
+// the token up (see hEnroll).
 //
-// The token travels in the Authorization header and request bodies only,
-// never in a URL, so neither labd's nor a proxy's access log records it. It
-// reaches these three routes and the enrollment itself, nothing else. Every
-// address in the line is the Lab address.
+// The token travels in the environment of the person's shell, then in the
+// Authorization header and request bodies only, never in a URL, so neither
+// labd's nor a proxy's access log records it. It reaches these three routes
+// and the enrollment itself, nothing else. Every address in the line and
+// the script is the Lab address.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent"
@@ -152,13 +159,18 @@ func (s *Server) publicBase(r *http.Request) string {
 	return origin
 }
 
-// reShellSafe is what joinCommand puts in single quotes: URL and token
-// characters, nothing a shell gives meaning to inside them.
-var reShellSafe = regexp.MustCompile(`^[A-Za-z0-9:/._~\[\]-]+$`)
+// reShellSafe is what the Join command's script puts in single quotes, and
+// reShellBare what the Join command itself leaves unquoted: URL and token
+// characters, nothing a shell gives meaning to.
+var (
+	reShellSafe = regexp.MustCompile(`^[A-Za-z0-9:/._~\[\]-]+$`)
+	reShellBare = regexp.MustCompile(`^[A-Za-z0-9:/._-]+$`)
+)
 
 // What the Join command says, once, when the lab does not hand it the
 // agent: the case, and what to do.
 const (
+	joinSaysNoToken    = "LAB_JOIN holds no enrollment token: copy the Join command from Lend a Mac and run it as it is."
 	joinSaysUsed       = "This Join command has expired or was used: make a new one on Lend a Mac."
 	joinSaysTooMany    = "Too many refused attempts from this network: wait 15 minutes, then make a new Join command."
 	joinSaysChallenged = "The front door of the lab challenged this request instead of answering it: try again later or from another network."
@@ -166,43 +178,122 @@ const (
 	joinSaysUnsigned   = "The lab-agent that came is not signed by the release key of Omarchy Mac Lab (or ssh-keygen is missing). Nothing was run."
 )
 
-// joinCommand is the one line that joins a Mac with token, "" when labd has
-// no lab-agent to hand out. Over https curl may use nothing else; over plain
-// http setup must be told it is allowed (and only loopback is, by default).
-// The download is the token's test: an answer other than the agent stops
-// the line there, named by its case, before anything on the Mac changes.
-func (s *Server) joinCommand(r *http.Request, token string) string {
+// joinScriptText is the script labd serves at /join. Its body is one
+// function, called on the last line inside braces: a download cut short
+// anywhere is a definition or a group left open, which bash refuses
+// whole, so it runs nothing. The token is read from LAB_JOIN and taken out
+// of the environment before anything starts; it is in no process's
+// arguments: printf is the shell's own, and curl and setup read it on
+// stdin. setup asks its questions on the terminal (/dev/tty), as sudo asks
+// for the password, so they reach the person under curl | bash too.
+var joinScriptText = template.Must(template.New("join").Parse(`#!/bin/bash
+# Omarchy Mac Lab's Join command, for the lab at {{.Base}}
+# Run the Join command from Lend a Mac on the Mac, as yourself:
+#   curl -fsSL {{.Base}}/join | LAB_JOIN=enr_... bash
+# Nothing runs until the last line has come.
+
+lab_join_this_mac() {
+  local t="${LAB_JOIN-}" u='{{.Base}}' d c
+  unset LAB_JOIN
+  if ! [[ $t =~ ^enr_[0-9a-f]{32}$ ]]; then
+    echo '{{.SaysNoToken}}' >&2
+    return 1
+  fi
+  d="$(mktemp -d)" || return 1
+  c="$(printf 'Authorization: Bearer %s\n' "$t" | curl {{.Curl}} -A lab-join -H @- -o "$d/lab-agent" -w '%{http_code}%header{cf-mitigated}' "$u/api/join/lab-agent")" || return 1
+  case "$c" in
+    200) ;;
+    401) echo '{{.SaysUsed}}' >&2; return 1 ;;
+    429) echo '{{.SaysTooMany}}' >&2; return 1 ;;
+    *challenge) echo '{{.SaysChallenged}}' >&2; return 1 ;;
+    *) echo "{{.SaysOther}} ($c)." >&2; return 1 ;;
+  esac
+  echo '{{.SHA256}}  '"$d/lab-agent" | sha256sum -c --quiet || return 1
+{{- if .Signers}}
+  printf 'Authorization: Bearer %s\n' "$t" | curl {{.Curl}} -f -A lab-join -H @- -o "$d/lab-agent.sig" "$u/api/join/lab-agent.sig" || return 1
+  printf '%s\n' '{{.Signers}}' > "$d/signers"
+  if ! ssh-keygen -Y verify -f "$d/signers" -I '{{.Signer}}' -n '{{.Namespace}}' -s "$d/lab-agent.sig" < "$d/lab-agent" >/dev/null 2>&1; then
+    echo '{{.SaysUnsigned}}' >&2
+    return 1
+  fi
+{{- end}}
+  chmod +x "$d/lab-agent" || return 1
+  printf '%s\n' "$t" | sudo "$d/lab-agent" setup --server "$u" --token-stdin --gui-user "$USER"{{.Plain}}
+}
+
+{ lab_join_this_mac; }
+`))
+
+// joinScript is the script labd serves at /join for r, nil when labd has no
+// lab-agent to hand out. It names the current lab-agent's sha256 and, in a
+// Lab release, the release key the agent's signature is checked against.
+// Over https curl may use nothing else; over plain http setup must be told
+// it is allowed (and only loopback is, by default). The download is the
+// token's test: an answer other than the agent stops the script there,
+// named by its case, before anything on the Mac changes.
+func (s *Server) joinScript(r *http.Request) []byte {
 	base, sum := s.publicBase(r), s.agentSHA256()
-	if sum == "" || !reShellSafe.MatchString(base) || !reEnrollToken.MatchString(token) {
-		return ""
+	if sum == "" || !reShellSafe.MatchString(base) {
+		return nil
 	}
-	curl, plain := "curl --proto '=https' --tlsv1.2 -sS", ""
+	v := struct {
+		Base, SHA256, Curl, Plain, Signers, Signer, Namespace                       string
+		SaysNoToken, SaysUsed, SaysTooMany, SaysChallenged, SaysOther, SaysUnsigned string
+	}{Base: base, SHA256: sum, Curl: "--proto '=https' --tlsv1.2 -sS",
+		SaysNoToken: joinSaysNoToken, SaysUsed: joinSaysUsed, SaysTooMany: joinSaysTooMany, SaysChallenged: joinSaysChallenged, SaysOther: joinSaysOther, SaysUnsigned: joinSaysUnsigned}
 	if !strings.HasPrefix(base, "https://") {
-		curl, plain = "curl -sS", " --allow-plain-http"
+		v.Curl, v.Plain = "-sS", " --allow-plain-http"
 	}
-	// With a signature beside the agent, as in a Lab release, the line
-	// checks it against the release key written here. A labd built as a
+	// With a signature beside the agent, as in a Lab release, the script
+	// checks it against the release key written in it. A labd built as a
 	// Lab release never goes without; a build from a checkout has none.
-	signed := ""
 	if _, ok := s.agentSig(); ok {
 		key := s.releaseKey()
 		if !reReleaseKey.MatchString(key) {
-			return ""
+			return nil
 		}
-		signed = "printf 'Authorization: Bearer %s\\n' \"$T\" | " + curl + " -f -A lab-join -H @- -o \"$D/lab-agent.sig\" \"$U/api/join/lab-agent.sig\" && " +
-			"printf '%s\\n' '" + agent.ReleaseSigner + " namespaces=\"" + agent.ReleaseNamespace + "\" " + key + "' > \"$D/signers\" && " +
-			"{ ssh-keygen -Y verify -f \"$D/signers\" -I '" + agent.ReleaseSigner + "' -n '" + agent.ReleaseNamespace + "' -s \"$D/lab-agent.sig\" < \"$D/lab-agent\" >/dev/null 2>&1 || " +
-			"{ echo '" + joinSaysUnsigned + "' >&2; false; }; } && "
+		v.Signers = agent.ReleaseSigner + ` namespaces="` + agent.ReleaseNamespace + `" ` + key
+		v.Signer, v.Namespace = agent.ReleaseSigner, agent.ReleaseNamespace
 	} else if reLabRelease.MatchString(s.cfg.Release) {
+		return nil
+	}
+	var b bytes.Buffer
+	if err := joinScriptText.Execute(&b, v); err != nil {
+		return nil
+	}
+	return b.Bytes()
+}
+
+// hJoinScript is GET /join, the Join command's script. It holds no secret
+// and asks for none, and it is made afresh for every request: never kept.
+func (s *Server) hJoinScript(w http.ResponseWriter, r *http.Request) {
+	script := s.joinScript(r)
+	hdr := w.Header()
+	hdr.Set("Cache-Control", cacheNever)
+	if script == nil {
+		httpErr(w, http.StatusServiceUnavailable, "This lab has no lab-agent to hand out, so it makes no Join command.")
+		return
+	}
+	hdr.Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	hdr.Set("Content-Disposition", `inline; filename="join.sh"`)
+	hdr.Set("Content-Length", strconv.Itoa(len(script)))
+	if r.Method != http.MethodHead {
+		w.Write(script)
+	}
+}
+
+// joinCommand is the one line that joins a Mac with token, "" when labd
+// has no Join command's script to serve. The token is in the environment
+// of the person's own shell, readable by them and root only, and never in
+// a URL or an argument; the script takes it from there. The leading space
+// keeps the line out of the shell's history where it ignores such lines.
+func (s *Server) joinCommand(r *http.Request, token string) string {
+	if !reEnrollToken.MatchString(token) || s.joinScript(r) == nil {
 		return ""
 	}
-	// The token is in no process's arguments: printf is the shell's own, and
-	// curl and setup read it on stdin. The leading space keeps the line out
-	// of the shell's history where it ignores such lines.
-	return " T='" + token + "' U='" + base + "' D=\"$(mktemp -d)\" && " +
-		"C=\"$(printf 'Authorization: Bearer %s\\n' \"$T\" | " + curl + " -A lab-join -H @- -o \"$D/lab-agent\" -w '%{http_code}%header{cf-mitigated}' \"$U/api/join/lab-agent\")\" && " +
-		"case \"$C\" in 200) ;; 401) echo '" + joinSaysUsed + "' >&2; false ;; 429) echo '" + joinSaysTooMany + "' >&2; false ;; " +
-		"*challenge) echo '" + joinSaysChallenged + "' >&2; false ;; *) echo \"" + joinSaysOther + " ($C).\" >&2; false ;; esac && " +
-		"echo '" + sum + "  '\"$D/lab-agent\" | sha256sum -c --quiet && " + signed + "chmod +x \"$D/lab-agent\" && " +
-		"printf '%s\\n' \"$T\" | sudo \"$D/lab-agent\" setup --server \"$U\" --token-stdin --gui-user \"$USER\"" + plain
+	at := s.publicBase(r) + "/join"
+	if !reShellBare.MatchString(at) {
+		at = "'" + at + "'"
+	}
+	return " curl -fsSL " + at + " | LAB_JOIN=" + token + " bash"
 }

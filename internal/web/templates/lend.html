@@ -24,13 +24,13 @@
 <section class="card" id="terms">
 <h2 class="card-title">the terms</h2>
 <pre class="legal">{{.Terms.Body}}</pre>
-<p class="legal-version">Dated <time datetime="{{.Terms.Date}}">{{.Terms.Date}}</time>. sha256 of this text: <code>{{.Terms.SHA256}}</code>. The same text is shown in the terminal at the Mac, where you accept it by typing <code>yes</code>.</p>
+<p class="legal-version">Dated <time datetime="{{.Terms.Date}}">{{.Terms.Date}}</time>. sha256 of this text: {{template "copy" (copy "the sha256 of the terms" .Terms.SHA256)}}. The same text is shown in the terminal at the Mac, where you accept it by typing <code>yes</code>.</p>
 </section>
 {{with .Refused}}<p class="flash flash-alert" role="alert">{{.}}</p>
 {{end}}{{if .Made}}<section class="card attention" id="join-command">
 <h2 class="card-title">the join command for {{.Made.Name}}</h2>
 <p>Run this one line in a terminal on the Mac, as yourself. This is the only time the lab shows it: copy it now.</p>
-<pre class="legal"><code>{{.Made.Line}}</code></pre>
+{{template "copy-block" (copy "the Join command" .Made.Line)}}
 <p class="dim">Good for one Mac, once, until {{.Made.Expires}}. It checks the Mac, shows the terms and asks for your <code>yes</code> before it changes anything. It names {{.Address}} and nothing else. If it is refused, it says why once and stops.</p>
 </section>
 {{end}}{{if .Leave}}<section class="card" id="lend">

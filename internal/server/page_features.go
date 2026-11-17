@@ -36,7 +36,6 @@ type featuresPage struct {
 	NoneMatches bool
 	Layers      []featureLayer
 	Legend      legendView
-	Credit      string
 }
 
 // featureResults reads the filters the feature pages take and counts the
@@ -55,7 +54,7 @@ func (s *Server) pFeatures(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter, matrix, bar := s.featureResults(p, r, "/features")
-	page := featuresPage{Version: s.catalogue.Version(), Bar: bar, NoneMatches: filter.Any() && matrix.Empty(), Legend: legend(), Credit: s.catalogue.AsahiCredit()}
+	page := featuresPage{Version: s.catalogue.Version(), Bar: bar, NoneMatches: filter.Any() && matrix.Empty(), Legend: legend()}
 	for _, layer := range reports.Layers {
 		l := featureLayer{Layer: layer, Title: strings.ToLower(reports.LayerWords[layer])}
 		for _, feature := range s.catalogue.Features() {
@@ -109,7 +108,7 @@ type featurePage struct {
 	Legend                       legendView
 	Checks                       []string
 	Chips                        []chipExpected
-	PerBoard, Credit             string
+	PerBoard                     string
 }
 
 // pFeature is one feature: one summary row per model and stack, each with
@@ -128,7 +127,7 @@ func (s *Server) pFeature(w http.ResponseWriter, r *http.Request) {
 	filter, matrix, bar := s.featureResults(p, r, "/features/"+id)
 	layer := words(member(feature, "layer"))
 	page := featurePage{ID: id, Name: name, Layer: layer, LayerWords: reports.LayerWords[layer], Note: words(member(feature, "note")), Bar: bar, Any: filter.Any(),
-		Legend: legend(), Checks: s.catalogue.ChecksFor(id), Credit: s.catalogue.AsahiCredit()}
+		Legend: legend(), Checks: s.catalogue.ChecksFor(id)}
 	if on := words(member(feature, "asahi_feature")); on != "" {
 		page.BuildsOn, page.BuildsOnHref = s.catalogue.FeatureName(on), s.href("/features/"+on)
 	}

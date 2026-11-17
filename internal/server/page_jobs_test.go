@@ -190,6 +190,9 @@ func TestAJobsPageShowsTheJobAndItsButtons(t *testing.T) {
 			Recovery: []string{"watchdog reset"}, NewErrorLines: []string{"apple-dcp: timeout"}}
 	})
 	page := grace.page("/jobs/j-done")
+	offersToCopy(t, page, "the job id", "j-done")
+	offersToCopy(t, page, "the kernel", strings.Repeat("c", 64))
+	offersToCopy(t, page, "the arguments", "nvme_apple.flush_interval=0")
 	text := rowText(page)
 	for _, want := range []string{"j-done", "m1-pro", "@grace", "Tests failed", "1 of 2 tests failed", "7.2.0-lab1", "nvme_apple.flush_interval=0",
 		"boot-health", "gui-smoke", "exit 1", "no monitor <is> up", "watchdog reset", "apple-dcp: timeout", "staged 7.2.0-lab1 as the next boot", "under a Lease", "300 s"} {
@@ -337,6 +340,8 @@ func TestBootAKernelIsReachedFromJobsAndFromAMacsPage(t *testing.T) {
 	if !strings.Contains(page, `name="source"`) || !strings.Contains(buttons(page), "Crash test") {
 		t.Error("a Maintainer's form lacks the build from source or the Crash test")
 	}
+	offersToCopy(t, page, "the lab run command", "lab run m1-pro --kernel kernel-7.2.0-lab1.tar.zst --gui-test gui-smoke")
+	offersToCopy(t, page, "lab mcp", "lab mcp")
 	if !strings.Contains(rowText(page), "lab run m1-pro --kernel") || !strings.Contains(rowText(page), "lab mcp") {
 		t.Error("the page lacks the artifacts-and-agents guide for the Mac chosen")
 	}
@@ -502,6 +507,8 @@ func TestBuildsShowsWhoAsked(t *testing.T) {
 	if !strings.Contains(page, `href="/api/builds/b-old/log"`) || currentInLabNav(t, page) != "Builds" {
 		t.Error("the build's page lacks its whole log, or is not under Builds")
 	}
+	offersToCopy(t, ravi.page("/builds/b-ravis"), "the build id", "b-ravis")
+	offersToCopy(t, ravi.page("/builds/b-ravis"), "the artifact sha256", strings.Repeat("e", 64))
 	if text := rowText(ravi.page("/builds/b-ravis")); !strings.Contains(text, "@ravi") || !strings.Contains(text, strings.Repeat("e", 64)) || !strings.Contains(text, "90 MB") {
 		t.Error("a finished build's page lacks who asked or its artifact")
 	}

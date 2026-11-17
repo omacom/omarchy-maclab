@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,6 +39,7 @@ case "$1 $2" in
   "volume create") [[ -f $s/up && ! -f $s/full ]] || exit 1; echo "$4" > "$s/volume.$5" ;;
   "volume delete") [[ -f $s/up && -f $s/volume.$3 ]] || exit 1; rm "$s/volume.$3" ;;
   "image inspect") [[ -f $s/up && -f $s/image.$3 ]] || exit 1 ;;
+  "image delete") [[ -f $s/up && -f $s/image.$3 ]] || exit 1; rm "$s/image.$3" ;;
   build\ *) [[ -f $s/up && -f $4/Containerfile ]] || exit 1
     while read -r verb file _; do
       [[ $verb != ADD || -f $4/$file ]] || { echo "ADD $file: no such file in the build context" >&2; exit 1; }
@@ -142,6 +144,18 @@ func (m *mini) builderBuild(tag string) {
 	write(m.t, build+"/builder/pkg/pkgbuild", "#!/bin/bash\n", 0o755)
 }
 
+// builderRuns is what the Builder's installed LaunchDaemon file gives
+// lab-builder for option, which names one of its images: the image's name
+// and its tag.
+func (m *mini) builderRuns(option string) string {
+	m.t.Helper()
+	f := regexp.MustCompile(`<string>` + option + `</string><string>([^<]*)</string>`).FindStringSubmatch(read(m.t, m.path("Library/LaunchDaemons/"+builderLabel+".plist")))
+	if f == nil || !regexp.MustCompile(`^maclab-(kbuild|pkgbuild):[0-9a-f]{12}$`).MatchString(f[1]) {
+		m.t.Fatalf("the Builder's installed file gives %s no image tagged by what it is made from: %q", option, f)
+	}
+	return f[1]
+}
+
 // rootfs is a made-up archive of Arch Linux ARM's root file system, as the
 // owner brings it.
 func rootfs(t *testing.T) string {
@@ -174,12 +188,13 @@ func TestTheBuildersLaunchDaemons(t *testing.T) {
 		}
 	}
 	want := "/usr/local/lab/current/scripts/mini/container wait CONTAINER_USER -- /usr/local/lab/current/bin/lab-builder" +
-		" --server http://" + shell(t, "LABD_LISTEN") + " --token-file /usr/local/lab/secrets/builder.token --as-user CONTAINER_USER --io /usr/local/lab/io --cpus BUILDER_CPUS"
+		" --server http://" + shell(t, "LABD_LISTEN") + " --token-file /usr/local/lab/secrets/builder.token --as-user CONTAINER_USER --io /usr/local/lab/io --cpus BUILDER_CPUS" +
+		" --image BUILDER_IMAGE --pkg-image BUILDER_PKG_IMAGE"
 	if got := strings.Join(arrays["ProgramArguments"], " "); got != want {
 		t.Errorf("the Builder is started as:\n %s\nwant\n %s", got, want)
 	}
 	main := read(t, filepath.Join(repo(t), "cmd", "lab-builder", "main.go"))
-	for _, flag := range []string{"server", "token-file", "as-user", "io", "cpus"} {
+	for _, flag := range []string{"server", "token-file", "as-user", "io", "cpus", "image", "pkg-image"} {
 		if !regexp.MustCompile(`fl\.\w+\((&[\w.]+, )?"` + flag + `"`).MatchString(main) {
 			t.Errorf("lab-builder has no flag --%s", flag)
 		}
@@ -301,6 +316,31 @@ func TestTheWatchStartsContainerAgainAndTellsEachChangeOnce(t *testing.T) {
 	look(false, false, stopped, again, stopped, failed, again, stopped, failed, back, failed)
 }
 
+// The set-up runs a watch just as launchd runs the LaunchDaemon's first one:
+// two watches at once both save the state and neither fails on the other's file.
+func TestTwoWatchesAtOnceBothSaveTheState(t *testing.T) {
+	m := builderMini(t)
+	user := account(t)
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		outs := make([]string, 6)
+		codes := make([]int, 6)
+		for i := range outs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				outs[i], codes[i] = m.run("container", "watch", user)
+			}(i)
+		}
+		wg.Wait()
+		for i, code := range codes {
+			if code != 0 {
+				t.Fatalf("round %d, watch %d: exit %d\n%s", round, i, code, outs[i])
+			}
+		}
+	}
+}
+
 // The Builder's LaunchDaemon waits until the server answers and starts
 // nothing itself.
 func TestTheBuilderWaitsForContainerAndNeverStartsIt(t *testing.T) {
@@ -418,8 +458,8 @@ func TestSetupBringsTheBuilderUp(t *testing.T) {
 	for _, want := range []string{
 		"container volume create -s 40G maclab-cache",
 		"container volume create -s 120G maclab-pkgcache",
-		"container build -t maclab-kbuild:1 " + m.path("usr/local/lab/current/builder"),
-		"container build -t maclab-pkgbuild:1 " + m.path(pkgContext),
+		"container build -t " + m.builderRuns("--image") + " " + m.path("usr/local/lab/current/builder"),
+		"container build -t " + m.builderRuns("--pkg-image") + " " + m.path(pkgContext),
 		"sudo -n -u " + user + " " + m.path("usr/local/bin/container") + " system start --enable-kernel-install",
 	} {
 		if !strings.Contains(calls, want) {
@@ -450,7 +490,7 @@ func TestSetupBringsTheBuilderUp(t *testing.T) {
 				t.Errorf("%s lacks %s", filepath.Base(file), want)
 			}
 		}
-		if strings.Contains(text, "CONTAINER_USER") || strings.Contains(text, "BUILDER_CPUS") || mode(t, file) != 0o644 {
+		if strings.Contains(text, "CONTAINER_USER") || strings.Contains(text, "BUILDER_") || mode(t, file) != 0o644 {
 			t.Errorf("%s was not filled in, or is not 0644", filepath.Base(file))
 		}
 	}
@@ -526,7 +566,7 @@ func TestSetupBuildsThePackageImageFromTheRootFileSystemBrought(t *testing.T) {
 		t.Fatalf("the dry run:\n%s", dry)
 	}
 	out := m.ok("setup", "--builder-rootfs", brought)
-	if !m.serverUp() || !strings.Contains(m.calls(), "container build -t maclab-pkgbuild:1 "+m.path(pkgContext)) {
+	if !m.serverUp() || !regexp.MustCompile(`container build -t maclab-pkgbuild:[0-9a-f]{12} `+regexp.QuoteMeta(m.path(pkgContext))).MatchString(m.calls()) {
 		t.Fatalf("the image was not built from its own context:\n%s\n%s", out, m.calls())
 	}
 	if !regexp.MustCompile(`sha256 [0-9a-f]{64}`).MatchString(out) {
@@ -549,6 +589,93 @@ func TestSetupBuildsThePackageImageFromTheRootFileSystemBrought(t *testing.T) {
 		if out := m.ok("setup", args...); strings.Contains(m.callsOrNone(), "container build") || strings.Contains(out, "root file system") {
 			t.Fatalf("setup %v, a second run, did something:\n%s\n%s", args, out, m.callsOrNone())
 		}
+	}
+}
+
+// An image is tagged by what it is made from. A Deploy whose builder/ is
+// other names another tag: the set-up builds that image alone and starts
+// the Builder with it. Of the images it made before, the last is kept as
+// the way back and the older ones removed; a Deploy with the same builder/
+// builds nothing.
+func TestSetupBuildsTheImageOfAChangedBuilderAndKeepsTheWayBack(t *testing.T) {
+	need(t, "openssl")
+	m := builderMini(t)
+	k := newKey(t)
+	builderPlist := m.path("Library/LaunchDaemons/" + builderLabel + ".plist")
+	image := func(tag string) bool { return exists(m.state("image." + tag)) }
+	m.ok("setup", "--release-key", k.signers, "--container-user", account(t))
+	m.builderBuild("v0.2.0")
+	// Made before the tags followed what an image is made from.
+	m.touch("image.maclab-kbuild:1")
+	m.touch("image.maclab-pkgbuild:1")
+	m.ok("setup", "--builder-rootfs", rootfs(t), "--builder-token", tokenFile(t, madeUpToken+"\n", 0o600))
+	k1, p1 := m.builderRuns("--image"), m.builderRuns("--pkg-image")
+	if !image(k1) || !image(p1) || !image("maclab-kbuild:1") || !image("maclab-pkgbuild:1") {
+		t.Fatalf("the first images: %s %s\n%s", k1, p1, m.calls())
+	}
+
+	built := func(version string, change func(build string)) string {
+		t.Helper()
+		m.builderBuild(version)
+		if change != nil {
+			change(m.path("usr/local/lab/builds/" + version))
+		}
+		os.Remove(m.log)
+		return m.ok("setup")
+	}
+	restarted := func() bool { return strings.Contains(m.callsOrNone(), "bootstrap system "+builderPlist) }
+
+	// The same builder/ in a new build.
+	if out := built("v0.2.1", nil); !strings.Contains(out, "nothing to change") || strings.Contains(m.callsOrNone(), "container build") || restarted() {
+		t.Fatalf("a build with the same builder/:\n%s\n%s", out, m.callsOrNone())
+	}
+
+	// The fix of 7227e8aa: kbuild reads its config at /in.
+	kbuild := func(text string) func(string) {
+		return func(build string) { write(t, build+"/builder/kbuild", text, 0o755) }
+	}
+	out := built("v0.3.0", kbuild("#!/bin/bash\ncp /in/config .config\n"))
+	k2 := m.builderRuns("--image")
+	if k2 == k1 || m.builderRuns("--pkg-image") != p1 || !restarted() {
+		t.Fatalf("a changed builder/kbuild: %s then %s, the Builder started again: %v\n%s", k1, k2, restarted(), out)
+	}
+	if calls := m.calls(); !strings.Contains(calls, "container build -t "+k2+" "+m.path("usr/local/lab/current/builder")) || strings.Contains(calls, "-t maclab-pkgbuild") {
+		t.Fatalf("not the kernel image alone was built:\n%s", calls)
+	}
+	if !image(k1) || image("maclab-kbuild:1") || !image("maclab-pkgbuild:1") {
+		t.Errorf("%s is not kept as the way back, or the image tagged 1 is left:\n%s", k1, out)
+	}
+
+	out = built("v0.3.1", kbuild("#!/bin/bash\ncp /in/config .config\nmake\n"))
+	k3 := m.builderRuns("--image")
+	if k3 == k2 || k3 == k1 || !image(k3) || !image(k2) || image(k1) {
+		t.Fatalf("a second change: %s, %s, %s:\n%s", k1, k2, k3, out)
+	}
+
+	// builder/pkg changed: the package image alone.
+	out = built("v0.3.2", func(build string) {
+		kbuild("#!/bin/bash\ncp /in/config .config\nmake\n")(build)
+		write(t, build+"/builder/pkg/pkgbuild", "#!/bin/bash\nmakepkg\n", 0o755)
+	})
+	p2 := m.builderRuns("--pkg-image")
+	if p2 == p1 || m.builderRuns("--image") != k3 || !image(p2) || !image(p1) || image("maclab-pkgbuild:1") || strings.Contains(m.calls(), "-t maclab-kbuild") {
+		t.Fatalf("a changed builder/pkg: %s then %s:\n%s\n%s", p1, p2, out, m.calls())
+	}
+	// Another root file system: another package image.
+	os.Remove(m.log)
+	other := rootfs(t)
+	write(t, other, "\x1f\x8b\x08 another root file system\n", 0o644)
+	out = m.ok("setup", "--builder-rootfs", other)
+	if p3 := m.builderRuns("--pkg-image"); p3 == p2 || !image(p3) || !image(p2) || image(p1) {
+		t.Fatalf("another root file system: %s then %s:\n%s", p2, p3, out)
+	}
+
+	// Deployed back to v0.3.0: its kernel image is there, and is not built.
+	m.deployed("v0.3.0", "")
+	os.Remove(m.log)
+	out = m.ok("setup")
+	if m.builderRuns("--image") != k2 || strings.Contains(m.callsOrNone(), "-t maclab-kbuild") || !restarted() {
+		t.Fatalf("back to v0.3.0:\n%s\n%s", out, m.callsOrNone())
 	}
 }
 

@@ -143,6 +143,12 @@ func (s *Server) pWithdrawRequest(w http.ResponseWriter, r *http.Request) {
 // line, once: the lab keeps only the hash of its token.
 func (s *Server) pMakeJoinCommand(w http.ResponseWriter, r *http.Request) {
 	made, err := s.makeJoinCommand(r, r.PostFormValue("model"), r.PostFormValue("name"))
+	if errors.Is(err, errAskerCut) {
+		// The answer a signed-out browser gets on this route.
+		w.Header().Set("Location", "/sign-in")
+		w.WriteHeader(http.StatusSeeOther)
+		return
+	}
 	if err != nil {
 		s.lendDone(w, r, err)
 		return

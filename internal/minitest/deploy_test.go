@@ -4,14 +4,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// deployed is a mini with a pinned key, a release server and a labd.
+// deployed is a mini with a pinned key, a release server and a labd. Deploy
+// is run from a checkout in an admin's home, which the lab account cannot
+// read.
 func deployed(t *testing.T) (*mini, key, *release) {
 	t.Helper()
 	m := newMini(t)
+	m.env = append(m.env, "STUB_LAB_CANNOT_READ="+m.tree)
 	k := newKey(t)
 	m.pinned(k)
 	m.labd()
@@ -55,6 +59,31 @@ func TestDeployInstallsABundleItsSignatureMatches(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A Deploy touches no image: when the build names other images for the
+// Builder than those it runs, it says to run the set-up, which builds them.
+func TestDeploySaysWhenTheBuilderNeedsTheSetUpForItsImages(t *testing.T) {
+	m, k, r := deployed(t)
+	plist := m.path("Library/LaunchDaemons/" + builderLabel + ".plist")
+	write(t, plist, "    <string>--image</string><string>maclab-kbuild:0123456789ab</string>\n", 0o644)
+	builder := map[string]string{"builder/Containerfile": "FROM scratch\n", "builder/kbuild": "cp /in/config .config\n"}
+	bundleWith(t, k, filepath.Join(r.dir, "v0.2.0"), "v0.2.0", true, builder)
+	out := m.ok("deploy", "--from", r.from("v0.2.0"), "v0.2.0")
+	image := regexp.MustCompile(`the Builder runs maclab-kbuild:0123456789ab, not (maclab-kbuild:[0-9a-f]{12}), the image of builder in the Deployed build`).FindStringSubmatch(out)
+	if image == nil || !strings.Contains(out, "run sudo "+m.path("usr/local/lab/current/scripts/mini/setup")+" to build the Builder's new images") {
+		t.Fatalf("the Deploy did not say the Builder needs the set-up:\n%s", out)
+	}
+	if strings.Contains(m.calls(), "container") {
+		t.Errorf("the Deploy reached container:\n%s", m.calls())
+	}
+
+	// The set-up started the Builder with the build's image: nothing to say.
+	write(t, plist, "    <string>--image</string><string>"+image[1]+"</string>\n", 0o644)
+	bundleWith(t, k, filepath.Join(r.dir, "v0.2.1"), "v0.2.1", true, builder)
+	if out := m.ok("deploy", "--from", r.from("v0.2.1"), "v0.2.1"); strings.Contains(out, "setup") || strings.Contains(out, "the Builder runs") {
+		t.Errorf("with the Builder on the build's image the Deploy said:\n%s", out)
 	}
 }
 

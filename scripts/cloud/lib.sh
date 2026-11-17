@@ -13,6 +13,13 @@
 #                      show it. The token is never printed, never an argument
 #                      of a command and never written anywhere.
 #
+#   --porkbun-keys FILE  for the scripts that ask Porkbun: its API key on the
+#                      first line and its secret key on the second, in a file
+#                      only you can read (chmod 600). Without it,
+#                      ~/.config/omarchy-mac-lab/porkbun.keys. The keys are
+#                      read from nowhere else: not the environment, not the
+#                      Keychain.
+#
 # Needs bash, curl 7.84 or later and jq: what macOS has.
 # shellcheck disable=SC2034
 
@@ -27,7 +34,6 @@ LAB_HOST="lab.$LAB_DOMAIN"
 OLD_DOMAIN="omarchy-m-testing.org"
 DOMAIN="${DOMAIN:-$LAB_DOMAIN}"
 USER_AGENT="omarchy-mac-lab-scripts"
-KEYCHAIN_SERVICE="${KEYCHAIN_SERVICE:-omarchy-mac-lab}"
 PORKBUN_API="https://api.porkbun.com/api/json/v3"
 CLOUDFLARE_API="https://api.cloudflare.com/client/v4"
 
@@ -42,7 +48,7 @@ if [[ -n ${LAB_CLOUD_API:-} ]]; then
   CLOUDFLARE_API="$LAB_CLOUD_API"
 fi
 
-# And for Porkbun's, with made-up keys in the environment.
+# And for Porkbun's, with made-up keys in a file (--porkbun-keys).
 if [[ -n ${LAB_PORKBUN_API:-} ]]; then
   [[ $LAB_PORKBUN_API =~ ^http://127\.0\.0\.1:[0-9]+(/.*)?$ ]] || die "LAB_PORKBUN_API is the tests' and takes a loopback address only"
   PORKBUN_API="$LAB_PORKBUN_API"
@@ -57,6 +63,7 @@ fi
 
 MODE=dry-run
 TOKEN_FILE=""
+PORKBUN_KEYS="${HOME:-}/.config/omarchy-mac-lab/porkbun.keys"
 ARGS=()
 
 # parse_mode "$@": takes the options every script has and leaves the rest in
@@ -76,6 +83,11 @@ parse_mode() {
         TOKEN_FILE="$2"
         shift
         ;;
+      --porkbun-keys)
+        [[ $# -ge 2 ]] || die "--porkbun-keys needs a file"
+        PORKBUN_KEYS="$2"
+        shift
+        ;;
       *) ARGS+=("$1") ;;
     esac
     shift
@@ -90,17 +102,30 @@ usage() {
 
 TOKEN=""
 
+# own_only FILE: dies unless only its owner may read FILE: mode 600 or 400,
+# and no ACL. GNU ls marks an ACL with +; macOS marks any extended attribute
+# with @ and then shows no +, and lists the ACL itself under ls -e.
+own_only() {
+  local listed
+  # shellcheck disable=SC2012
+  case "$(ls -lnLd "$1" | awk '{ print $1; exit }')" in
+    -r-------- | -rw------- | -r--------[@.] | -rw-------[@.]) ;;
+    *+) die "$1 has an ACL, which may let others read it: take it off (chmod -N $1, or setfacl -b $1)" ;;
+    *) die "$1 can be read by others: chmod 600 it" ;;
+  esac
+  # shellcheck disable=SC2012
+  if listed="$(ls -lnLde "$1" 2>/dev/null)" && [[ $listed == *$'\n'* ]]; then
+    die "$1 has an ACL, which may let others read it: take it off (chmod -N $1)"
+  fi
+}
+
 # load_token: the Cloudflare token from --token-file, or asked for at the
 # terminal. Call it before the first cf, outside any $(...).
 load_token() {
   [[ -z $TOKEN ]] || return 0
   if [[ -n $TOKEN_FILE ]]; then
     [[ -f $TOKEN_FILE ]] || die "no token file $TOKEN_FILE"
-    # shellcheck disable=SC2012
-    case "$(ls -lnL "$TOKEN_FILE" | cut -c1-10)" in
-      -r-------- | -rw-------) ;;
-      *) die "$TOKEN_FILE can be read by others: chmod 600 it" ;;
-    esac
+    own_only "$TOKEN_FILE"
     IFS= read -r TOKEN < "$TOKEN_FILE" || true
   elif [[ -t 0 ]]; then
     printf 'Cloudflare API token (not shown): ' >&2
@@ -274,21 +299,17 @@ alias_hostname() {
   fi
 }
 
-# Porkbun, the registrar. Its two keys come from the environment or the login
-# Keychain and reach curl as headers on stdin, never on a command line.
-secret() {
-  local value="${!1:-}"
-  if [[ -z $value ]]; then
-    value="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$2" -w 2>/dev/null || true)"
-  fi
-  [[ -n $value ]] || die "no credential: set $1 or add the Keychain item $KEYCHAIN_SERVICE/$2"
-  printf '%s' "$value"
-}
-
+# Porkbun, the registrar. Its two keys come from --porkbun-keys FILE (or
+# ~/.config/omarchy-mac-lab/porkbun.keys), a file only its owner reads, and
+# reach curl as headers on stdin, never on a command line.
 pb() {
-  local key sec
-  key="$(secret PORKBUN_API_KEY porkbun-api-key)" || return 1
-  sec="$(secret PORKBUN_SECRET_KEY porkbun-secret-key)" || return 1
+  local key="" sec=""
+  [[ -f $PORKBUN_KEYS ]] || die "no Porkbun keys file $PORKBUN_KEYS: its API key on the first line, its secret key on the second, chmod 600; or give --porkbun-keys FILE. Nothing was sent"
+  own_only "$PORKBUN_KEYS"
+  { IFS= read -r key || true; IFS= read -r sec || true; } < "$PORKBUN_KEYS"
+  key="${key//[[:space:]]/}"
+  sec="${sec//[[:space:]]/}"
+  [[ -n $key && -n $sec ]] || die "$PORKBUN_KEYS holds no two keys: its API key on the first line, its secret key on the second. Nothing was sent"
   printf 'X-API-Key: %s\nX-Secret-API-Key: %s\nContent-Type: application/json\n' "$key" "$sec" |
     curl -sS -m 60 -A "$USER_AGENT" -H @- "$@"
 }

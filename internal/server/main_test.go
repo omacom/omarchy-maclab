@@ -95,6 +95,10 @@ func TestMain(m *testing.M) {
 		read   bytes.Buffer
 		wg     sync.WaitGroup
 	)
+	// The copies get the environment as it is now: this process's own tests
+	// change theirs with t.Setenv while copies start (a TMPDIR that is then
+	// removed, among others).
+	env := os.Environ()
 	for w := 1; w < n; w++ {
 		wg.Add(1)
 		go func() {
@@ -107,7 +111,7 @@ func TestMain(m *testing.M) {
 					a = append(a, "-test.testlogfile="+childLog)
 				}
 				cmd := exec.CommandContext(ctx, os.Args[0], a...)
-				cmd.Env = append(os.Environ(), "LAB_TEST_SHARD="+strconv.Itoa(w))
+				cmd.Env = append(append([]string{}, env...), "LAB_TEST_SHARD="+strconv.Itoa(w))
 				out, err := cmd.CombinedOutput()
 				mu.Lock()
 				if err != nil {

@@ -189,12 +189,6 @@ func (l *Linux) runMesaProvider(ctx context.Context, job string, t api.TestSpec,
 	defer cancel()
 	cmd := exec.CommandContext(tctx, "python3", "-B", script, filepath.Join(prefix, "runtime-plan.json"), out)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "PYTHONDONTWRITEBYTECODE=1"}
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return cmd.Process.Signal(syscall.SIGTERM)
-		}
-		return nil
-	}
 	cmd.WaitDelay = cleanupBudget
 	log, err := os.OpenFile(filepath.Join(out, "log.txt"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -203,7 +197,7 @@ func (l *Linux) runMesaProvider(ctx context.Context, job string, t api.TestSpec,
 	cmd.Stdout = log
 	cmd.Stderr = log
 	start := time.Now()
-	runErr := cmd.Run()
+	runErr := runGroup(cmd)
 	log.Close()
 	r.Seconds = time.Since(start).Seconds()
 	r.Tail = tail(filepath.Join(out, "log.txt"), 40)

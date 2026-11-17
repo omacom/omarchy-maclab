@@ -158,7 +158,7 @@ func Setup(ctx context.Context, o SetupOptions) error {
 			return err
 		}
 		say("%s", code.String())
-		askWindow(tty, cfg, say)
+		sayWindow(cfg, say)
 	}
 	// Only now is the activation key no longer needed: a setup that stopped
 	// anywhere before here can run again with the same token and enroll with

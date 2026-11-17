@@ -121,6 +121,10 @@ type fakeSuspend struct {
 	// The deadlines systemctl suspend and the lock unit's start ran with;
 	// zero for none.
 	suspendDeadline, lockStartDeadline time.Time
+	// firstCall is when the first command ran; latest is the latest deadline
+	// any command ran with, and unbounded the commands that ran with none.
+	firstCall, latest time.Time
+	unbounded         []string
 }
 
 func newFakeSuspend(t *testing.T, pmTest string) *fakeSuspend {
@@ -146,6 +150,14 @@ func newFakeSuspend(t *testing.T, pmTest string) *fakeSuspend {
 		defer f.mu.Unlock()
 		mode := func() string { b, _ := os.ReadFile(pmTestPath); return string(b) }
 		cmd := strings.Join(append([]string{name}, args...), " ")
+		if f.firstCall.IsZero() {
+			f.firstCall = time.Now()
+		}
+		if d, ok := ctx.Deadline(); !ok {
+			f.unbounded = append(f.unbounded, cmd)
+		} else if d.After(f.latest) {
+			f.latest = d
+		}
 		if ids, ok := strings.CutPrefix(cmd, "systemctl cancel "); ok {
 			f.cancelled = ids
 			if f.failCancel {
@@ -419,7 +431,15 @@ func TestSuspendDevicesSlowFailureEndsInTime(t *testing.T) {
 	if r.Passed || !r.TimedOut {
 		t.Fatalf("passed=%v timed out=%v tail:\n%s", r.Passed, r.TimedOut, r.Tail)
 	}
-	if took := time.Duration(r.Seconds * float64(time.Second)); took > testTimeout(spec)+300*time.Millisecond {
+	// Ending in time is every command bounded by the timeout, counted from
+	// before the first: how long the return takes after that is the
+	// scheduler's, which a loaded machine stretches. The watchdog's budget is
+	// the wall-time bound that matters.
+	if len(f.unbounded) > 0 || f.latest.After(f.firstCall.Add(testTimeout(spec))) {
+		t.Fatalf("commands with no deadline %q; latest deadline %s after the first command, with a %s timeout",
+			f.unbounded, f.latest.Sub(f.firstCall), testTimeout(spec))
+	}
+	if took := time.Duration(r.Seconds * float64(time.Second)); took > testBudget(spec) {
 		t.Fatalf("took %s with a %s timeout (watchdog budget %s), tail:\n%s", took, testTimeout(spec), testBudget(spec), r.Tail)
 	}
 	for _, want := range []string{"FAIL: no suspend cycle ended before the test stopped (context deadline exceeded); cancelled sleep jobs 1062",

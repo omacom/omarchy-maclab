@@ -143,7 +143,7 @@ M=$P/usr/lib/modules/$krel
 rm -f "$M/build" "$M/source"
 cp "$O/arch/arm64/boot/Image" "$M/vmlinuz"
 "${mk[@]}" INSTALL_DTBS_PATH="$M/dtbs" dtbs_install
-python3 /usr/local/bin/module-build.py "$C/src" "$O" /io "$C/git"
+python3 /usr/local/bin/module-build.py "$C/src" "$O" /in/config /io "$C/git"
 tar -C "$P" --zstd -cf /io/out/kernel.tar.zst usr
 echo kernel.tar.zst > /io/kernel
 echo "$krel" > /io/release

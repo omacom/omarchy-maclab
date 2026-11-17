@@ -228,7 +228,7 @@ func buildUKIFile(ctx context.Context, krel, image, cmdline, out string) error {
 	} else {
 		cmd = exec.CommandContext(ictx, "dracut", "--force", "--uefi", "--kver", krel, "--kernel-image", image, "--kernel-cmdline", cmdline, out)
 	}
-	if result, err := cmd.CombinedOutput(); err != nil {
+	if result, err := combinedGroup(cmd); err != nil {
 		return fmt.Errorf("UKI: %v: %s", err, lastLines(string(result), 15))
 	}
 	return syncFile(out)

@@ -103,6 +103,9 @@ type Sim struct {
 	// rebootFails and cancelFails are how many plain reboots and one-shot
 	// cancels fail before they work again; see FailReboots and FailCancels.
 	rebootFails, cancelFails int
+	// problems and warnings are preflight's, besides the Sim's own; see
+	// SetPreflight.
+	problems, warnings []string
 
 	// A Volunteer's Mac. Every knob is off by default.
 	// Encrypted holds every cold boot at the disk password prompt until TypePassword.
@@ -210,7 +213,18 @@ func (s *Sim) Facts() api.Facts {
 	if kg := s.knownGoodLocked(); slices.Contains(s.removedKernels, kg) {
 		f.Problems, f.PreflightOK = []string{"known-good kernel " + kg + " is no longer installed"}, false
 	}
+	f.Problems = append(f.Problems, s.problems...)
+	f.Warnings = append(f.Warnings, s.warnings...)
+	f.PreflightOK = len(f.Problems) == 0
 	return f
+}
+
+// SetPreflight makes the Mac's preflight find problems and warnings, from its
+// next check-in on, as lab-agent reports them.
+func (s *Sim) SetPreflight(problems, warnings []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.problems, s.warnings = problems, warnings
 }
 
 // knownGoodLocked is the agent's recorded known-good kernel.

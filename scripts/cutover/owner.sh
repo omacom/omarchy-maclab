@@ -131,11 +131,14 @@ on_mini() {
 }
 
 # mini_stage: where the mini itself says the lab is (open stage): preview,
-# "live <time>", open or unknown; nothing when it could not be asked.
+# "live <time>", open or unknown; nothing when it could not be asked. sudo
+# asks for the password there: all the mini's terminal shows reaches this
+# one as it comes, its prompt too, and the answer is the line that is a
+# stage and nothing else.
 mini_stage() {
   [[ -n $MINI ]] || return 1
   echo "$ME: on the mini: $(mini_line "open stage")" >&2
-  ssh -t "$MINI" "sudo $MINI_SCRIPTS/open stage" | tr -d '\r' | grep -E '^(preview|open|unknown|live [0-9TZ:-]+)$' | tail -n 1
+  ssh -t "$MINI" "sudo $MINI_SCRIPTS/open stage" | tee /dev/stderr | tr -d '\r' | grep -E '^(preview|open|unknown|live [0-9TZ:-]+)$' | tail -n 1
 }
 
 token_option() { [[ -z $TOKEN_FILE ]] || printf -- ' --token-file %s' "$TOKEN_FILE"; }

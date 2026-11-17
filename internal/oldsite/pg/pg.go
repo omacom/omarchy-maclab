@@ -14,10 +14,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -72,14 +74,18 @@ func loopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Open takes the address of the old site's Postgres, whole, as Railway
-// shows it: postgresql://user:password@host:port/database. Nothing is read
-// from the environment or from a file in its place. Beyond this machine
-// the connection is made over TLS or not at all, and the password is
-// answered only to SCRAM. Open connects to nothing.
-func Open(address string) (*Postgres, error) {
+// address is a Postgres address as Open takes it, checked.
+type address struct {
+	u     *url.URL
+	mode  string
+	local bool
+}
+
+// parse checks an address, whole, as Railway shows it: no part of it is
+// repeated in a refusal.
+func parse(text string) (*address, error) {
 	notOne := sayf("that is not a Postgres address: one reads %s", shape)
-	u, err := url.Parse(strings.TrimSpace(address))
+	u, err := url.Parse(strings.TrimSpace(text))
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.User == nil || u.Opaque != "" || u.Fragment != "" {
 		return nil, notOne
 	}
@@ -88,33 +94,130 @@ func Open(address string) (*Postgres, error) {
 	if u.User.Username() == "" || password == "" || u.Hostname() == "" || strings.Contains(u.Host, ",") || database == "" || strings.Contains(database, "/") {
 		return nil, notOne
 	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, notOne
+		}
+	}
 	query := u.Query()
 	for name := range query {
 		if name != "sslmode" {
 			return nil, sayf("the address has an option this command does not take (%q): only sslmode is", name)
 		}
 	}
-	mode := query.Get("sslmode")
-	local := loopback(u.Hostname())
-	switch mode {
+	a := &address{u: u, mode: query.Get("sslmode"), local: loopback(u.Hostname())}
+	switch a.mode {
 	case "", "prefer", "require", "verify-ca", "verify-full":
 	case "disable", "allow":
-		if !local {
-			return nil, sayf("the address turns TLS off (sslmode=%s): beyond this machine the old site's Postgres is read over TLS only", mode)
+		if !a.local {
+			return nil, sayf("the address turns TLS off (sslmode=%s): beyond this machine the old site's Postgres is read over TLS only", a.mode)
 		}
 	default:
 		return nil, notOne
+	}
+	return a, nil
+}
+
+func (a *address) hostPort() string {
+	port := a.u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	return net.JoinHostPort(a.u.Hostname(), port)
+}
+
+// authorities reads the CA file: the certificates the old site's Postgres
+// certificate must chain to. Nothing of the file is repeated.
+func authorities(caFile string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, said("the CA file could not be read")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, said("the CA file holds no certificate (PEM)")
+	}
+	return pool, nil
+}
+
+// verifyCA checks the certificate the server shows against the CA file's
+// authorities alone, as sslmode verify-ca does: the chain, not the host
+// name, which verify-full adds.
+func verifyCA(pool *x509.CertPool, host string, full bool) func([][]byte, [][]*x509.Certificate) error {
+	return func(raw [][]byte, _ [][]*x509.Certificate) error {
+		if len(raw) == 0 {
+			return x509.CertificateInvalidError{Reason: x509.NotAuthorizedToSign, Detail: "no certificate"}
+		}
+		certs := make([]*x509.Certificate, len(raw))
+		for i, der := range raw {
+			cert, err := x509.ParseCertificate(der)
+			if err != nil {
+				return x509.CertificateInvalidError{Reason: x509.NotAuthorizedToSign, Detail: "a certificate that does not parse"}
+			}
+			certs[i] = cert
+		}
+		opts := x509.VerifyOptions{Roots: pool, Intermediates: x509.NewCertPool()}
+		for _, cert := range certs[1:] {
+			opts.Intermediates.AddCert(cert)
+		}
+		if full {
+			opts.DNSName = host
+		}
+		_, err := certs[0].Verify(opts)
+		return err
+	}
+}
+
+// Open takes the address of the old site's Postgres, whole, as Railway
+// shows it: postgresql://user:password@host:port/database, and the CA file
+// its certificate must chain to. Nothing is read from the environment in
+// their place. Beyond this machine the connection is made over TLS with
+// the certificate checked against the CA file (sslmode verify-ca, or
+// verify-full when the address asks), or not at all, and the password is
+// answered only to SCRAM. On this machine the CA file may be left out.
+// Open connects to nothing.
+func Open(text, caFile string) (*Postgres, error) {
+	a, err := parse(text)
+	if err != nil {
+		return nil, err
+	}
+	if !a.local && caFile == "" {
+		return nil, said("beyond this machine the old site's Postgres is read only with its certificate checked: give the CA file its certificate chains to (labd import check certificate shows the chain)")
+	}
+	var pool *x509.CertPool
+	if caFile != "" {
+		if a.mode == "disable" || a.mode == "allow" {
+			return nil, sayf("a CA file was given and the address turns TLS off (sslmode=%s)", a.mode)
+		}
+		if pool, err = authorities(caFile); err != nil {
+			return nil, err
+		}
 	}
 	for _, pair := range os.Environ() {
 		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "PG") {
 			os.Unsetenv(name)
 		}
 	}
+	u := *a.u
+	if pool != nil {
+		// TLS that is not given up; the check of who answers is ours, below.
+		query := u.Query()
+		query.Set("sslmode", "require")
+		u.RawQuery = query.Encode()
+	}
 	cfg, err := pgx.ParseConfig(u.String())
 	if err != nil {
-		return nil, notOne
+		return nil, sayf("that is not a Postgres address: one reads %s", shape)
 	}
-	if !local {
+	if pool != nil {
+		if cfg.TLSConfig == nil {
+			return nil, said("the address turns TLS off: with a CA file the old site's Postgres is read over TLS only")
+		}
+		cfg.TLSConfig.InsecureSkipVerify = true
+		cfg.TLSConfig.VerifyPeerCertificate = verifyCA(pool, a.u.Hostname(), a.mode == "verify-full")
+		cfg.Fallbacks = nil
+	}
+	if !a.local {
 		// The modes that give none were refused above; this holds whatever the client makes of the rest.
 		if cfg.TLSConfig == nil {
 			return nil, sayf("the address turns TLS off: beyond this machine the old site's Postgres is read over TLS only")
@@ -126,14 +229,59 @@ func Open(address string) (*Postgres, error) {
 			}
 		}
 		cfg.Fallbacks = overTLS
-		// TLS here may not check who answers (sslmode prefer and require do
-		// not), so the password goes only into SCRAM, which never shows it.
+		// The password goes only into SCRAM, which never shows it, even to
+		// a server the CA file vouches for.
 		cfg.RequireAuth = "scram-sha-256"
 	}
 	cfg.ConnectTimeout = 20 * time.Second
 	db := stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(1)
 	return &Postgres{db: db, cfg: cfg}, nil
+}
+
+// Chain is the certificate chain the old site's Postgres shows, leaf
+// first, taken with no check of it and nothing sent past the request for
+// TLS: neither the user nor the password. It is for looking at before the
+// CA file is trusted.
+func Chain(ctx context.Context, text string) ([]*x509.Certificate, error) {
+	a, err := parse(text)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", a.hostPort())
+	if err != nil {
+		return nil, plain(err)
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+	// SSLRequest: length 8, code 80877103.
+	if _, err := conn.Write([]byte{0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f}); err != nil {
+		return nil, said("no connection could be made to the old site's Postgres")
+	}
+	answer := make([]byte, 1)
+	if _, err := io.ReadFull(conn, answer); err != nil {
+		return nil, said("the old site's Postgres did not answer the request for TLS")
+	}
+	if answer[0] != 'S' {
+		return nil, said("the old site's Postgres does not speak TLS")
+	}
+	client := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: a.u.Hostname(), MinVersion: tls.VersionTLS12})
+	if err := client.HandshakeContext(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+			return nil, said("the old site's Postgres did not answer in time")
+		}
+		return nil, said("TLS with the old site's Postgres failed")
+	}
+	certs := client.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil, said("the old site's Postgres showed no certificate")
+	}
+	return certs, nil
 }
 
 func (p *Postgres) Close() error { return p.db.Close() }

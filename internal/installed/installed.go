@@ -70,11 +70,34 @@ type MacExpect struct {
 	BootBinSHA256 string `json:"boot_bin_sha256"` // "" makes the verdict INCOMPLETE
 }
 
+// Approver is one of who approved a manifest: an account id in a manifest
+// frozen from 2026-11-16, a handle in one frozen before, which is kept as it
+// was written.
+type Approver struct {
+	AccountID int64
+	Handle    string
+}
+
+func (a Approver) MarshalJSON() ([]byte, error) {
+	if a.Handle != "" {
+		return json.Marshal(a.Handle)
+	}
+	return json.Marshal(a.AccountID)
+}
+
+func (a *Approver) UnmarshalJSON(b []byte) error {
+	*a = Approver{}
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &a.Handle)
+	}
+	return json.Unmarshal(b, &a.AccountID)
+}
+
 type Manifest struct {
 	Schema     string     `json:"schema"`
 	Release    string     `json:"release"`
 	Created    string     `json:"created,omitempty"`
-	ApprovedBy []string   `json:"approved_by,omitempty"`
+	ApprovedBy []Approver `json:"approved_by,omitempty"`
 	Artifacts  []Artifact `json:"artifacts"`
 	Kernel     struct {
 		Release               string   `json:"release"`
@@ -176,10 +199,15 @@ func (m *Manifest) Validate(payload []byte) error {
 	if err := PayloadName(m.Kernel.PayloadManifest); err != nil {
 		return err
 	}
+	named := map[string]bool{}
 	for _, a := range m.Artifacts {
 		if a.Name == "" || len(a.SHA256) != 64 || a.Version == "" || len(a.MtreeSHA256) != 64 {
 			return fmt.Errorf("artifact %q needs name, sha256, version and mtree_sha256", a.Name)
 		}
+		if named[a.Name] {
+			return fmt.Errorf("artifact %q is named twice: a Release has one version of each package", a.Name)
+		}
+		named[a.Name] = true
 	}
 	sum := sha256.Sum256(payload)
 	if hex.EncodeToString(sum[:]) != m.Kernel.PayloadManifestSHA256 {

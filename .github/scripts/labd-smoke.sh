@@ -133,11 +133,14 @@ inv=$(c -X POST "${FWD[@]}" "${AUTH[@]}" -H "Origin: https://$HOST" -d '{"name":
 ENR=$(field token <<<"$inv")
 mask "$ENR"
 cmd=$(field join_command <<<"$inv")
-grep -qF "U='$PUB'" <<<"$cmd" || fail "the join line's URL"
-grep -qF -- '-H @-' <<<"$cmd" || fail "the join line's header on stdin"
-grep -qF -- '--token-stdin' <<<"$cmd" || fail "the join line's token on stdin"
+[ "$cmd" = " curl -fsSL $PUB/join | LAB_JOIN=$ENR bash" ] || fail "the join line"
+join=$(c "${FWD[@]}" "$B/join")
+grep -qF "u='$PUB'" <<<"$join" || fail "the join script's URL"
+grep -qF -- '-H @-' <<<"$join" || fail "the join script's header on stdin"
+grep -qF -- '--token-stdin' <<<"$join" || fail "the join script's token on stdin"
 want=$(sha256 <"$BIN/lab-agent-linux-arm64")
-grep -qF "echo '$want  '" <<<"$cmd" || fail "the join line's lab-agent sha256"
+grep -qF "echo '$want  '" <<<"$join" || fail "the join script's lab-agent sha256"
+head_of "${FWD[@]}" "$B/join" | grep -qix 'cache-control: no-store' || fail "the join script may be kept"
 got=$(printf 'Authorization: Bearer %s\n' "$ENR" | c "${FWD[@]}" -H @- "$B/api/join/lab-agent" | sha256)
 [ "$got" = "$want" ] || fail "the downloaded lab-agent"
 terms=$(printf 'Authorization: Bearer %s\n' "$ENR" | c "${FWD[@]}" -H @- "$B/api/join/terms")

@@ -40,10 +40,19 @@ case "$me" in
   dpkg) grep -qx "$2" "$STUB_STATE/packages" 2>/dev/null ;;
   apt-get) for p in "$@"; do echo "$p" >> "$STUB_STATE/packages"; done ;;
   systemctl)
-    case "$1" in
-      is-active) [[ -f $STUB_STATE/started ]] ;;
-      restart) touch "$STUB_STATE/started" ;;
+    # As systemd's: is-active of several units passes when any one is active.
+    verb="$1"
+    shift
+    [[ ${1:-} != --quiet ]] || shift
+    case "$verb" in
+      is-active) for u in "$@"; do [[ ! -f $STUB_STATE/active.$u ]] || exit 0; done; exit 3 ;;
+      reload|reload-or-restart|restart)
+        for u in "$@"; do
+          [[ ! -f $STUB_STATE/fails.$verb.$u ]] || { echo "Job for $u.service failed because the control process exited with error code." >&2; exit 1; }
+          touch "$STUB_STATE/active.$u"
+        done ;;
     esac ;;
+  sshd) [[ ! -f $STUB_STATE/sshd.refuses ]] || { echo "/etc/ssh/sshd_config line 3: Bad configuration option: Nonsense" >&2; exit 255; } ;;
   htpasswd) cat > /dev/null; echo "mini:\$2y\$05\$made-up" > "$4" ;;
 esac
 `
@@ -68,7 +77,13 @@ func newGuest(t *testing.T) *guest {
 	for _, name := range []string{"dpkg", "apt-get", "systemctl", "htpasswd", "sshd", "useradd"} {
 		write(t, filepath.Join(base, "stubs", name), guestStubs, 0o755)
 	}
-	write(t, g.path("etc/ssh/ssh_host_ed25519_key.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestGuestGuestGuestGuestGuestGuestGuestGuestG root@lab-backup\n", 0o644)
+	// Debian makes a host key of each kind; Litestream on the mini pins the ed25519 one.
+	os.MkdirAll(g.path("etc/ssh"), 0o755)
+	for _, kind := range []string{"ed25519", "ecdsa"} {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", kind, "-N", "", "-C", "root@lab-backup", "-f", g.path("etc/ssh/ssh_host_"+kind+"_key")).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen: %v\n%s", err, out)
+		}
+	}
 
 	// The two pins, as GitHub serves them: restic as .bz2, rest-server in a .tar.gz.
 	served := filepath.Join(base, "served")
@@ -210,7 +225,7 @@ func TestTheGuestsSetUp(t *testing.T) {
 	if info, err := os.Stat(g.path("root/for-the-mini")); err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("the folder for the mini: %v", info.Mode())
 	}
-	if got := read(t, g.path("root/for-the-mini/host-key")); got != "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGuestGuestGuestGuestGuestGuestGuestGuestGuestG\n" {
+	if got := read(t, g.path("root/for-the-mini/host-key")); !strings.HasPrefix(got, "ssh-ed25519 ") || got != strings.Join(strings.Fields(read(t, g.path("etc/ssh/ssh_host_ed25519_key.pub")))[:2], " ")+"\n" {
 		t.Errorf("the host key for the mini is %q", got)
 	}
 	minis, guests := read(t, g.path("root/for-the-mini/restic-password")), read(t, g.path("etc/lab-backup/restic-password"))
@@ -238,7 +253,7 @@ func TestTheGuestsSetUp(t *testing.T) {
 		"restic key add --new-password-file " + g.path("root/for-the-mini/restic-password") + " --user mini --host lab-mini [repository=" + repository,
 		"htpasswd -B -i -c ",
 		"sshd -t",
-		"systemctl reload ssh",
+		"systemctl reload-or-restart ssh",
 		"systemctl enable --quiet lab-backup-rest.service lab-backup-prune.timer lab-backup-mirror.timer lab-backup-trim.timer",
 	} {
 		if !strings.Contains(g.calls(), want) {
@@ -267,6 +282,92 @@ func TestTheGuestsSetUp(t *testing.T) {
 	m.ok("setup", "--release-key", k.signers, "--backup-guest", "192.168.0.186", "--backup-keys", carried)
 	if !m.daemonLoaded(litestreamLabel) {
 		t.Error("with the guest's folder the mini did not start Litestream")
+	}
+}
+
+// On the first real guest (Debian 13, OpenSSH 10.0) reloading ssh failed,
+// and the set-up stopped there with rest-server never started.
+func TestTheGuestStartsItsBackupsWhateverSSHDoes(t *testing.T) {
+	units := []string{"lab-backup-rest.service", "lab-backup-prune.timer", "lab-backup-mirror.timer", "lab-backup-trim.timer"}
+	started := func(g *guest) {
+		t.Helper()
+		calls := g.calls()
+		if !strings.Contains(calls, "systemctl enable --quiet "+strings.Join(units, " ")) {
+			t.Errorf("rest-server and the timers were not enabled:\n%s", calls)
+		}
+		for _, u := range units {
+			if !exists(filepath.Join(g.state, "active."+u)) {
+				t.Errorf("%s was not started:\n%s", u, calls)
+			}
+		}
+	}
+
+	// Reload fails, restart works: the set-up goes on.
+	g := newGuest(t)
+	write(t, filepath.Join(g.state, "fails.reload.ssh"), "", 0o644)
+	write(t, filepath.Join(g.state, "fails.reload-or-restart.ssh"), "", 0o644)
+	g.ok("setup")
+	started(g)
+	if !strings.Contains(g.calls(), "systemctl restart ssh") {
+		t.Errorf("a failed reload of ssh was not followed by a restart:\n%s", g.calls())
+	}
+
+	// Neither works: the backups are started all the same, and the set-up fails saying so.
+	g = newGuest(t)
+	for _, verb := range []string{"reload", "reload-or-restart", "restart"} {
+		write(t, filepath.Join(g.state, "fails."+verb+".ssh"), "", 0o644)
+	}
+	out, code := g.run("setup")
+	started(g)
+	if code == 0 || !strings.Contains(out, "setup: ssh did not take "+g.path("etc/ssh/sshd_config.d/lab-backup.conf")) || !strings.Contains(out, "rest-server and the three nightly timers are started") {
+		t.Errorf("ssh that neither reloads nor restarts, exit %d:\n%s", code, out)
+	}
+
+	// sshd refuses its configuration: said plainly, before ssh is touched, after the backups start.
+	g = newGuest(t)
+	g.ok("setup")
+	os.Remove(g.path("etc/ssh/sshd_config.d/lab-backup.conf"))
+	write(t, filepath.Join(g.state, "sshd.refuses"), "", 0o644)
+	before := g.calls()
+	out, code = g.run("setup")
+	if after := strings.TrimPrefix(g.calls(), before); code == 0 || !strings.Contains(out, "setup: sshd does not take its configuration") || exists(g.path("etc/ssh/sshd_config.d/lab-backup.conf")) || strings.Contains(after, "systemctl reload") || strings.Contains(after, "systemctl restart ssh") {
+		t.Errorf("a configuration sshd refuses, exit %d:\n%s\n%s", code, out, after)
+	}
+	os.Remove(filepath.Join(g.state, "sshd.refuses"))
+
+	// A run after one that stopped early starts whatever is down, though nothing else changed.
+	g = newGuest(t)
+	g.ok("setup")
+	os.Remove(filepath.Join(g.state, "active.lab-backup-rest.service"))
+	out = g.ok("setup")
+	if !strings.Contains(out, "start what is not running: lab-backup-rest.service\n") || !exists(filepath.Join(g.state, "active.lab-backup-rest.service")) {
+		t.Errorf("rest-server down and the timers up, a second run:\n%s", out)
+	}
+}
+
+// Litestream's SSH client takes only the key it pins, and asks for ECDSA
+// before ed25519: the guest's SSH server offers the ed25519 key alone.
+func TestTheGuestOffersOnlyTheHostKeyTheMiniPins(t *testing.T) {
+	g := newGuest(t)
+	g.ok("setup")
+	conf := read(t, g.path("etc/ssh/sshd_config.d/lab-backup.conf"))
+	key, match := strings.Index(conf, "\nHostKey /etc/ssh/ssh_host_ed25519_key\n"), strings.Index(conf, "\nMatch User ")
+	if key < 0 || match < 0 || key > match || strings.Count(conf, "HostKey ") != 1 {
+		t.Errorf("lab-backup.conf does not name the ed25519 host key alone, before its Match block:\n%s", conf)
+	}
+	public, err := exec.Command("ssh-keygen", "-y", "-f", g.path("etc/ssh/ssh_host_ed25519_key")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := read(t, g.path("root/for-the-mini/host-key")), strings.Join(strings.Fields(string(public))[:2], " ")+"\n"; got != want {
+		t.Errorf("the mini is given %q, and the server offers %q", got, want)
+	}
+
+	// A key of another kind where the ed25519 one should be is not given to the mini.
+	g = newGuest(t)
+	write(t, g.path("etc/ssh/ssh_host_ed25519_key"), read(t, g.path("etc/ssh/ssh_host_ecdsa_key")), 0o600)
+	if out, code := g.run("setup"); code == 0 || !strings.Contains(out, "is not an ed25519 key") || exists(g.path("root/for-the-mini/host-key")) {
+		t.Errorf("an ECDSA key in the ed25519 key's place, exit %d:\n%s", code, out)
 	}
 }
 

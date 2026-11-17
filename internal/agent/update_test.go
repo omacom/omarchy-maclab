@@ -274,6 +274,15 @@ func TestALabOwnedMacUpdatesWhenTheLabSaysSoAndRestartsOnceTheLabHeard(t *testin
 		t.Errorf("an update during a job: %v", err)
 	}
 	m.unchanged(t, "an update during a job")
+
+	// Nor while the lab's clean-up runs, which labd may have stopped waiting for.
+	m = newUpdatingMac(t, l.URL, k.Public)
+	a = New(m.cfg, m.sim, log.New(io.Discard, "", 0))
+	a.running["c3"] = runningCmd{c: api.Command{ID: "c3", Kind: api.CmdCleanup}}
+	if _, _, err := a.exec(context.Background(), api.Command{ID: "c4", Kind: api.CmdAgentUpdate}); err == nil || !strings.Contains(err.Error(), "clean-up") {
+		t.Errorf("an update during the idle clean-up: %v", err)
+	}
+	m.unchanged(t, "an update during the idle clean-up")
 }
 
 func TestEachCheckinCarriesTheNumberOfTheAgentInstalled(t *testing.T) {

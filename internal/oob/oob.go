@@ -59,6 +59,10 @@ type Port struct {
 	// PlugCount goes up each time something is plugged in; it starts again
 	// when the mini restarts.
 	PlugCount int `json:"plug_count"`
+	// NoMac is a port connected on CC alone, with no USB2 or CIO and no
+	// USB-PD product id: a display or power, which the reset tool cannot
+	// reach and the lab leaves alone.
+	NoMac bool `json:"no_mac,omitempty"`
 	// Tool is the reset tool's answer on this port, when it was asked for.
 	Tool       string `json:"tool,omitempty"`
 	ToolFailed bool   `json:"tool_failed,omitempty"`

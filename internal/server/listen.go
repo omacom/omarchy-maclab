@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -169,4 +170,91 @@ func onTunnel(ctx context.Context) context.Context {
 func viaTunnel(r *http.Request) bool {
 	ok, _ := r.Context().Value(tunnelKey{}).(bool)
 	return ok
+}
+
+// bodyWait is how long labd waits for the next bytes of a request's body,
+// its first ones included; tests shorten it.
+var bodyWait = 30 * time.Second
+
+// bodyDeadlines gives every request with a body a read deadline before
+// anything reads it: bodyWait from now, and from each read again, so a body
+// that keeps coming, however long, is never cut. A body that stops, or that
+// nothing reads, is cut at the deadline, Go's own drain of an unread body
+// after the answer included: so nobody holds a connection open with a body
+// labd never asked for. A handler that wants its body sooner says so with
+// readBodyBy. Once the body has come whole the deadline is lifted, so a held
+// answer is not cut by a read the server makes after it.
+func bodyDeadlines(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil || r.Body == http.NoBody {
+			h.ServeHTTP(w, r)
+			return
+		}
+		c := &bodyClock{rc: http.NewResponseController(w)}
+		c.wait()
+		r.Body = timedBody{r.Body, c}
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyClockKey{}, c)))
+	})
+}
+
+type bodyClockKey struct{}
+
+// bodyClock keeps a request's read deadline.
+type bodyClock struct {
+	rc   *http.ResponseController
+	mu   sync.Mutex
+	by   time.Time // the handler's own deadline; zero for none
+	came bool      // the body has come whole
+}
+
+// wait sets the deadline for the next bytes.
+func (c *bodyClock) wait() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.came {
+		return
+	}
+	d := time.Now().Add(bodyWait)
+	if !c.by.IsZero() && c.by.Before(d) {
+		d = c.by
+	}
+	c.rc.SetReadDeadline(d)
+}
+
+func (c *bodyClock) whole() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.came = true
+	c.rc.SetReadDeadline(time.Time{})
+}
+
+// timedBody is a body read under its bodyClock.
+type timedBody struct {
+	io.ReadCloser
+	c *bodyClock
+}
+
+func (b timedBody) Read(p []byte) (int, error) {
+	b.c.wait()
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.c.whole()
+	}
+	return n, err
+}
+
+// readBodyBy has the body of the request whose context is ctx come whole by
+// t: no read waits past it. Time now ends a read waiting at once.
+func readBodyBy(w http.ResponseWriter, ctx context.Context, t time.Time) {
+	c, ok := ctx.Value(bodyClockKey{}).(*bodyClock)
+	if !ok {
+		http.NewResponseController(w).SetReadDeadline(t)
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.by = t
+	if !c.came {
+		c.rc.SetReadDeadline(t)
+	}
 }

@@ -22,9 +22,30 @@ import (
 func windowEndLab(t *testing.T, c labConfig) (*lab, *agent.FakeClock) {
 	t.Helper()
 	l, clock, _ := windowLab(t, c)
-	l.mustVolunteer("open", "--until", clock.Now().Add(2*time.Hour).Format("15:04"))
-	time.Sleep(time.Second) // check-ins carry it to labd
+	l.openUntil(clock.Now().Add(2 * time.Hour))
 	return l, clock
+}
+
+// openUntil opens the Mac to the lab until the minute of end, as the
+// Volunteer does on the Mac, and waits for a check-in to carry it to labd:
+// a clock moved on before then has labd learn of it late, as if it came
+// after the moment it named.
+func (l *lab) openUntil(end time.Time) {
+	l.t.Helper()
+	l.mustVolunteer("open", "--until", end.Format("15:04"))
+	end = end.Truncate(time.Minute)
+	v := l.s.dev(l.name)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		v.mu.Lock()
+		got := v.openUntilLocked()
+		v.mu.Unlock()
+		if got.Equal(end) {
+			return
+		}
+		if time.Now().After(deadline) {
+			l.t.Fatalf("labd's copy of the Mac's Open now ends at %v, want %v", got, end)
+		}
+	}
 }
 
 // endOpenNowSoon moves the Open now's end to the next whole minute at least
@@ -36,7 +57,7 @@ func (l *lab) endOpenNowSoon(clock *agent.FakeClock) time.Time {
 	if end.Sub(now) < 15*time.Second {
 		end = end.Add(time.Minute)
 	}
-	l.mustVolunteer("open", "--until", end.Format("15:04"))
+	l.openUntil(end)
 	return end
 }
 

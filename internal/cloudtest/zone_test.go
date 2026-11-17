@@ -55,6 +55,9 @@ func TestTheSettingsAreTheSpecsList(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, s := range e.Settings {
+		if s.Name == browserTTL {
+			continue
+		}
 		name := regexp.MustCompile(` \([^)]*\)$`).ReplaceAllString(s.Name, "")
 		state, ok := want[name]
 		if !ok {
@@ -73,6 +76,33 @@ func TestTheSettingsAreTheSpecsList(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("the spec's %q is not in edge.json", name)
 		}
+	}
+}
+
+const browserTTL = "Browser Cache TTL"
+
+// The browser keeps to labd's max-age: Cloudflare's default of four hours
+// would rewrite a lower one, max-age=0 on the public pages among them.
+func TestTheBrowserCacheTTLRespectsLabdsHeaders(t *testing.T) {
+	text := specText(t)
+	section := text[strings.Index(text, "### Edge settings"):]
+	section = section[:strings.Index(section, "### Cache")]
+	if !strings.Contains(section, "- **"+browserTTL+"**: Respect Existing Headers") {
+		t.Errorf("the spec's Edge settings does not say %s is Respect Existing Headers", browserTTL)
+	}
+	var found bool
+	for _, s := range readEdge(t).Settings {
+		if s.Name != browserTTL {
+			continue
+		}
+		found = true
+		if s.Path != "/zones/{zone}/settings/browser_cache_ttl" || s.State != "Respect Existing Headers" ||
+			fmt.Sprint(s.Body) != "map[value:0]" || fmt.Sprint(s.Accept) != "[0]" {
+			t.Errorf("%s is not set to 0 and checked for 0: %+v", browserTTL, s)
+		}
+	}
+	if !found {
+		t.Errorf("edge.json does not set %s", browserTTL)
 	}
 }
 
@@ -105,6 +135,10 @@ func TestTheRulesAreTheSpecs(t *testing.T) {
 	if x := skip[0]["expression"].(string); !strings.Contains(x, api) || !strings.Contains(x, onLab) {
 		t.Errorf("the skip rule is not on /api/* at the Lab address: %s", x)
 	}
+	// The Join command's script goes through as the Join command's API does.
+	if x := skip[0]["expression"].(string); !strings.Contains(x, `(`+api+` or http.request.uri.path eq "/join")`) {
+		t.Errorf("the skip rule is not on /join too: %s", x)
+	}
 
 	rate := rule(t, e, "http_ratelimit")
 	if len(rate) != 1 {
@@ -127,12 +161,13 @@ func TestTheRulesAreTheSpecs(t *testing.T) {
 	}
 
 	cache := rule(t, e, "http_request_cache_settings")
-	if len(cache) != 2 {
-		t.Fatalf("%d cache rules, want the public pages and /api/*", len(cache))
+	if len(cache) != 3 {
+		t.Fatalf("%d cache rules, want the public pages, /api/* and a Lab token or the session cookie", len(cache))
 	}
-	public, bypass := cache[0], cache[1]
+	public, bypass, guard := cache[0], cache[1], cache[2]
 	px := public["expression"].(string)
-	for _, want := range []string{onLab, `not http.cookie contains "lab_session="`, `"/terms"`, `"/privacy"`, `"/install"`} {
+	const token = `any(lower(http.request.headers.names[*])[*] eq "authorization")`
+	for _, want := range []string{onLab, `not http.cookie contains "lab_session="`, `not ` + token, `"/terms"`, `"/privacy"`, `"/install"`} {
 		if !strings.Contains(px, want) {
 			t.Errorf("the public pages' cache rule lacks %s", want)
 		}
@@ -160,6 +195,11 @@ func TestTheRulesAreTheSpecs(t *testing.T) {
 	}
 	if !strings.HasSuffix(bx, ` and (http.cookie contains "lab_session=" or not http.request.uri.path in {`+strings.Join(exports, " ")+`}))`) {
 		t.Errorf("the bypass does not cover an export asked for with the session cookie: %s", bx)
+	}
+	// Last, so it wins over both: whatever the path or the name, a request
+	// with a Lab token or the session cookie is never answered from the cache.
+	if x := guard["expression"]; x != `(`+token+` or http.cookie contains "lab_session=")` || guard["action_parameters"].(map[string]any)["cache"] != false {
+		t.Errorf("the last cache rule does not bypass cache for a Lab token or the session cookie: %v", guard)
 	}
 	// Never a forced edge lifetime, never "cache everything".
 	all, _ := json.Marshal(cache)
@@ -232,7 +272,7 @@ func drifts(t *testing.T) []drift {
 			case "AI Labyrinth":
 				f.bot["crawler_protection"] = "enabled"
 			default:
-				f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = opposite(s.State)
+				f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = unlike(s)
 			}
 		}})
 	}
@@ -242,13 +282,13 @@ func drifts(t *testing.T) []drift {
 	another := map[string]any{"id": "x", "action": "block", "expression": `(http.request.uri.path eq "/x")`, "enabled": true}
 	const custom, rate, cache, redirect = "http_request_firewall_custom", "http_ratelimit", "http_request_cache_settings", "http_request_dynamic_redirect"
 	out = append(out,
-		drift{"the skip rule on /api/*", func(f *fake) { delete(f.rules, custom) }},
-		drift{"the skip rule on /api/*", edit(custom, func(r []map[string]any) []map[string]any { return append(r, another) })},
-		drift{"the skip rule on /api/*", edit(custom, func(r []map[string]any) []map[string]any {
+		drift{"the skip rule on /api/* and /join", func(f *fake) { delete(f.rules, custom) }},
+		drift{"the skip rule on /api/* and /join", edit(custom, func(r []map[string]any) []map[string]any { return append(r, another) })},
+		drift{"the skip rule on /api/* and /join", edit(custom, func(r []map[string]any) []map[string]any {
 			r[0]["action_parameters"] = map[string]any{"phases": []any{"http_request_firewall_managed"}}
 			return r
 		})},
-		drift{"the skip rule on /api/*", edit(custom, func(r []map[string]any) []map[string]any { r[0]["enabled"] = false; return r })},
+		drift{"the skip rule on /api/* and /join", edit(custom, func(r []map[string]any) []map[string]any { r[0]["enabled"] = false; return r })},
 		drift{"the rate rule", func(f *fake) { delete(f.rules, rate) }},
 		drift{"the rate rule", edit(rate, func(r []map[string]any) []map[string]any {
 			r[0]["ratelimit"].(map[string]any)["requests_per_period"] = 3000
@@ -265,6 +305,11 @@ func drifts(t *testing.T) []drift {
 		drift{"the rate rule", edit(rate, func(r []map[string]any) []map[string]any { return append(r, another) })},
 		drift{"the cache rules", func(f *fake) { delete(f.rules, cache) }},
 		drift{"the cache rules", edit(cache, func(r []map[string]any) []map[string]any { return r[:1] })},
+		drift{"the cache rules", edit(cache, func(r []map[string]any) []map[string]any { return r[:2] })},
+		drift{"the cache rules", edit(cache, func(r []map[string]any) []map[string]any {
+			r[0]["expression"] = strings.Replace(r[0]["expression"].(string), ` and not any(lower(http.request.headers.names[*])[*] eq "authorization")`, "", 1)
+			return r
+		})},
 		drift{"the cache rules", edit(cache, func(r []map[string]any) []map[string]any {
 			r[0]["action_parameters"].(map[string]any)["edge_ttl"] = map[string]any{"mode": "override_origin", "default": 3600}
 			return r
@@ -382,7 +427,10 @@ func TestApplySetsAZoneWithNothingRightAndThenChangesNothing(t *testing.T) {
 	for _, s := range e.Settings {
 		method, body := s.Method, s.Body
 		if method == "" {
-			method, body = "PATCH", map[string]any{"value": s.State}
+			method = "PATCH"
+		}
+		if body == nil {
+			body = map[string]any{"value": s.State}
 		}
 		b, _ := json.Marshal(body)
 		var got bool

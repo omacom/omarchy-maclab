@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -142,7 +143,7 @@ func stubs(t *testing.T, text map[string]string) (dir, calls string) {
 func TestEveryDryRunSaysItsStepsAndSendsNothing(t *testing.T) {
 	dir, calls := stubs(t, nil)
 	env := []string{"PATH=" + dir + ":" + os.Getenv("PATH")}
-	byHand := map[string]int{"oob01-tool": 2, "oob02-bad-rid": 0, "oob03-two-at-once": 0, "oob04-sighting": 4, "oob05-hung": 2, "oob06-auto-unlock": 0, "oob07-restart": 2, "oob08-refusals": 3}
+	byHand := map[string]int{"oob01-tool": 2, "oob02-bad-rid": 0, "oob03-two-at-once": 0, "oob04-sighting": 4, "oob05-hung": 2, "oob06-auto-unlock": 0, "oob07-restart": 3, "oob08-refusals": 3}
 	for _, name := range tests {
 		for _, option := range [][]string{nil, {"--dry-run"}} {
 			out, code := run(t, env, script(t, name), option...)
@@ -182,6 +183,8 @@ func TestEveryDryRunSaysItsStepsAndSendsNothing(t *testing.T) {
 func TestTheEightRunAgainstAMadeUpMini(t *testing.T) {
 	t.Parallel()
 	bins(t)
+	// Records of real runs are committed there; a local run adds none.
+	kept, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*out-of-band*"))
 	for name, wants := range map[string][]string{
 		"oob01-tool": {"m1-pro is sighted on the right port by the name it shows", "left port, reset 3 of 3: Hard reset sent to m1-pro through the left port",
 			"middle port, power-on from shutdown by a Hard reset", "middle port: m2-max kept its boot id through all four"},
@@ -193,7 +196,7 @@ func TestTheEightRunAgainstAMadeUpMini(t *testing.T) {
 			"the hung Mac: m1-pro back by a Hard reset", "it tells an unplug from a restart", "the product id was read on the powered-off Mac and on the hung Mac"},
 		"oob05-hung":        {"hung: 3 s later m1-pro is still on boot", "on the hung Mac the mini reads: product id 29448", "brought back from the mini by a Hard reset through the right port"},
 		"oob06-auto-unlock": {"reset 1 of 3, a Proving reset through the middle port", "reset 3 of 3, a Hard reset through the middle port: back on a new boot and ready, unattended", "the three returns, in seconds:"},
-		"oob07-restart": {"before: m2-max is not sighted: it shows the lab no name", "after an Unlock: m1-pro is sighted again on the right port", "after a planned restart: m1-pro is sighted again on the right port",
+		"oob07-restart": {"before: m2-max is not sighted: it shows the lab no name", "after labd restarted alone: m1-pro kept its Sighting on the right port, since ", "after an Unlock: m1-pro kept its Sighting on the right port, since ", "after a planned restart: m1-pro kept its Sighting on the right port, since ",
 			"after a planned restart: the lab says the controller is healthy"},
 		"oob08-refusals": {"a Mac with no Sighting: refused, and m1-pro kept its boot id: lab: no Hard reset was sent: the lab has no Sighting of m1-pro",
 			"the port changed between the lab's look and the reset: refused by the controller under its lock", "The Sighting of m1-pro is dropped",
@@ -221,25 +224,26 @@ func TestTheEightRunAgainstAMadeUpMini(t *testing.T) {
 		})
 	}
 	t.Cleanup(func() {
-		if left, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*out-of-band*")); len(left) != 0 {
+		all, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*out-of-band*"))
+		if left := slices.DeleteFunc(all, func(f string) bool { return slices.Contains(kept, f) }); len(left) != 0 {
 			t.Errorf("a local run left a record in docs/acceptance: %v", left)
 		}
 	})
 }
 
-// If a reset moves the plug count and the connection id as a pull does, the
-// lab's rule cannot tell them apart: test 4 stops, which is the plan's
-// "one more slice".
-func TestOOB04StopsWhenAResetLooksLikeAPull(t *testing.T) {
+// A reset that moves the plug count and the connection id as a pull does,
+// as the real mini counts a restart: the lab tells the two apart by the
+// Mac's boot id, and test 4 passes saying so.
+func TestOOB04PassesWhenARestartMovesThePlugCount(t *testing.T) {
 	t.Parallel()
 	out, code, record, results := local(t, []string{"OOB_FAKE_MINI=--reset-counts-as-plug"}, "oob04-sighting")
-	if code != 3 || !strings.HasPrefix(results, "04 stopped ") {
+	if code != 0 || !strings.HasPrefix(results, "04 pass ") {
 		t.Fatalf("exit %d, results %q\n%s", code, results, out)
 	}
 	if m := regexp.MustCompile(`across a Hard reset: plug count (\d+) -> (\d+), connection id changed`).FindStringSubmatch(record); m == nil || m[1] == m[2] {
 		t.Errorf("the record does not say the reset moved the plug count:\n%s", record)
 	}
-	for _, want := range []string{"STOPPED: neither the plug count nor the connection id tells an unplug from a restart", "a controller that watches the ports continuously", "Result: stopped"} {
+	for _, want := range []string{"the plug count moved through a restart too, and with the pull: the lab tells an unplug from the Mac's own restart by its boot id", "Result: pass"} {
 		if !strings.Contains(record, want) {
 			t.Errorf("the record lacks %q:\n%s", want, record)
 		}

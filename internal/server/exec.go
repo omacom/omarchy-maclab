@@ -39,6 +39,11 @@ func (s *Server) hExec(w http.ResponseWriter, r *http.Request) {
 	if err == nil && !v.alive() {
 		err = refuse(409, "%s is offline, and lab exec reaches a Mac only through lab-agent. %s", name, api.NoSerialConsole)
 	}
+	if err == nil {
+		v.mu.Lock()
+		err = v.updatingRefusalLocked("this command was not sent")
+		v.mu.Unlock()
+	}
 	// The request is a session of the Lease before the Lease is asked for
 	// again: one that ended since the fence passed either shows here or
 	// cuts the session.
@@ -71,6 +76,8 @@ func (s *Server) hExec(w http.ResponseWriter, r *http.Request) {
 		switch l := v.liveLeaseLocked(); {
 		case r.Context().Err() != nil:
 			return errNotSent{errors.New("its caller left before it was sent")}
+		case v.updating != nil:
+			return errNotSent{v.updatingRefusalLocked("this command was not sent")}
 		case l != nil && leaseIsOf(l, p) && l.Extended:
 			return errNotSent{refuse(409, "%s, so this command was not sent", extendedOnly(l, name, fenceExec.what))}
 		case l == nil || !leaseIsOf(l, p) || session.Context().Err() != nil:

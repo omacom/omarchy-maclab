@@ -23,7 +23,7 @@ ME="$(basename "$0")"
 usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 names=(- oob01-tool oob02-bad-rid oob03-two-at-once oob04-sighting oob05-hung oob06-auto-unlock oob07-restart oob08-refusals)
-titles=(- "the pinned --rid tool on all three ports" "a bad RID refused twice" "two resets at the same moment" "Sighting" "a truly hung M1 Pro brought back" "the M2 Max with auto-unlock, three Hard resets" "Sightings rebuild after an Unlock and a planned restart" "refusals: no Sighting, the controller stopped")
+titles=(- "the pinned --rid tool on all three ports" "a bad RID refused twice" "two resets at the same moment" "Sighting" "a truly hung M1 Pro brought back" "the M2 Max with auto-unlock, three Hard resets" "Sightings kept across restarts of labd and of the mini" "refusals: no Sighting, the controller stopped")
 only="1,2,3,4,5,6,7,8"
 results=0
 records=""

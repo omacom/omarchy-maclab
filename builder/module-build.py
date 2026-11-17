@@ -25,7 +25,7 @@ def file_identity(root):
     return files
 
 
-def package(source, obj, io, gitdir):
+def package(source, obj, config, io, gitdir):
     git = ["git", "--git-dir=" + str(gitdir), "--work-tree=" + str(source)]
     commit = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True).strip()
     if commit != os.environ["SHA"]:
@@ -81,7 +81,7 @@ def package(source, obj, io, gitdir):
         )
         shutil.copyfile(obj / ".config", build / ".config")
         shutil.copyfile(obj / "vmlinux", build / "vmlinux")
-        shutil.copyfile(io / "config", root / "input.config")
+        shutil.copyfile(config, root / "input.config")
         files = file_identity(root)
         identity = {
             "schema": "maclab.module-build/1",

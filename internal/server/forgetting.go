@@ -6,12 +6,12 @@ package server
 // person had ends as when a Maintainer ends it (sessions, Lab tokens,
 // Leases, Mac sign-ins, the Macs they lend, what was on the way to lending),
 // their record goes, and everything else labd keeps loses their handle and
-// account id: both databases, labd's copies of Audit logs, the frozen
-// Releases' notes, the caller log, and the lines for Signal, sent or not.
-// Exec record lines keep the handle until they are 12 months old. A Blocked
-// person stays Blocked: the account id, the date and who blocked are kept.
-// No list of forgettings is kept; the lines for one name only who carried
-// it out.
+// account id: both databases, labd's copies of Audit logs, what the frozen
+// Releases keep but their pinned files, the caller log, and the lines for
+// Signal, sent or not. Exec record lines keep the handle until they are 12
+// months old. A Blocked person stays Blocked: the account id, the date and
+// who blocked are kept. No list of forgettings is kept; the lines for one
+// name only who carried it out.
 
 import (
 	"bytes"
@@ -319,7 +319,11 @@ func (s *Server) forgetPerson(r *http.Request, k knownPerson) error {
 	if err := mayForget(&by, k); err != nil {
 		return err
 	}
-	earlier, err := s.store.earlierHandles(k.AccountID, k.Handle)
+	audited, err := auditedHandles(filepath.Join(s.cfg.DataDir, "audit"), k.AccountID)
+	if err != nil {
+		return fmt.Errorf("the Audit log copies: %w", err)
+	}
+	earlier, err := s.store.earlierHandles(k.AccountID, k.Handle, audited...)
 	if err != nil {
 		return fmt.Errorf("labd.db: %w", err)
 	}
@@ -353,15 +357,20 @@ func (s *Server) forgetHeld(by Person, k knownPerson, f forgetting) error {
 		return refuse(http.StatusInternalServerError, "Nothing is forgotten yet: a Mac they lend could not leave the lab (%v). Forget again.", err)
 	}
 
-	if err := s.forgetInJobs(f); err != nil {
+	// An Installed run being sealed publishes its record before or after.
+	s.forgetting.Lock()
+	defer s.forgetting.Unlock()
+	end, err := s.forgetInJobs(f)
+	if err != nil {
 		return fmt.Errorf("the jobs: %w", err)
 	}
+	defer end()
 	// The files before the record: one that cannot be swept fails the
 	// forgetting while the person is still there to forget again.
 	if err := s.forgetInFilesOf(f); err != nil {
 		return err
 	}
-	if err := s.reports.Forget(k.AccountID, k.Handle); err != nil {
+	if err := s.reports.Forget(f.id, f.handles...); err != nil {
 		return fmt.Errorf("reports.db: %w", err)
 	}
 	if err := s.store.forget(f); err != nil {
@@ -376,19 +385,56 @@ func (s *Server) forgetHeld(by Person, k knownPerson, f forgetting) error {
 }
 
 // forgetInFilesOf takes the person off the files labd keeps beside its
-// databases: its copies of Audit logs, the frozen Releases' notes and the
-// caller log.
+// databases: its copies of Audit logs, what the frozen Releases keep but
+// their pinned files, and the caller log.
 func (s *Server) forgetInFilesOf(f forgetting) error {
-	if err := forgetInFiles(filepath.Join(s.cfg.DataDir, "audit"), f); err != nil {
+	if err := s.forgetInAudit(f); err != nil {
 		return fmt.Errorf("the Audit log copies: %w", err)
 	}
-	if err := forgetInFrozen(filepath.Join(s.cfg.DataDir, "frozen"), f); err != nil {
+	if err := forgetInFrozen(filepath.Join(s.cfg.DataDir, "frozen"), filepath.Join(s.cfg.DataDir, "jobs"), f); err != nil {
 		return fmt.Errorf("the frozen Releases: %w", err)
 	}
 	if err := s.callers.forget(f); err != nil {
 		return fmt.Errorf("the caller log: %w", err)
 	}
 	return nil
+}
+
+// forgetInAudit takes the person off labd's copies of Audit logs while no
+// Mac's entries are being added, a retired Mac's and one Joined during the
+// sweep included: an entry added between the sweep's read and its write
+// would be lost, and one matched to the person before the forgetting and
+// added after it would keep their handle.
+func (s *Server) forgetInAudit(f forgetting) error {
+	s.auditWrite.Lock()
+	defer s.auditWrite.Unlock()
+	return forgetInFiles(filepath.Join(s.cfg.DataDir, "audit"), f)
+}
+
+// auditedHandles are the handles labd's copies of Audit logs keep beside
+// this account id.
+func auditedHandles(dir string, id int64) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			var e api.AuditEntry
+			if json.Unmarshal([]byte(line), &e) == nil && e.AccountID == id && id != 0 && e.Maintainer != "" {
+				out = append(out, e.Maintainer)
+			}
+		}
+		return nil
+	})
+	return out, err
 }
 
 // forgetInFleet takes the person off the Macs enrolled now, as labd holds
@@ -410,62 +456,88 @@ func (s *Server) forgetInFleet(f forgetting) {
 	}
 }
 
-// jobsInFlight are the jobs labd holds in memory while they run: the copies
-// saved through updateJob, and the forgettings carried out since each job
-// was stored, which every later save of any copy of it applies again. A job
-// leaves both once it is saved done. Under jobMu.
+// jobsInFlight are the forgettings carried out since each job was stored,
+// which every later save of any copy of it applies again: a run's own copy
+// too, which only the run's goroutine writes, at its next save (a forgetting
+// that rewrote it in place would race the run's reads). Those stay for as
+// long as labd runs, on a finished job too: a copy read before the
+// forgetting, a cancel's or a publishing's, can be saved at any time after
+// it, and a restart leaves no such copy. under are the forgettings under
+// way: every whole job saved meanwhile, done or not, loses their person too,
+// as one read before the forgetting swept the jobs table would bring them
+// back. Under jobMu.
 type jobsInFlight struct {
-	held   map[string]map[*api.Job]bool
 	forgot map[string][]forgetting
+	under  []*forgetting
 }
 
-// inFlightLocked is updateJob's, under jobMu, before j is saved.
-func (s *Server) inFlightLocked(j *api.Job) {
+// forgottenLocked takes off j the people forgotten since it was read: the
+// forgettings carried out since it was stored, and those under way. Under
+// jobMu, before j is saved.
+func (s *Server) forgottenLocked(j *api.Job) {
 	fl := &s.inFlight
 	for _, f := range fl.forgot[j.ID] {
 		f.job(j)
 	}
-	if j.State == api.JobDone {
-		delete(fl.held, j.ID)
-		delete(fl.forgot, j.ID)
-		return
+	for _, f := range fl.under {
+		f.job(j)
 	}
-	if fl.held == nil {
-		fl.held = map[string]map[*api.Job]bool{}
-	}
-	if fl.held[j.ID] == nil {
-		fl.held[j.ID] = map[*api.Job]bool{}
-	}
-	fl.held[j.ID][j] = true
 }
 
-// forgetInJobs takes the person off the jobs not done yet: the copies runs
-// hold now, and every copy saved from now on, which would otherwise write
-// them back whole.
-func (s *Server) forgetInJobs(f forgetting) error {
+// saveJobLocked saves a whole job read outside a run, say to set it aside
+// in lab gate, without the people forgotten since it was read. Under jobMu.
+func (s *Server) saveJobLocked(j *api.Job) error {
+	s.forgottenLocked(j)
+	return s.store.saveJob(j)
+}
+
+// forgetInJobs takes the person off the jobs not done yet and the finished
+// jobs that name them: every copy saved from now on, runs' own included,
+// which would otherwise write them back whole; and off every job
+// saved until end is called, once the forgetting is done with the jobs table
+// and the files.
+func (s *Server) forgetInJobs(f forgetting) (end func(), err error) {
 	jobMu.Lock()
 	defer jobMu.Unlock()
-	jobs, err := s.store.jobs("", -1, true)
+	jobs, err := s.store.jobs("", -1, false)
 	if err != nil {
-		return err
+		return func() {}, err
 	}
 	fl := &s.inFlight
 	if fl.forgot == nil {
 		fl.forgot = map[string][]forgetting{}
 	}
 	for _, j := range jobs {
-		fl.forgot[j.ID] = append(fl.forgot[j.ID], f)
-	}
-	for _, copies := range fl.held {
-		for j := range copies {
-			f.job(j)
+		if j.State != api.JobDone || f.names(j) {
+			fl.forgot[j.ID] = append(fl.forgot[j.ID], f)
 		}
 	}
-	return nil
+	under := &f
+	fl.under = append(fl.under, under)
+	return func() {
+		jobMu.Lock()
+		defer jobMu.Unlock()
+		fl.under = slices.DeleteFunc(fl.under, func(u *forgetting) bool { return u == under })
+	}, nil
 }
 
-// job takes the person off j, in place.
+// names is whether j names the person. It takes them off j to find out.
+func (f forgetting) names(j *api.Job) bool {
+	before, err := json.Marshal(j)
+	if err != nil {
+		return true
+	}
+	f.job(j)
+	after, err := json.Marshal(j)
+	return err != nil || !bytes.Equal(before, after)
+}
+
+// job takes the person off j, in place. An Installed run's result is left
+// alone: it names nobody, and the run writes it as it goes, outside jobMu.
 func (f forgetting) job(j *api.Job) {
+	installed := j.Result.Installed
+	j.Result.Installed = nil
+	defer func() { j.Result.Installed = installed }()
 	b, err := json.Marshal(j)
 	if err != nil {
 		return
@@ -510,6 +582,8 @@ func (st *store) forget(f forgetting) error {
 	}
 	exec(`DELETE FROM lab_tokens WHERE account_id = ?`, f.id)
 	exec(`DELETE FROM requests_to_lend WHERE account_id = ?`, f.id)
+	// A frozen manifest keeps its bytes; the lab stops showing them as its approver.
+	exec(`DELETE FROM release_approvals WHERE account_id = ?`, f.id)
 	exec(`DELETE FROM tokens WHERE token_hash IN (SELECT token_hash FROM join_commands WHERE volunteer_id = ?)`, f.id)
 	exec(`DELETE FROM join_commands WHERE volunteer_id = ?`, f.id)
 	// What others typed about them goes with the handle: a Block's reason.
@@ -652,9 +726,10 @@ func besideID(column string, has func(string) bool) string {
 }
 
 // earlierHandles are the handles other than this one that labd kept beside
-// the account id: what the person was called before a rename on GitHub. A
-// handle another person has today is theirs, and is left out.
-func (st *store) earlierHandles(id int64, handle string) ([]string, error) {
+// the account id, in its database and as kept (found elsewhere): what the
+// person was called before a rename on GitHub. A handle another person has
+// today is theirs, and is left out.
+func (st *store) earlierHandles(id int64, handle string, kept ...string) ([]string, error) {
 	tables, err := st.db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'people'`)
 	if err != nil {
 		return nil, err
@@ -705,7 +780,7 @@ func (st *store) earlierHandles(id int64, handle string) ([]string, error) {
 		found = append(found, names...)
 	}
 	var out []string
-	for _, name := range found {
+	for _, name := range append(found, kept...) {
 		name = strings.TrimPrefix(strings.TrimSpace(name), "@")
 		if name == "" || strings.EqualFold(name, handle) || slices.Contains(out, name) || strings.IndexFunc(name, func(r rune) bool { return r > 127 || !handleByte(byte(r)) }) >= 0 {
 			continue
@@ -789,16 +864,19 @@ func forgetInFiles(dir string, f forgetting) error {
 		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		return forgetInFile(path, func(line string) string { return f.stored(line) })
+		return forgetInFile(path, func(b []byte) ([]byte, bool) { return forgetInLines(b, f.stored) })
 	})
 }
 
-// forgetInFrozen takes the person off the frozen Releases' notes: the
-// comment lines of each pins file and the Promotion ledger. Every other
-// file there is pinned, or the copy of a job's evidence that a Promotion
-// checks byte for byte, and stays as it was: a handle in a manifest's
-// approved_by is the Release's own, frozen with it.
-func forgetInFrozen(dir string, f forgetting) error {
+// forgetInFrozen takes the person off what the frozen Releases keep: the
+// comment lines of each pins file, and every file no pins file names, an
+// Installed run's record and the Promotion ledger among them. A file a pins
+// file names stays as it was, so its pin still matches: a handle in a
+// manifest's approved_by is the Release's own, frozen with it. The frozen
+// copy of an Installed run's evidence is the job's own copy byte for byte,
+// which a Promotion checks: the job's copy under jobs is swept the same way
+// first, and the compared logs and comparisons in both stay as they were.
+func forgetInFrozen(dir, jobs string, f forgetting) error {
 	releases, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -810,43 +888,104 @@ func forgetInFrozen(dir string, f forgetting) error {
 		if !r.IsDir() {
 			continue
 		}
-		notes, err := os.ReadDir(filepath.Join(dir, r.Name()))
+		root := filepath.Join(dir, r.Name())
+		pinned, err := frozenPinned(root)
 		if err != nil {
 			return err
 		}
-		for _, n := range notes {
-			name := n.Name()
-			change := func(line string) string { return f.stored(line) }
-			switch {
-			case !n.Type().IsRegular():
-				continue
-			case strings.HasPrefix(name, "PINS."):
-				change = func(line string) string {
-					if !strings.HasPrefix(line, "#") {
-						return line
-					}
-					return f.words(line)
-				}
-			case name != "promotions.log":
-				continue
-			}
-			if err := forgetInFile(filepath.Join(dir, r.Name(), name), change); err != nil {
+		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !d.Type().IsRegular() {
 				return err
 			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			rel = filepath.ToSlash(rel)
+			switch {
+			case strings.HasPrefix(rel, "PINS."):
+				return forgetInFile(path, func(b []byte) ([]byte, bool) {
+					return forgetInLines(b, func(line string) string {
+						if !strings.HasPrefix(line, "#") {
+							return line
+						}
+						return f.words(line)
+					})
+				})
+			case pinned[rel]:
+				return nil
+			}
+			if parts := strings.Split(rel, "/"); len(parts) == 4 && parts[0] == "installed" {
+				if slices.Contains(comparedEvidence, parts[3]) {
+					return nil
+				}
+				own := filepath.Join(jobs, parts[2], "installed", parts[3])
+				if err := forgetInFile(own, f.document); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+			return forgetInFile(path, f.document)
+		})
+		if err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// forgetInFile passes each line of the file through change, and replaces
-// the file when one changed, keeping its mode and its time: a Release
-// first frozen before labd kept Releases is dated by its pins file.
-func forgetInFile(path string, change func(string) string) error {
+// frozenPinned is every file a pins file of the Release frozen in root names,
+// by its path in root.
+func frozenPinned(root string) (map[string]bool, error) {
+	names, err := filepath.Glob(filepath.Join(root, "PINS.*"))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, name := range names {
+		pins, err := readPins(name)
+		if err != nil {
+			return nil, err
+		}
+		for rel := range pins {
+			out[filepath.ToSlash(filepath.Clean(rel))] = true
+		}
+	}
+	return out, nil
+}
+
+// document is a file's bytes with the person taken out: a whole JSON
+// document by its keys, indented as it was, anything else a line at a time.
+func (f forgetting) document(b []byte) ([]byte, bool) {
+	t := bytes.TrimSpace(b)
+	if len(t) == 0 || (t[0] != '{' && t[0] != '[') || !json.Valid(t) {
+		return forgetInLines(b, f.stored)
+	}
+	out, changed := f.json(string(t))
+	if !changed {
+		return b, false
+	}
+	if lines := bytes.SplitN(t, []byte("\n"), 3); len(lines) > 1 {
+		indent := lines[1][:len(lines[1])-len(bytes.TrimLeft(lines[1], " \t"))]
+		var ib bytes.Buffer
+		if json.Indent(&ib, []byte(out), "", string(indent)) == nil {
+			out = ib.String()
+		}
+	}
+	if bytes.HasSuffix(b, []byte("\n")) {
+		out += "\n"
+	}
+	return []byte(out), true
+}
+
+// forgetInFile passes the file through change, and replaces it when it
+// changed, keeping its mode and its time: a Release first frozen before
+// labd kept Releases is dated by its pins file.
+func forgetInFile(path string, change func([]byte) ([]byte, bool)) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	out, changed := forgetInLines(b, change)
+	out, changed := change(b)
 	if !changed {
 		return nil
 	}

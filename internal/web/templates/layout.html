@@ -40,12 +40,17 @@
 {{template "main" .}}
 </main>
 <footer class="site-footer">
-<p>Published data: <a href="{{href "/data"}}">CC0</a>. Asahi hardware states: <a href="https://asahilinux.org/docs/platform/feature-support/overview/">Asahi Linux feature support</a>, CC BY 3.0. <a href="https://github.com/omacom/omarchy-maclab">Source</a>.</p>
+<p>Published data: <a href="{{href "/data"}}">CC0</a>. <a href="https://github.com/omacom/omarchy-maclab">Source</a>.</p>
 <p><a href="{{href "/terms"}}">Terms</a> · <a href="{{href "/privacy"}}">Privacy</a></p>
 <p class="dim">The Omarchy name and logo belong to the Omarchy project and are used with permission. JetBrains Mono is under the SIL Open Font License.</p>
 </footer>
 </body>
 </html>
 {{end}}
+
+{{define "copy-button"}}<button class="button button-small button-plain copy-button" type="button" aria-label="Copy {{.What}}" hidden>Copy</button>{{end}}
+{{define "copy"}}<span class="copyable"><code data-copy>{{.Text}}</code> {{template "copy-button" .}}</span>{{end}}
+{{define "copy-block"}}<div class="copyable copyable-block"><pre class="command"><span class="prompt" aria-hidden="true">$ </span><code data-copy{{with .ID}} id="{{.}}"{{end}}>{{.Text}}</code></pre> {{template "copy-button" .}}</div>{{end}}
+{{define "copy-title"}}<div class="copyable copyable-title"><h1 data-copy>{{.Text}}</h1> {{template "copy-button" .}}</div>{{end}}
 
 {{define "take"}}<form class="inline take" method="post" action="{{.Action}}"><input type="hidden" name="csrf_token" value="{{.CSRF}}">{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<button class="button button-danger button-small" type="submit" data-sentence="{{.Sentence}}">{{.Label}}</button></form>{{end}}

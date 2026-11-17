@@ -42,7 +42,6 @@ class AuroraSupportTest < ActionDispatch::IntegrationTest
     assert_select "tr.aurora-row[data-feature=aop]", 1
     # Chip generations nobody has verified yet are named, not guessed.
     assert_select "#untested-chips", /M1 Pro\/Max\/Ultra/
-    assert_select "#sources", /Asahi Linux documentation/
     assert_select "#sources a[href='https://github.com/omacom/linux']"
     assert_select "nav a[href='/aurora']", "Aurora"
   end
@@ -95,7 +94,7 @@ class AuroraSupportTest < ActionDispatch::IntegrationTest
     assert_equal "asahi", gpu.dig("expected", "aurora", "status")
     assert_equal "linux-asahi", gpu.dig("expected", "asahi", "status")
     assert_equal [ uploaded["report_url"] ], gpu["reports"]
-    assert_equal "CC-BY-3.0", body.dig("sources", "asahi", "license")
+    assert_nil body.dig("sources", "asahi", "license")
     assert_equal "https://github.com/omacom/linux", body.dig("sources", "aurora", "url")
     assert_not body["features"].any? { |feature| feature["layer"] == "omarchy" }
 

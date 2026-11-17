@@ -221,14 +221,13 @@ func (c ctxReader) Read(p []byte) (int, error) {
 // moving the connection's read deadline to now. The returned func, deferred
 // by the handler, stops that before the handler returns.
 func interruptReadsOnCancel(w http.ResponseWriter, ctx context.Context) (stop func()) {
-	rc := http.NewResponseController(w)
 	var mu sync.Mutex
 	over := false
 	cancel := context.AfterFunc(ctx, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if !over {
-			rc.SetReadDeadline(time.Now())
+			readBodyBy(w, ctx, time.Now())
 		}
 	})
 	return func() {

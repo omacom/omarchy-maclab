@@ -120,9 +120,14 @@ curl -sS -D - -o /dev/null "$site/healthz" | tr -d '\r' | grep -qix 'x-robots-ta
 [[ "$(ops -o /dev/null -w '%{http_code}' -X POST 'http://labd/open?m-team=1')" == 409 ]] || fail "labd opened with the wrong count of M team members"
 ops -X POST 'http://labd/open?m-team=0' | grep -q '^live 20' || fail "labd did not open"
 curl -sS -D - -o /dev/null "$site/healthz" | tr -d '\r' | grep -qi '^x-robots-tag:' && fail "an opened lab still says noindex"
-curl -fsS "$site/" | grep -qF 'omarchy-m-testing.org is now here' || fail "an opened lab's home page does not say the old site is now here"
-curl -fsS "$site/install" | grep -qF 'releases/latest/download' || fail "an opened lab's /install does not take the latest Lab release"
-curl -fsS "$site/install/lab" | grep -qF 'releases/latest/download' || fail "an opened lab's /install/lab does not take the latest Lab release"
+# Each page is saved, then read: under pipefail, curl | grep -q fails when
+# grep has its match and exits before curl's last write.
+curl -fsS -o "$t/home-open.html" "$site/"
+grep -qF 'omarchy-m-testing.org is now here' "$t/home-open.html" || fail "an opened lab's home page does not say the old site is now here"
+curl -fsS -o "$t/install-open.sh" "$site/install"
+grep -qF 'releases/latest/download' "$t/install-open.sh" || fail "an opened lab's /install does not take the latest Lab release"
+curl -fsS -o "$t/install-lab-open.sh" "$site/install/lab"
+grep -qF 'releases/latest/download' "$t/install-lab-open.sh" || fail "an opened lab's /install/lab does not take the latest Lab release"
 offline env SITE="$site" OMARCHY_M_TEST_RELEASES="file://$t/release" "$repo/release/smoke.sh"
 
 echo "local smoke ok: $tag installed from labd's /install with the key made here; uploaded, seen, refused the second time and deleted; lab installed from /install/lab; in Preview both install lines name $tag; opened from Preview, the same again"

@@ -720,9 +720,9 @@ func TestReportsJSONHasEveryReportAsUploadedUnderCC0(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &body); err != nil {
 		t.Fatal(err)
 	}
-	same(t, "the members", keysInOrder(t, text), []string{"license", "note", "generated_at", "catalogue_version", "reports"})
-	if at(body, "license", "id") != "CC0-1.0" || !strings.Contains(body["note"].(string), "CC BY 3.0") {
-		t.Error("the licence or the note")
+	same(t, "the members", keysInOrder(t, text), []string{"license", "generated_at", "catalogue_version", "reports"})
+	if at(body, "license", "id") != "CC0-1.0" {
+		t.Error("the licence")
 	}
 	if _, err := time.Parse("2006-01-02T15:04:05Z", body["generated_at"].(string)); err != nil {
 		t.Errorf("generated_at: %v", err)
@@ -744,7 +744,7 @@ func TestReportsJSONHasEveryReportAsUploadedUnderCC0(t *testing.T) {
 
 	// The filters, and without any the export is unchanged.
 	filtered := l.export("/api/v1/reports.json?gen=m1&tool=0.2.0&bogus=1")
-	same(t, "the members with a filter", keysInOrder(t, filtered), []string{"license", "note", "generated_at", "catalogue_version", "filters", "reports"})
+	same(t, "the members with a filter", keysInOrder(t, filtered), []string{"license", "generated_at", "catalogue_version", "filters", "reports"})
 }
 
 func TestReportsCSVHasOneRowPerReport(t *testing.T) {

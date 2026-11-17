@@ -340,6 +340,10 @@ func TestNeedsHandsStateAndNoticeComeTogetherOnAVolunteerMac(t *testing.T) {
 		t.Fatalf("needs hands with no action: %+v", d)
 	}
 	n.finish()
+	// A Volunteer's Mac is told to its Volunteer, not to "Agents".
+	if lines := n.agentsLines(); has(lines, "needs hands") {
+		t.Errorf("Agents got a line about a Volunteer's Mac: %q", lines)
+	}
 }
 
 func TestNeedsHandsNoticeGivesExactStepsHoldPowerTenSecondsThenPowerOn(t *testing.T) {

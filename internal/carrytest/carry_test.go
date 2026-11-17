@@ -320,7 +320,16 @@ func newMini(t *testing.T, shape oldlabtest.Shape) *mini {
 	if err := os.Symlink("builds/v0.2.0-rc.9", m.path("usr/local/lab/current")); err != nil {
 		t.Fatal(err)
 	}
-	write(t, m.path("Library/LaunchDaemons/"+labdLabel+".plist"), read(t, filepath.Join(repo(t), "deploy", labdLabel+".plist")), 0o644)
+	// Its labd has no ops socket and its file names none, so the scripts
+	// stop it with no drain: a test that wants the socket listens on it
+	// itself, and the drain is internal/minitest's to prove.
+	plist := read(t, filepath.Join(repo(t), "deploy", labdLabel+".plist"))
+	if noOps := strings.Replace(plist, "    <string>--ops-socket</string><string>/var/lab/run/ops.sock</string>\n", "", 1); noOps != plist {
+		plist = noOps
+	} else {
+		t.Fatal("labd's LaunchDaemon file names its ops socket otherwise now")
+	}
+	write(t, m.path("Library/LaunchDaemons/"+labdLabel+".plist"), plist, 0o644)
 	write(t, m.path("Library/LaunchDaemons/"+litestreamLabel+".plist"), read(t, filepath.Join(repo(t), "deploy", litestreamLabel+".plist")), 0o644)
 	write(t, m.path("var/lab/secrets/admins"), "7\n", 0o600)
 	for _, d := range []string{"var/lab", "var/lab/secrets"} {
@@ -758,6 +767,59 @@ func TestASwitchThatStopsPartWayPutsEachFileBackFromWhereItIs(t *testing.T) {
 	}
 	if got := read(t, m.path("var/lab/data.old-lab/reports.db")); got != "the lab's reports\n" {
 		t.Errorf("the reports in data.old-lab: %q", got)
+	}
+}
+
+// A way back whose own move fails leaves labd stopped, and both folders.
+func TestAWayBackThatCannotMoveTheReportsLeavesLabdStopped(t *testing.T) {
+	m := newMini(t, oldlabtest.OnOmarchyGPU)
+	m.ok("old-lab", "stop")
+	m.ok("old-lab", "copy", "--stage", m.stage)
+	reports := read(t, m.path("var/lab/data/reports.db"))
+	asLab := filepath.Join(m.base, "stubs", "as-lab")
+	write(t, asLab, "#!/bin/bash\necho \"as-lab $*\" >> \"$STUB_LOG\"\n"+
+		"[[ \"$1 ${2##*/} ${3##*/}\" != \"mv data.old-lab data\" ]] || exit 1\n"+
+		"[[ \"$1 $2\" != \"mv \"*/data.old-lab/reports.db ]] || exit 1\n"+
+		"exec \"$@\"\n", 0o755)
+
+	out := m.refused("old-lab", "upgrade", "--stage", m.stage, "--account-id", "7", "owner")
+
+	if m.loaded(labdLabel) || m.loaded(litestreamLabel) {
+		t.Errorf("started on a directory with no reports: labd %v, Litestream %v\n%s", m.loaded(labdLabel), m.loaded(litestreamLabel), out)
+	}
+	if !exists(m.path("var/lab/data.before-old-lab/labd.db")) || read(t, m.path("var/lab/data.old-lab/reports.db")) != reports {
+		t.Errorf("a folder of the way back is gone\n%s", out)
+	}
+	if !strings.Contains(out, "labd is left stopped") || !strings.Contains(out, "reports.db") {
+		t.Errorf("no word of the failed move:\n%s", out)
+	}
+}
+
+// A way back that cannot stop labd moves nothing: a labd still running is
+// never left on a directory pulled from under it. Both folders stay, and it
+// says which did not stop.
+func TestAWayBackWhoseStopFailsMovesNothing(t *testing.T) {
+	m := newMini(t, oldlabtest.OnOmarchyGPU)
+	m.ok("old-lab", "stop")
+	m.ok("old-lab", "copy", "--stage", m.stage)
+	stubs := filepath.Join(m.base, "stubs")
+	// labd stops for the switch, and not once it runs on the old lab's data.
+	write(t, stubs+"/launchctl", strings.Replace(launchctlStub, `bootout) rm -f "$state" ;;`, `bootout) [[ $label == `+labdLabel+` && -f $STUB_STATE/sticks ]] || rm -f "$state" ;;`, 1), 0o755)
+	write(t, stubs+"/sleep", "#!/bin/sh\nexit 0\n", 0o755)
+	asLab := filepath.Join(stubs, "as-lab")
+	write(t, asLab, "#!/bin/bash\necho \"as-lab $*\" >> \"$STUB_LOG\"\n[[ \"$1 ${2##*/} ${3##*/}\" != \"mv data.old-lab data\" ]] || touch \"$STUB_STATE/sticks\"\nexec \"$@\"\n", 0o755)
+	m.healthy.Store(false)
+
+	out := m.refused("old-lab", "upgrade", "--stage", m.stage, "--account-id", "7", "owner")
+
+	if !exists(m.path("var/lab/data.before-old-lab/labd.db")) || !exists(m.path("var/lab/data/reports.db")) || exists(m.path("var/lab/data.old-lab")) {
+		t.Errorf("the way back moved something after labd did not stop\n%s", out)
+	}
+	if got := ids(t, m.path("var/lab/data"), "retired_macs"); len(got) != 2 {
+		t.Errorf("the lab's directory is no longer the upgraded one\n%s", out)
+	}
+	if !strings.Contains(out, "could not stop labd") || !strings.Contains(out, "moved nothing") {
+		t.Errorf("no word of the stop that failed:\n%s", out)
 	}
 }
 

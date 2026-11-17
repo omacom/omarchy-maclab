@@ -45,6 +45,16 @@ func TestWhatTheArtifactBudgetClears(t *testing.T) {
 		}
 	}
 
+	// labd's start-up GC pass runs on its own goroutine. Landing between a
+	// backdated put and the build that refers to it, it would delete what
+	// this pass must keep. No pass runs while the fixture is laid out.
+	gcMu.Lock()
+	held := true
+	defer func() {
+		if held {
+			gcMu.Unlock()
+		}
+	}()
 	stray := put("nothing refers to it, two days old", 2*day)
 	fresh := put("nothing refers to it, ten minutes old", 10*time.Minute)
 	oldKernel, newKernel := put("a finished build's kernel, three days old", 3*day), put("a finished build's kernel, two hours old", 2*time.Hour)
@@ -78,6 +88,8 @@ func TestWhatTheArtifactBudgetClears(t *testing.T) {
 		}
 	}
 
+	held = false
+	gcMu.Unlock()
 	b.s.gcArtifacts()
 
 	has := func(path string) bool {

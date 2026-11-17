@@ -234,12 +234,15 @@ func (c *Client) Upload(ctx context.Context, path string) (string, error) {
 	if c.UploadForBuild {
 		q.Set("purpose", "build")
 	}
-	// Two variables are for the Front door's transfer tests alone.
+	// Three variables are for the Front door's transfer tests alone.
 	// MACLAB_PARTS_AT_ONCE times the same upload with 1 part and with 4 at
 	// a time; MACLAB_UPLOAD_PROGRESS=1 has each part said as labd takes it,
-	// so that a test can cut an upload it knows labd holds some of.
+	// so that a test can cut an upload it knows labd holds some of; and
+	// MACLAB_UPLOAD_HOLD=1 stops one part halfway once labd holds two, so
+	// that the cut comes inside a part however fast the rest go.
 	atOnce, _ := strconv.Atoi(os.Getenv("MACLAB_PARTS_AT_ONCE"))
-	s := upload.Sender{Client: c.http, URL: c.URL + "/api/artifacts", Query: q, Token: c.Token, PartBytes: c.partBytes, Pause: c.pause, Note: c.Note, AtOnce: atOnce}
+	s := upload.Sender{Client: c.http, URL: c.URL + "/api/artifacts", Query: q, Token: c.Token, PartBytes: c.partBytes, Pause: c.pause, Note: c.Note, AtOnce: atOnce,
+		Hold: os.Getenv("MACLAB_UPLOAD_HOLD") == "1"}
 	if os.Getenv("MACLAB_UPLOAD_PROGRESS") == "1" && c.Note != nil {
 		s.Progress = func(held, total int) { c.Note("labd holds %d of %d parts", held, total) }
 	}

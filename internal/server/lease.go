@@ -207,6 +207,10 @@ func (s *Server) takeLease(v *dev, p Person, holder string, ttl time.Duration) (
 		return api.Lease{}, err
 	}
 	v.mu.Lock()
+	if err := v.updatingRefusalLocked("no Lease was taken"); err != nil {
+		v.mu.Unlock()
+		return api.Lease{}, err
+	}
 	lease := &api.Lease{Holder: holder, Maintainer: p.Handle, By: p.Handle, AccountID: p.AccountID, Expires: s.now().Add(ttl)}
 	if had := v.liveLeaseLocked(); had != nil {
 		lease.Job = had.Job // a renewal keeps the job running under it, and is no longer an extension
@@ -466,21 +470,31 @@ func (v *dev) leaseHoldsBackLocked(o jobOwner) string {
 }
 
 // park sets a queued job aside while someone else's lease holds the Mac, so
-// the lease holder's jobs queued after it run first, and says whether it did.
+// the lease holder's jobs queued after it run first, and says whether it did,
+// or found the job ended (a Leave, a cancel): either way its run stops here.
 // unpark queues it again once the lease no longer holds it.
 func (r *jobRun) park() bool {
 	v := r.v
 	v.mu.Lock()
 	why := v.leaseHoldsBackLocked(ownerOf(r.j))
-	if why != "" {
-		v.parked = append(v.parked, parkedJob{r.j.ID, ownerOf(r.j)})
-	}
 	v.mu.Unlock()
 	if why == "" {
 		return false
 	}
-	r.state(api.JobQueued)
-	r.ev("%s; waiting for the lease to end", why)
+	msg := why + "; waiting for the lease to end"
+	saved := false // f runs only on a job that is not done
+	r.s.updateJobUnlessDone(r.j, func(j *api.Job) {
+		saved = true
+		j.State = api.JobQueued
+		j.Events = append(j.Events, api.JobEvent{Time: r.s.now(), Msg: msg})
+	})
+	if !saved {
+		return true
+	}
+	r.s.log.Printf("job %s (%s): %s", r.j.ID, r.j.Spec.Device, msg)
+	v.mu.Lock()
+	v.parked = append(v.parked, parkedJob{r.j.ID, ownerOf(r.j)})
+	v.mu.Unlock()
 	return true
 }
 
@@ -579,6 +593,20 @@ func (s *Server) endLeaseOfLeaving(v *dev, how string) {
 // canceled as `lab cancel` does. Released or run out, the job finishes.
 func (e leaseEnding) over() bool { return e.event == api.LeaseEnded }
 
+// logged is an ending over the holder in a few words for labd's log, which
+// names people by account only.
+func (e leaseEnding) logged() string {
+	switch e.cause {
+	case leftTeam:
+		return "ended: its holder left the M team"
+	case blocked:
+		return "ended: its holder was Blocked"
+	case macWentAway:
+		return "ended: the Mac left the lab"
+	}
+	return "ended by " + accountOr(e.by.AccountID, "labd")
+}
+
 // said is the ending in a few words, for a job it cancels.
 func (e leaseEnding) said(l *api.Lease) string {
 	switch {
@@ -604,6 +632,9 @@ func (e leaseEnding) said(l *api.Lease) string {
 // its holder, when it is canceled as `lab cancel` does and the Mac returns
 // to its Known-good kernel. The jobs others queued before the Lease run
 // again. Caller doesn't hold v.mu.
+//
+// The record's line is written before v.mu is released: anyone who sees
+// the Lease gone, or loses the race to end it, finds the line there.
 func (s *Server) endLease(v *dev, l *api.Lease, e leaseEnding) bool {
 	v.mu.Lock()
 	if l == nil || v.d.Lease != l {
@@ -611,16 +642,16 @@ func (s *Server) endLease(v *dev, l *api.Lease, e leaseEnding) bool {
 		return false
 	}
 	v.d.Lease, v.leaseCut = nil, ""
+	name, id := v.d.Name, v.d.ID
+	s.recordLease(name, id, l, e.event, e.by, e.why)
 	v.saveLocked()
 	v.publishLocked()
 	var aside []string
 	for _, p := range v.parked {
 		aside = append(aside, p.id)
 	}
-	name, id := v.d.Name, v.d.ID
 	v.mu.Unlock()
 
-	s.recordLease(name, id, l, e.event, e.by, e.why)
 	handle := orStr(l.Owner(), l.Holder)
 	switch {
 	case e.event == api.LeaseReleased:
@@ -638,7 +669,9 @@ func (s *Server) endLease(v *dev, l *api.Lease, e leaseEnding) bool {
 	}
 	if e.over() {
 		msg := fmt.Sprintf("%s's lease by %s, until %s, %s", name, l.Who(), l.Expires.Format(time.DateTime), orStr(e.note, e.said(l)))
-		s.log.Printf("%s", msg)
+		// By account: labd's log is beyond a forgetting's reach, and the
+		// holder's text and a Maintainer's why may name people.
+		s.log.Printf("%s: the Lease of %s, until %s, %s", name, accountOr(l.AccountID, "no account"), l.Expires.Format(time.DateTime), e.logged())
 		for _, id := range aside {
 			s.updateJobByID(id, func(j *api.Job) { j.Events = append(j.Events, api.JobEvent{Time: s.now(), Msg: msg}) })
 		}

@@ -132,6 +132,9 @@ func (s *Server) deviceConfig(ctx context.Context, name string) (string, error) 
 	}
 	var text string
 	if err := v.call(ctx, api.CmdConfig, "", nil, time.Minute, &text); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("reading %s's kernel config: %s did not send it in time; try again when it answers", name, name)
+		}
 		return "", fmt.Errorf("reading %s's kernel config: %w", name, err)
 	}
 	sha, _, err := s.storeArtifact(strings.NewReader(text))
@@ -186,6 +189,24 @@ func (s *Server) EnsureBuild(ctx context.Context, req api.BuildRequest) (*api.Bu
 		b.Device, b.ConfigName = "", req.ConfigName // built with the uploaded config, not a Mac's
 	}
 	return s.queueBuild(b, req.Force)
+}
+
+// againFrom is a build of what b was asked to build, its commit and its
+// config, for a job whose build b was when labd stopped: b itself while
+// it is still queued, or done with its outputs kept, and otherwise a new
+// build of the same commit and config. A source that moved since, or a
+// Mac's config that changed, gives the job no other inputs.
+func (s *Server) againFrom(b *api.Build) (*api.Build, error) {
+	if b.Kind == api.BuildPackage || b.Source.Repo == "" || b.Source.SHA == "" || b.ConfigSHA == "" {
+		return nil, fmt.Errorf("build %s recorded no commit or no config, so the job can't build what it resolved before labd restarted; submit it again", b.ID)
+	}
+	if _, err := os.Stat(s.artifactPath(b.ConfigSHA)); err != nil {
+		return nil, fmt.Errorf("build %s's config %s has been collected since, so the job can't build what it resolved before labd restarted; submit it again", b.ID, short(b.ConfigSHA))
+	}
+	now := s.now()
+	return s.queueBuild(&api.Build{ID: "b" + now.Format("0102-150405") + "-" + randHex(2), Key: buildKey(b.Source, b.ConfigSHA), Source: b.Source,
+		Device: b.Device, ConfigSHA: b.ConfigSHA, ConfigName: b.ConfigName, State: api.BuildQueued, Created: now, Updated: now,
+		AskedBy: b.AskedBy, AskedByID: b.AskedByID, ByTeam: b.ByTeam}, false)
 }
 
 // ensurePackageBuild queues a makepkg run of an uploaded recipe, optionally
@@ -520,6 +541,10 @@ func (s *Server) hBuilderDone(w http.ResponseWriter, r *http.Request) {
 
 // ---- Maintainer API ----
 
+// createBuildWait bounds asking for a build, so the asker hears back before
+// the edge gives up on labd at 100 s.
+var createBuildWait = 80 * time.Second
+
 func (s *Server) hCreateBuild(w http.ResponseWriter, r *http.Request) {
 	var req api.BuildRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -532,7 +557,9 @@ func (s *Server) hCreateBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
-	b, err := s.EnsureBuild(r.Context(), req)
+	ctx, cancel := context.WithTimeout(r.Context(), createBuildWait)
+	defer cancel()
+	b, err := s.EnsureBuild(ctx, req)
 	if err != nil {
 		httpErr(w, 400, "%v", err)
 		return

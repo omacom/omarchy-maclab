@@ -111,7 +111,7 @@ type fake struct {
 
 	mu        sync.Mutex
 	calls     []call
-	values    map[string]string           // a setting's path under the zone, to "on" or "off"
+	values    map[string]any              // a setting's path under the zone, to "on", "off" or a number
 	bot       map[string]any              // the zone's bot settings
 	rules     map[string][]map[string]any // a phase's rules; a phase with no entry has no ruleset
 	routing   bool
@@ -132,6 +132,22 @@ type fake struct {
 	seq       int
 }
 
+// like is a setting's value as the spec has it; unlike is a value it is
+// not, Cloudflare's own default where there is one.
+func like(s setting) any {
+	if v, ok := s.Body["value"]; ok {
+		return v
+	}
+	return s.State
+}
+
+func unlike(s setting) any {
+	if s.Path == "/zones/{zone}/settings/browser_cache_ttl" {
+		return float64(14400)
+	}
+	return opposite(s.State)
+}
+
 func opposite(v string) string {
 	if v == "on" {
 		return "off"
@@ -143,11 +159,11 @@ func opposite(v string) string {
 func newFake(t *testing.T) *fake {
 	t.Helper()
 	need(t, "bash", "curl", "jq")
-	f := &fake{t: t, token: "tok-" + strings.Repeat("s3cr3t", 6), values: map[string]string{}, rules: map[string][]map[string]any{}, dnssec: "disabled"}
+	f := &fake{t: t, token: "tok-" + strings.Repeat("s3cr3t", 6), values: map[string]any{}, rules: map[string][]map[string]any{}, dnssec: "disabled"}
 	f.bot = map[string]any{"fight_mode": true, "ai_bots_protection": "block", "crawler_protection": "enabled", "enable_js": true}
 	for _, s := range readEdge(t).Settings {
 		if !strings.HasSuffix(s.Path, "/bot_management") {
-			f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = opposite(s.State)
+			f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = unlike(s)
 		}
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
@@ -163,7 +179,7 @@ func asSpec(t *testing.T) *fake {
 	f.bot = map[string]any{"fight_mode": false, "ai_bots_protection": "disabled", "crawler_protection": "disabled", "enable_js": false}
 	for _, s := range e.Settings {
 		if !strings.HasSuffix(s.Path, "/bot_management") {
-			f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = s.State
+			f.values[strings.TrimPrefix(s.Path, "/zones/{zone}/")] = like(s)
 		}
 	}
 	for _, r := range e.Rules {
@@ -302,8 +318,13 @@ func (f *fake) zone(w http.ResponseWriter, r *http.Request, path string, in map[
 		switch r.Method {
 		case "GET":
 		case "PATCH":
-			v, _ := in["value"].(string)
-			if v != "on" && v != "off" {
+			v := in["value"]
+			if path == "settings/browser_cache_ttl" {
+				if n, ok := v.(float64); !ok || (n != 0 && n < 30) {
+					f.refuse(w, http.StatusBadRequest, 1007, "Invalid value for zone setting")
+					return
+				}
+			} else if v != "on" && v != "off" {
 				f.refuse(w, http.StatusBadRequest, 1007, "Invalid value for zone setting")
 				return
 			}
@@ -378,6 +399,11 @@ func (f *fake) zone(w http.ResponseWriter, r *http.Request, path string, in map[
 		}
 		f.ok(w, map[string]any{"enabled": f.routing, "name": labDomain, "status": status})
 	case "email/routing/dns POST":
+		// Cloudflare takes name only for a subdomain; the apex goes as {} (B5.2, 2026-11-15).
+		if _, ok := in["name"]; ok {
+			f.refuse(w, http.StatusUnprocessableEntity, 2007, "Invalid Input: must be a subdomains of "+labDomain)
+			return
+		}
 		f.routing = true
 		f.ok(w, map[string]any{"enabled": true, "name": labDomain, "status": "ready"})
 	case "email/routing/rules GET":

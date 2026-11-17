@@ -174,3 +174,32 @@ func TestPauseAfterOpenClosesTheMac(t *testing.T) {
 		t.Fatalf("status after open then pause:\n%s", out)
 	}
 }
+
+// `window add always` opens the Mac at every hour, the same window as
+// mon-sun 00:00-24:00, and show reads it back as always.
+func TestWindowAddAlwaysOpensTheMacAtEveryHour(t *testing.T) {
+	run := offlineMac(t, monday6pm)
+	if out := must(t, run, "window", "add", "always"); !strings.Contains(out, "added always") {
+		t.Errorf("window add always:\n%s", out)
+	}
+	if out := must(t, run, "window", "add", "mon-sun", "00:00-24:00"); !strings.Contains(out, "always is already a window") {
+		t.Errorf("mon-sun 00:00-24:00 after always:\n%s", out)
+	}
+	out := must(t, run, "window", "show")
+	if !strings.Contains(out, "always\n") || !strings.Contains(out, "Window: open always") || strings.Contains(out, "next window") {
+		t.Errorf("window show of always:\n%s", out)
+	}
+	if out := must(t, run, "status"); !strings.Contains(out, "open always") {
+		t.Errorf("status of an always Mac:\n%s", out)
+	}
+	if _, err := run("pause"); err == nil || !strings.Contains(err.Error(), "pause --until") {
+		t.Errorf("pause of a window with no end: %v", err)
+	}
+	must(t, run, "window", "remove", "always")
+	if out := must(t, run, "window", "show"); strings.Contains(out, "always") {
+		t.Errorf("window show after removing always:\n%s", out)
+	}
+	if _, err := run("window", "add", "always", "19:00-07:00"); err == nil {
+		t.Error("window add always 19:00-07:00 was accepted")
+	}
+}

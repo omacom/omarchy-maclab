@@ -86,11 +86,6 @@ func (c *Catalogue) OutcomeWords(outcome string) string {
 	return outcome
 }
 
-func (c *Catalogue) AsahiCredit() string {
-	credit, _ := member(c.data, "sources", "asahi", "credit").(string)
-	return credit
-}
-
 func (c *Catalogue) Features() []*Object { return c.features }
 
 // Chips are the chip generations by key ("m2-pro-max-ultra").

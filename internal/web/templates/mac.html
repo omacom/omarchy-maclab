@@ -49,9 +49,9 @@
 <dt>Running</dt><dd>{{if .Facts.Kernel}}{{.Facts.Kernel}}{{else}}<span class="dim">unknown</span>{{end}}</dd>
 <dt>lab-agent</dt><dd>{{if .Facts.Agent}}{{.Facts.Agent}}{{else}}<span class="dim">unknown</span>{{end}}
 {{- if .Facts.LabAgent}} <span class="dim">older than the lab's {{.Facts.LabAgent}}</span>
-{{- if .Facts.UpdateLine}} <span class="nowrap">Update it at the Mac: <code>{{.Facts.UpdateLine}}</code></span>
+{{- if .Facts.UpdateLine}} <span class="nowrap">Update it at the Mac: {{template "copy" (copy "the update command" .Facts.UpdateLine)}}</span>
 {{- else if .Facts.Volunteers}} <span class="dim">its Volunteer updates it at the Mac</span>
-{{- else if .Maintainer}} <code>lab agent-update {{.Mac.Name}}</code>
+{{- else if .Maintainer}} {{template "copy" (copy "the update command" (print "lab agent-update " .Mac.Name))}}
 {{- end}}
 {{- end}}</dd>
 <dt>Last seen</dt><dd>{{if .Facts.LastSeen}}{{.Facts.LastSeen}}{{else}}<span class="dim">never</span>{{end}}</dd>

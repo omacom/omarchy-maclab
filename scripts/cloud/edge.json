@@ -16,16 +16,17 @@
     {"name": "Early Hints", "state": "on", "path": "/zones/{zone}/settings/early_hints"},
     {"name": "Smart Tiered Cache (tiered caching)", "state": "on", "path": "/zones/{zone}/argo/tiered_caching"},
     {"name": "Smart Tiered Cache (the Smart topology)", "state": "on", "path": "/zones/{zone}/cache/tiered_cache_smart_topology_enable"},
-    {"name": "Speed Brain", "state": "on", "path": "/zones/{zone}/settings/speed_brain"}
+    {"name": "Speed Brain", "state": "on", "path": "/zones/{zone}/settings/speed_brain"},
+    {"name": "Browser Cache TTL", "state": "Respect Existing Headers", "path": "/zones/{zone}/settings/browser_cache_ttl", "accept": ["0"], "body": {"value": 0}}
   ],
   "rules": [
     {
-      "name": "the skip rule on /api/*",
+      "name": "the skip rule on /api/* and /join",
       "phase": "http_request_firewall_custom",
       "want": [
         {
-          "description": "Under /api/: no Browser Integrity Check, no managed rules",
-          "expression": "(http.host eq \"lab.omarchy-mac.org\" and starts_with(http.request.uri.path, \"/api/\"))",
+          "description": "Under /api/ and at /join: no Browser Integrity Check, no managed rules",
+          "expression": "(http.host eq \"lab.omarchy-mac.org\" and (starts_with(http.request.uri.path, \"/api/\") or http.request.uri.path eq \"/join\"))",
           "action": "skip",
           "action_parameters": {"phases": ["http_request_firewall_managed"], "products": ["bic"]},
           "logging": {"enabled": true},
@@ -52,8 +53,8 @@
       "never": ["edge_ttl", "browser_ttl"],
       "want": [
         {
-          "description": "Public pages and exports, for a request without the session cookie, may be cached as labd says",
-          "expression": "(http.host eq \"lab.omarchy-mac.org\" and not http.cookie contains \"lab_session=\" and not ends_with(http.request.uri.path, \"/deletion\") and (http.request.uri.path in {\"/\" \"/matrix\" \"/models\" \"/features\" \"/gaps\" \"/aurora\" \"/benchmarks\" \"/candidates\" \"/reports\" \"/data\" \"/install\" \"/install/lab\" \"/terms\" \"/privacy\" \"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\"} or starts_with(http.request.uri.path, \"/models/\") or starts_with(http.request.uri.path, \"/features/\") or starts_with(http.request.uri.path, \"/candidates/\") or starts_with(http.request.uri.path, \"/reports/\")))",
+          "description": "Public pages and exports, for a request without the session cookie or a Lab token, may be cached as labd says",
+          "expression": "(http.host eq \"lab.omarchy-mac.org\" and not http.cookie contains \"lab_session=\" and not any(lower(http.request.headers.names[*])[*] eq \"authorization\") and not ends_with(http.request.uri.path, \"/deletion\") and (http.request.uri.path in {\"/\" \"/matrix\" \"/models\" \"/features\" \"/gaps\" \"/aurora\" \"/benchmarks\" \"/candidates\" \"/reports\" \"/data\" \"/install\" \"/install/lab\" \"/terms\" \"/privacy\" \"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\"} or starts_with(http.request.uri.path, \"/models/\") or starts_with(http.request.uri.path, \"/features/\") or starts_with(http.request.uri.path, \"/candidates/\") or starts_with(http.request.uri.path, \"/reports/\")))",
           "action": "set_cache_settings",
           "action_parameters": {"cache": true},
           "enabled": true
@@ -61,6 +62,13 @@
         {
           "description": "Under /api/: never cached, but an export asked for without the session cookie",
           "expression": "(http.host eq \"lab.omarchy-mac.org\" and starts_with(http.request.uri.path, \"/api/\") and (http.cookie contains \"lab_session=\" or not http.request.uri.path in {\"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\"}))",
+          "action": "set_cache_settings",
+          "action_parameters": {"cache": false},
+          "enabled": true
+        },
+        {
+          "description": "A request with a Lab token or the session cookie: never cached, whatever the path",
+          "expression": "(any(lower(http.request.headers.names[*])[*] eq \"authorization\") or http.cookie contains \"lab_session=\")",
           "action": "set_cache_settings",
           "action_parameters": {"cache": false},
           "enabled": true

@@ -64,6 +64,7 @@ func (sp SystemPorts) look(ctx context.Context, rid int) (oob.Port, int, error) 
 	if !h.connected {
 		p.ProductID = 0
 	}
+	p.NoMac = h.connected && !h.macLink && p.ProductID == 0
 	return p, h.receptacle, nil
 }
 
@@ -72,8 +73,10 @@ type hpmPort struct {
 	rid        int
 	receptacle int
 	connected  bool
-	productID  int
-	plugCount  int
+	// macLink is USB2 or CIO among the port's active transports.
+	macLink   bool
+	productID int
+	plugCount int
 }
 
 var (
@@ -123,6 +126,8 @@ func parsePorts(text string) map[int]hpmPort {
 				cur.plugCount = n
 			case "PortNumber":
 				cur.receptacle = n
+			case "TransportsActive":
+				cur.macLink = strings.Contains(value, `"USB2"`) || strings.Contains(value, `"CIO"`)
 			}
 		case class == "IOPortTransportComponentCCUSBPDSOP" && key == "Product ID" && numErr == nil:
 			cur.productID = n

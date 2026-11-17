@@ -5,6 +5,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,10 +117,12 @@ type Agent struct {
 	http *http.Client
 	log  *log.Logger
 
+	runID             string     // this run's api.Checkin.AgentStart
 	repMu             sync.Mutex // one report in flight at a time
 	mu                sync.Mutex
 	seen              map[string]bool
 	running           map[string]runningCmd
+	commands          sync.WaitGroup // the commands start runs; Run waits for them
 	results           []api.CommandResult
 	events            []api.KernelEvent
 	factsRevision     uint64
@@ -161,9 +165,12 @@ func New(cfg *Config, sys System, logger *log.Logger) *Agent {
 	if _, legacy := cfg.transportPolicy(); legacy {
 		logger.Print(legacyPlainWarning(cfg.Server))
 	}
+	start := make([]byte, 8)
+	rand.Read(start)
 	return &Agent{
 		cfg:       cfg,
 		sys:       sys,
+		runID:     hex.EncodeToString(start),
 		rt:        rt,
 		http:      labhttp.Client(rt, cfg.httpTimeout()),
 		log:       logger,
@@ -207,9 +214,12 @@ func EnrollWith(ctx context.Context, server, token string, facts api.Facts, p la
 
 // Run heartbeats until ctx ends. The heartbeat is a long poll: labd holds it
 // until it has a command for this Mac, so commands arrive at once. Results and
-// kernel events go out on their own request the moment they exist.
+// kernel events go out on their own request the moment they exist. Once
+// ctx ends, Run returns after the commands it started have ended with it, so
+// none still writes in the work dir.
 func (a *Agent) Run(ctx context.Context) error {
 	ctx, a.stop = context.WithCancel(ctx)
+	defer a.commands.Wait()
 	defer a.stop()
 	a.life = ctx
 	a.holdWatchdog(ctx)
@@ -457,7 +467,7 @@ func (a *Agent) poke() {
 func (a *Agent) poll(ctx context.Context) error {
 	bootID, kernel, cmdline := a.sys.Identity()
 	ci := api.Checkin{BootID: bootID, Kernel: kernel, Cmdline: cmdline, Health: a.sys.Health(),
-		SnapshotEligible: a.sys.SnapshotEligible() == nil}
+		SnapshotEligible: a.sys.SnapshotEligible() == nil, AgentStart: a.runID}
 	a.mu.Lock()
 	factsRevision := a.factsRevision
 	refreshFacts := a.lastFacts.IsZero() || a.sentFactsRevision != factsRevision || a.clock().Now().Sub(a.lastFacts) >= time.Minute
@@ -528,6 +538,9 @@ func (a *Agent) poll(ctx context.Context) error {
 		a.lastFacts = a.clock().Now()
 	}
 	a.mu.Unlock()
+	if resp.Window != nil && a.volunteer() {
+		a.takeWindow(*resp.Window)
+	}
 	for _, c := range resp.Commands {
 		a.start(a.life, c)
 	}
@@ -846,7 +859,9 @@ func (a *Agent) start(ctx context.Context, c api.Command) {
 	a.keepAwake()
 	a.log.Printf("command %s %s job=%s", c.ID, c.Kind, c.JobID)
 	a.wd.Load().idle() // labd sent it
+	a.commands.Add(1)
 	go func() {
+		defer a.commands.Done()
 		defer stop(nil)
 		out, after, err := a.exec(ctx, c)
 		// ending is not a sign of labd: a command whose uploads can't reach it

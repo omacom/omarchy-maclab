@@ -73,6 +73,7 @@ type releaseAsking struct {
 type releaseOpen struct {
 	Kernel        string
 	Packages      []api.ReleasePackage
+	ApprovedBy    []string
 	Coverage      string
 	Macs          []releaseMacRow
 	Warnings      []string
@@ -118,9 +119,15 @@ func runWords(outcome string) string {
 
 func releasePath(name string) string { return "/releases?open=" + url.QueryEscape(name) }
 
+// packagesOf is a Release's packages, name to version. A Release stored
+// with one package named twice (before the freeze refused that) has none,
+// so it links no candidate set.
 func packagesOf(r *api.Release) map[string]string {
 	packages := map[string]string{}
 	for _, pkg := range r.Packages {
+		if _, seen := packages[pkg.Name]; seen {
+			return nil
+		}
 		packages[pkg.Name] = pkg.Version
 	}
 	return packages
@@ -181,7 +188,7 @@ func (s *Server) showReleases(w http.ResponseWriter, r *http.Request, status int
 }
 
 func (s *Server) openRelease(me *Person, rel *api.Release) *releaseOpen {
-	o := &releaseOpen{Kernel: rel.Kernel, Packages: rel.Packages, Warnings: rel.Warnings,
+	o := &releaseOpen{Kernel: rel.Kernel, Packages: rel.Packages, ApprovedBy: rel.ApprovedBy, Warnings: rel.Warnings,
 		VerdictAction: "/releases/" + url.PathEscape(rel.Name) + "/verdict",
 		Coverage:      fmt.Sprintf("%d of %d %s a passed run", rel.Passed, rel.Configurations, plural(rel.Configurations, "Configuration has", "Configurations have"))}
 	for _, m := range rel.Macs {

@@ -32,7 +32,9 @@ jobs:
             *) echo "no ShellCheck pinned for $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
           esac
           f="$RUNNER_TEMP/shellcheck.tar.xz"
-          curl -fsSL -o "$f" "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.$arch.tar.xz"
+          # GitHub's release downloads answer 502 now and then; the sum
+          # below still checks whatever arrives.
+          curl -fsSL --retry 5 --retry-all-errors -o "$f" "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.$arch.tar.xz"
           echo "$sum  $f" | shasum -a 256 -c -
           tar -xJf "$f" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"

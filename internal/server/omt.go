@@ -134,6 +134,9 @@ func (r *jobRun) omtResult(name string, tr *api.TestResult) {
 	sum := sha256.Sum256(data)
 	res := &api.OMTResult{Report: file, ReportSHA256: hex.EncodeToString(sum[:]), Tool: rep.Tool.Version, Catalogue: rep.Catalogue, Kernel: rep.Machine.Kernel,
 		KnownGood: j.Spec.Kernel == "" && j.Spec.Source == ""}
+	if !r.bindMachineKey(data) {
+		res.PublishNote = reports.AnotherMachineKey
+	}
 	status := map[string]string{}
 	byID := map[string]api.OMTCheck{}
 	for _, c := range rep.Checks {
@@ -251,6 +254,30 @@ func (r *jobRun) omtResult(name string, tr *api.TestResult) {
 		tr.Passed = false
 		tr.Error = fmt.Sprintf("%d regressed from the known-good kernel: %s", len(res.Regressions), strings.Join(omtIDs(res.Regressions), ", "))
 	}
+}
+
+// bindMachineKey records the Machine key that signed a collected report as
+// the Mac's, when the Mac has none yet and the job is of its enrollment: the
+// first report the lab collects binds it, published or not. It is false for
+// a report signed by another key than the one recorded.
+func (r *jobRun) bindMachineKey(report []byte) bool {
+	if r.s.uploads == nil || r.v == nil {
+		return true
+	}
+	id, ok := r.s.uploads.SignedBy(report)
+	if !ok {
+		return true
+	}
+	r.v.mu.Lock()
+	defer r.v.mu.Unlock()
+	if r.v.d.ID != r.j.DeviceID {
+		return true
+	}
+	if r.v.d.MachineID == "" {
+		r.v.d.MachineID = id
+		r.v.saveLocked()
+	}
+	return r.v.d.MachineID == id
 }
 
 // omtIDs lists the ids of the checks.
@@ -553,8 +580,9 @@ func (s *Server) publishOMT(j *api.Job, by Person) (string, error) {
 		}
 		return "", errors.New(msg)
 	}
-	// The first report the lab publishes of a Mac records its machine id;
-	// a recorded one is never replaced.
+	// The first report collected of a Mac recorded its machine id
+	// (bindMachineKey); a job collected before then records it here. A
+	// recorded one is never replaced.
 	v.mu.Lock()
 	if v.d.ID == j.DeviceID && v.d.MachineID == "" {
 		v.d.MachineID = stored.MachineID

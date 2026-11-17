@@ -16,7 +16,8 @@
 #      the tailnet's, is asked on the lab's ports (labd 7770, the
 #      Out-of-band controller 7780, cloudflared's metrics 20241, and 80,
 #      443, 8080). None may take a connection. An address counts only if
-#      its SSH port answers from here, which shows it can be reached.
+#      its SSH port answers from here, which shows it can be reached, and
+#      this machine does not have it too (it would reach itself).
 #   3. The router. This network is asked whether a router offers to open
 #      ports to whoever asks (UPnP's search, NAT-PMP's question): no answer
 #      is wanted. Its forwards are on a page only the owner can read:
@@ -36,7 +37,7 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 # shellcheck source=scripts/cutover/front-door/edge.sh
 . "$FD_HERE/edge.sh"
-usage() { sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 fd_options "$@"
 no_forwards=0
@@ -117,14 +118,27 @@ else
   # shellcheck disable=SC2029
   ssh "$MINI" /sbin/ifconfig 2> "$WORK/ifconfig.err" | addresses > "$WORK/all" || true
   [[ -s $WORK/all ]] || failed "FAIL: the mini named no address of its own: $(plain "$WORK/ifconfig.err")"
+  # An address this machine has too (the bridge Apple's container gives
+  # every Mac, say) reaches this machine, not the mini: it is not asked.
+  { ifconfig 2>/dev/null || ip addr 2>/dev/null || true; } | addresses > "$WORK/own" || true
   # Only an address whose SSH port answers from here can show anything.
   : > "$WORK/addresses"
+  shared=0
   while read -r a; do
+    if grep -qxF "$a" "$WORK/own"; then
+      say "$a is also this machine's own address: not asked"
+      shared=$((shared + 1))
+      continue
+    fi
     "$PROBE" answers "$(target "$a" 22)" > "$WORK/ssh.out" 2>/dev/null || true
     [[ "$(fact "$WORK/ssh.out" open)" != 1 ]] || echo "$a" >> "$WORK/addresses"
   done < "$WORK/all"
   reached="$(wc -l < "$WORK/addresses" | tr -d ' ')"
-  rec "the mini has $(wc -l < "$WORK/all" | tr -d ' ') address(es) beyond loopback; $reached of them can be reached from this machine (SSH answers there)"
+  if (( shared )); then
+    rec "the mini has $(wc -l < "$WORK/all" | tr -d ' ') address(es) beyond loopback; $shared of them is also this machine's own address: not asked; $reached of the rest can be reached from this machine (SSH answers there)"
+  else
+    rec "the mini has $(wc -l < "$WORK/all" | tr -d ' ') address(es) beyond loopback; $reached of them can be reached from this machine (SSH answers there)"
+  fi
   (( reached >= 2 )) || { rec "FAIL: fewer than two of the mini's addresses can be reached from here: run this from a machine on the mini's LAN and on the tailnet"; bad=1; }
 fi
 

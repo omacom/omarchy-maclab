@@ -63,9 +63,10 @@ func (m *mini) theLabsKegs() {
 		"bin/cloudflared":              program + "cloudflared 2026.10.1",
 		"share/man/man1/cloudflared.1": ".TH cloudflared 1\n",
 		"LICENSE":                      "Apache License\n",
-		// Its formula has a service: Homebrew writes both files into the keg.
-		"homebrew.mxcl.cloudflared.plist": "<plist><string>" + prefix + "/opt/cloudflared/bin/cloudflared</string><string>" + prefix + "/var/log/cloudflared.log</string></plist>\n",
-		"homebrew.cloudflared.service":    "[Service]\nExecStart=" + prefix + "/opt/cloudflared/bin/cloudflared\n",
+		// Its formula has a service: Homebrew writes both files into the keg,
+		// named sh.brew.<formula> since Homebrew 5.
+		"sh.brew.cloudflared.plist":   "<plist><string>" + prefix + "/opt/cloudflared/bin/cloudflared</string><string>" + prefix + "/var/log/cloudflared.log</string></plist>\n",
+		"sh.brew.cloudflared.service": "[Service]\nExecStart=" + prefix + "/opt/cloudflared/bin/cloudflared\n",
 	})
 	m.keg("signal-cli", "0.14.9", map[string]string{
 		"bin/signal-cli":              program + "signal-cli 0.14.9",
@@ -79,7 +80,8 @@ func (m *mini) theLabsKegs() {
 		"bin/tailscale":                       tailscaleStub,
 		"bin/tailscaled":                      program + "tailscaled 1.104.7",
 		"etc/bash_completion.d/tailscale":     "# bash completion for tailscale\n",
-		"homebrew.mxcl.tailscale.plist":       "<plist><string>" + prefix + "/opt/tailscale/bin/tailscaled</string></plist>\n",
+		"sh.brew.tailscale.plist":             "<plist><string>" + prefix + "/opt/tailscale/bin/tailscaled</string><string>" + prefix + "/var/log/tailscaled.log</string></plist>\n",
+		"sh.brew.tailscale.service":           "[Service]\nExecStart=" + prefix + "/opt/tailscale/bin/tailscaled\n",
 		"share/zsh/site-functions/_tailscale": "#compdef tailscale\n",
 	})
 	m.keg("restic", "0.19.1", map[string]string{
@@ -182,7 +184,14 @@ func TestTheCopyTakesTheLabsToolsAsHomebrewLaysThemOut(t *testing.T) {
 		}
 		return nil
 	})
-	for _, note := range []string{"cloudflared/INSTALL_RECEIPT.json", "cloudflared/.brew", "cloudflared/sbom.spdx.json", "cloudflared/homebrew.mxcl.cloudflared.plist", "cloudflared/homebrew.cloudflared.service", "litestream/INSTALL_RECEIPT.json"} {
+	for _, name := range []string{"cloudflared", "tailscale", "litestream", "restic", "signal-cli"} {
+		for _, note := range []string{"INSTALL_RECEIPT.json", ".brew", "sbom.spdx.json"} {
+			if exists(tools + "/current/" + name + "/" + note) {
+				t.Errorf("Homebrew's own %s/%s is in the copy", name, note)
+			}
+		}
+	}
+	for _, note := range []string{"cloudflared/sh.brew.cloudflared.plist", "cloudflared/sh.brew.cloudflared.service", "tailscale/sh.brew.tailscale.plist", "tailscale/sh.brew.tailscale.service"} {
 		if exists(tools + "/current/" + note) {
 			t.Errorf("Homebrew's own %s is in the copy", note)
 		}
@@ -210,6 +219,64 @@ func TestTheCopyTakesAJavaWithItsLinks(t *testing.T) {
 		t.Errorf("java from the copy: %v\n%s", err, out)
 	}
 	sealed(t, m.path("usr/local/lab/tools"))
+}
+
+// signal-cli as Homebrew ships it on Java, a wrapper script that runs the
+// keg's own script on Homebrew's Java: the copy takes the whole Java tree
+// beside it and points the wrapper at the two copies, so that nothing it
+// runs is under Homebrew. Which of the two ways signal-cli comes is the
+// owner's `brew info signal-cli` on the mini; this is the Java one.
+func TestTheCopyTakesSignalCLIOnJavaWithItsWholeJavaAndRewritesTheWrapper(t *testing.T) {
+	m := newMini(t)
+	k := newKey(t)
+	m.theLabsKegs()
+	m.signalCLIOnJava()
+	tools := m.path("usr/local/lab/tools")
+	m.ok("setup", "--release-key", k.signers)
+
+	if got := read(t, tools+"/current/VERSIONS"); !strings.Contains(got, "openjdk 23.0.2\n") || !strings.Contains(got, "signal-cli 0.13.24\n") {
+		t.Errorf("VERSIONS: %q", got)
+	}
+	for _, file := range []string{"openjdk/libexec/openjdk.jdk/Contents/Home/lib/server/libjvm.dylib", "openjdk/libexec/openjdk.jdk/Contents/Home/lib/modules",
+		"openjdk/libexec/openjdk.jdk/Contents/Home/conf/security/java.policy", "signal-cli/libexec/lib/signal-cli-0.13.24.jar"} {
+		if !exists(tools + "/current/" + file) {
+			t.Errorf("the copy lacks %s", file)
+		}
+	}
+	current, _ := os.Readlink(tools + "/current")
+	copied := tools + "/" + current
+	wrapper := tools + "/current/signal-cli/bin/signal-cli"
+	text := read(t, wrapper)
+	for _, want := range []string{copied + "/openjdk/libexec/openjdk.jdk/Contents/Home", copied + "/signal-cli/libexec/bin/signal-cli"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the wrapper does not run %s:\n%s", want, text)
+		}
+	}
+	if mode(t, wrapper)&0o111 == 0 {
+		t.Errorf("the wrapper cannot be run: %v", mode(t, wrapper))
+	}
+	filepath.Walk(tools, func(p string, info os.FileInfo, err error) error {
+		if err != nil || !info.Mode().IsRegular() {
+			return err
+		}
+		if b, _ := os.ReadFile(p); strings.Contains(string(b), "/opt/homebrew") {
+			t.Errorf("%s in the copy names Homebrew", strings.TrimPrefix(p, tools))
+		}
+		return nil
+	})
+	sealed(t, tools)
+
+	// It runs from the copy with Homebrew gone.
+	prefix := m.path("opt/homebrew")
+	if err := os.Rename(prefix, prefix+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Rename(prefix+".gone", prefix)
+	run := exec.Command(wrapper)
+	run.Env = []string{"PATH=/usr/bin:/bin"}
+	if out, err := run.CombinedOutput(); err != nil || string(out) != "openjdk 23.0.2\n" {
+		t.Errorf("signal-cli from the copy: %v\n%s", err, out)
+	}
 }
 
 // refusedCopy runs the set-up over a mini whose tools were copied once and
@@ -270,6 +337,12 @@ func TestTheCopyRefusesAToolThatStillLeansOnHomebrew(t *testing.T) {
 			},
 			"restic/bin/restic names Homebrew's folder (/opt/homebrew/opt/other/bin/other)",
 		},
+		"a script below the keg named like Homebrew's notes": {
+			func(m *mini) {
+				m.keg("restic", "0.20.0", map[string]string{"bin/restic": program, "libexec/sh.brew.restic.service": "#!/bin/sh\nexec " + prefix(m) + "/opt/other/bin/other\n"})
+			},
+			"restic/libexec/sh.brew.restic.service names Homebrew's folder (/opt/homebrew/opt/other/bin/other)",
+		},
 		"a setting that names a file under Homebrew": {
 			func(m *mini) {
 				m.keg("restic", "0.20.0", map[string]string{"bin/restic": program, "etc/restic.conf": "plugins = /opt/homebrew/lib/restic\n"})
@@ -282,8 +355,11 @@ func TestTheCopyRefusesAToolThatStillLeansOnHomebrew(t *testing.T) {
 			},
 			"restic/bin/restic names Homebrew's folder, and otool could not say what it loads",
 		},
-		"signal-cli as a script on Homebrew's Java": {
-			(*mini).signalCLIOnJava,
+		"signal-cli as a script on a Java the copy does not hold": {
+			func(m *mini) {
+				m.signalCLIOnJava()
+				os.Remove(prefix(m) + "/deps/signal-cli")
+			},
 			"signal-cli/bin/signal-cli names Homebrew's folder (/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home)",
 		},
 	} {

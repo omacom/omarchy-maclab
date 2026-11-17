@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -35,7 +36,7 @@ func TestFD04CutsAnUploadAndResumesIt(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	cut := regexp.MustCompile(`cut: lab upload killed while it sent, with (\d) of 7 parts taken by labd and the next under way`).FindStringSubmatch(out)
+	cut := regexp.MustCompile(`cut: lab upload killed while it sent, with (\d) of 7 parts taken by labd and [1-9]\d* bytes of another received`).FindStringSubmatch(out)
 	m := regexp.MustCompile(`resume: labd held (\d) of 7 parts; the same command sent the other (\d) in`).FindStringSubmatch(out)
 	if cut == nil || m == nil || cut[1] < "2" || m[1] < cut[1] || m[1] == "7" || m[1][0]-'0'+m[2][0]-'0' != 7 {
 		t.Errorf("no cut with two parts held, or no resume from at least those and not all:\n%s", out)
@@ -80,10 +81,159 @@ func TestFD04FailsWhenNoRunResumes(t *testing.T) {
 	}
 }
 
+// A cut counts only inside a part: a lab that says labd takes its parts and
+// sends none, so that labd never holds part of one, does not pass, though
+// the run after it says what a resume says and prints the right SHA-256.
+func TestFD04BetweenTwoPartsDoesNotPass(t *testing.T) {
+	real := bins(t)
+	dir := t.TempDir()
+	for _, tool := range []string{"labd", "lab-agent"} {
+		if err := os.Symlink(filepath.Join(real, tool), filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapper := `#!/bin/bash
+[[ $1 == upload ]] || exec "` + real + `/lab" "$@"
+if [[ ${MACLAB_UPLOAD_PROGRESS:-} == 1 ]]; then
+  for n in 1 2 3 4 5 6; do echo "lab: labd holds $n of 7 parts" >&2; sleep 0.3; done
+  exit 1
+fi
+echo "lab: resuming: labd holds 2 of 7 parts" >&2
+shasum -a 256 "$2" | cut -d' ' -f1
+`
+	if err := os.WriteFile(filepath.Join(dir, "lab"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, nil, "", frontDoor(t, "fd04-upload-resume"), "--local", "--bin", dir, "--size", fmt.Sprint(200*mib))
+	if code != 1 || !strings.Contains(out, ": fail") || !strings.Contains(out, "while labd held part of a part") || strings.Contains(out, "checksum") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	// Through the Lab address labd's upload folder is on the mini.
+	if out, code := run(t, nil, "", frontDoor(t, "fd04-upload-resume"), "--lab"); code != 1 || !strings.Contains(out, "--lab needs --mini USER@HOST") {
+		t.Errorf("--lab with no --mini: exit %d\n%s", code, out)
+	}
+}
+
+// A part seen partly received when lab is stopped and finished after the
+// kill, from bytes lab had sent before it, was not cut: FD 4 fails though
+// the resume says it resumed and prints the right SHA-256.
+func TestFD04APartFinishedAfterTheKillDoesNotPass(t *testing.T) {
+	real := bins(t)
+	dir := t.TempDir()
+	for _, tool := range []string{"labd", "lab-agent"} {
+		if err := os.Symlink(filepath.Join(real, tool), filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapper := `#!/bin/bash
+[[ $1 == upload ]] || exec "` + real + `/lab" "$@"
+sha="$(shasum -a 256 "$2" | cut -d' ' -f1)"
+folder="$(dirname "$HOME")/root/var/lab/data/artifacts/.upload-$sha"
+if [[ ${MACLAB_UPLOAD_PROGRESS:-} == 1 ]]; then
+  mkdir -p "$folder"
+  echo one > "$folder/1"
+  echo two > "$folder/2"
+  head -c 1000 /dev/zero > "$folder/.part-h3"
+  me=$$
+  # What lab had sent of part 3 reaches labd after the kill, which makes
+  # the part whole.
+  ( while kill -0 "$me" 2> /dev/null; do sleep 0.05; done; mv "$folder/.part-h3" "$folder/3" ) > /dev/null 2>&1 &
+  echo "lab: labd holds 2 of 7 parts" >&2
+  sleep 30
+  exit 1
+fi
+echo "lab: resuming: labd holds 3 of 7 parts" >&2
+echo "$sha"
+`
+	if err := os.WriteFile(filepath.Join(dir, "lab"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, nil, "", frontDoor(t, "fd04-upload-resume"), "--local", "--bin", dir, "--size", fmt.Sprint(200*mib))
+	if code != 1 || !strings.Contains(out, ": fail") || !strings.Contains(out, "no part was cut mid-way") || strings.Contains(out, "checksum") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+}
+
+// A part labd holds whole already and receives again, a retry, is no part
+// cut mid-way when the retry is cut: its file of its own goes, the counts
+// match, and nothing is resent. FD 4 knows a file labd receives by its part,
+// from its first bytes, and fails.
+func TestFD04ARetryOfAPartHeldWholeDoesNotPass(t *testing.T) {
+	real := bins(t)
+	dir := t.TempDir()
+	for _, tool := range []string{"labd", "lab-agent"} {
+		if err := os.Symlink(filepath.Join(real, tool), filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapper := `#!/bin/bash
+[[ $1 == upload ]] || exec "` + real + `/lab" "$@"
+sha="$(shasum -a 256 "$2" | cut -d' ' -f1)"
+folder="$(dirname "$HOME")/root/var/lab/data/artifacts/.upload-$sha"
+if [[ ${MACLAB_UPLOAD_PROGRESS:-} == 1 ]]; then
+  mkdir -p "$folder"
+  dd if="$2" of="$folder/1" bs=1048576 count=32 2> /dev/null
+  dd if="$2" of="$folder/2" bs=1048576 skip=32 count=32 2> /dev/null
+  # Part 2 sent again and cut after 1000 bytes: labd drops its file once
+  # lab is gone.
+  dd if="$2" bs=1048576 skip=32 count=1 2> /dev/null | head -c 1000 > "$folder/.part-r2"
+  me=$$
+  ( while kill -0 "$me" 2> /dev/null; do sleep 0.05; done; rm -f "$folder/.part-r2" ) > /dev/null 2>&1 &
+  echo "lab: labd holds 2 of 7 parts" >&2
+  sleep 30
+  exit 1
+fi
+echo "lab: resuming: labd holds 2 of 7 parts" >&2
+echo "$sha"
+`
+	if err := os.WriteFile(filepath.Join(dir, "lab"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run(t, nil, "", frontDoor(t, "fd04-upload-resume"), "--local", "--bin", dir, "--size", fmt.Sprint(200*mib))
+	if code != 1 || !strings.Contains(out, ": fail") || !strings.Contains(out, "part 2, which it held whole already") || strings.Contains(out, "checksum") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+}
+
+// A stop while lab is stopped for the cut (here, while labd's folder is
+// read) ends the run: the stopped lab is killed, not waited for.
+func TestFD04StoppedWhileLabIsStoppedEnds(t *testing.T) {
+	bin := bins(t)
+	stubs := t.TempDir()
+	mark := filepath.Join(stubs, "looking")
+	if err := os.WriteFile(filepath.Join(stubs, "find"), []byte("#!/bin/bash\ntouch \""+mark+"\"\nexec sleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(frontDoor(t, "fd04-upload-resume"), "--local", "--bin", bin, "--size", fmt.Sprint(200*mib))
+	cmd.Env = append(os.Environ(), "PATH="+stubs+":"+os.Getenv("PATH"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	for end := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(mark); err == nil {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("the run never stopped lab to look at labd's folder")
+		}
+	}
+	syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the run did not end: its cleanup waits for the stopped lab")
+	}
+}
+
 // The Front door's tests 5, 15 and 16 against a labd on loopback: the
 // member's script, the measuring and the decision, which is shown and
 // written nowhere.
 func TestTheTransferTestsRunAgainstALocalLabd(t *testing.T) {
+	added := recordsAdded(t, "*front-door*")
 	plist := read(t, filepath.Join(repo(t), "deploy", "org.omarchy-mac.lab.labd.plist"))
 	routes := read(t, filepath.Join(repo(t), "deploy", "cloudflared.yml"))
 	for name, wants := range map[string][]string{
@@ -104,7 +254,7 @@ func TestTheTransferTestsRunAgainstALocalLabd(t *testing.T) {
 	if read(t, filepath.Join(repo(t), "deploy", "org.omarchy-mac.lab.labd.plist")) != plist || read(t, filepath.Join(repo(t), "deploy", "cloudflared.yml")) != routes {
 		t.Error("a local run wrote in deploy/")
 	}
-	if entries, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*front-door*")); len(entries) != 0 {
+	if entries := added(); len(entries) != 0 {
 		t.Errorf("a local run left a record in docs/acceptance: %v", entries)
 	}
 }

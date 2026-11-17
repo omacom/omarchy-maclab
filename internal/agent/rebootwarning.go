@@ -24,23 +24,27 @@ func (a *Agent) warnBeforeReboot(ctx context.Context, c api.Command, args api.Bo
 		return nil
 	}
 	wait := time.Duration(args.RebootWarningSec) * time.Second
-	at := a.clock().Now().Add(wait)
-	text := fmt.Sprintf("The lab will reboot this Mac for job %s at %s. Press Pause to stop the job and keep your Mac.", c.JobID, at.In(time.Local).Format("15:04"))
+	// The notice's text is written before it is up, so it names the earliest
+	// the reboot can be; the wait is the full warning from once it is up, so
+	// a slow notice puts the reboot later than it says, never earlier.
+	text := fmt.Sprintf("The lab will reboot this Mac for job %s at %s. Press Pause to stop the job and keep your Mac.", c.JobID, a.clock().Now().Add(wait).In(time.Local).Format("15:04"))
 	onPause := func() {
 		if err := pause(ctx, a.cfg, a.sys, nil, io.Discard); err != nil {
 			a.log.Printf("reboot warning: Pause: %v", err)
 		}
 	}
 	shown, why := showNoticeWithPause(ctx, a.sys, a.cfg.GUIUser, text, onPause)
-	action := fmt.Sprintf("the reboot warning for job %s was shown to you, %s before the reboot", c.JobID, wait)
+	at := a.clock().Now().Add(wait)
+	when := at.In(time.Local).Format("15:04")
+	action := fmt.Sprintf("the reboot warning for job %s was shown to you, %s before the reboot at %s", c.JobID, wait, when)
 	if !shown {
-		action = fmt.Sprintf("the reboot warning for job %s was not shown (%s); the job goes ahead after %s", c.JobID, why, wait)
+		action = fmt.Sprintf("the reboot warning for job %s was not shown (%s); the job goes ahead after %s, at %s", c.JobID, why, wait, when)
 	}
 	if err := appendAudit(a.workDir(), api.AuditEntry{Time: a.clock().Now(), Job: c.JobID, Action: action}); err != nil {
 		return fmt.Errorf("the Audit log can't be written, so lab-agent does not reboot for %s: %w", c.JobID, err)
 	}
 	select {
-	case <-a.clock().After(wait):
+	case <-a.clock().After(at.Sub(a.clock().Now())):
 		return nil
 	case <-ctx.Done():
 		return context.Cause(ctx)
@@ -74,7 +78,11 @@ func showNoticeWithPause(ctx context.Context, sys System, guiUser, text string, 
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.StdoutPipe()
-	if err != nil || cmd.Start() != nil {
+	if err != nil {
+		return false, "notify-send could not start"
+	}
+	wait, err := startGroup(cmd)
+	if err != nil {
 		return false, "notify-send could not start"
 	}
 	read := make(chan struct{})
@@ -88,7 +96,7 @@ func showNoticeWithPause(ctx context.Context, sys System, guiUser, text string, 
 	exited := make(chan error, 1)
 	go func() {
 		<-read
-		exited <- cmd.Wait()
+		exited <- wait()
 	}()
 	select {
 	case err := <-exited:

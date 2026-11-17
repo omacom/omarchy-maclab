@@ -28,7 +28,7 @@ const suspendDevicesTest = "suspend-devices"
 var (
 	pmTestPath = "/sys/power/pm_test"
 	suspendCmd = func(ctx context.Context, name string, args ...string) (string, error) {
-		out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+		out, err := combinedGroup(exec.CommandContext(ctx, name, args...))
 		if err != nil && ctx.Err() != nil {
 			err = fmt.Errorf("%w (%s: %v)", ctx.Err(), name, err) // killed as ctx ended
 		}

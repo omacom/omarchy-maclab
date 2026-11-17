@@ -4,7 +4,7 @@
 {{define "asked"}}{{if .AskedBy}}@{{.AskedBy}}{{if .ByTeam}} <span class="badge kind-mteam">M team</span>{{end}}{{else if .ByLab}}<span class="dim">the lab</span>{{else}}<span class="dim">not recorded</span>{{end}}{{end}}
 
 {{define "main"}}{{with .Data}}<p class="dim"><a href="{{href "/builds"}}">Builds</a> /</p>
-<h1>{{.ID}}</h1>
+{{template "copy-title" (copy "the build id" .ID)}}
 <p class="subtitle">{{.What}}{{if .Source}}, from {{.Source}}{{end}}.</p>
 <section class="card">
 <h2 class="card-title">build</h2>
@@ -16,7 +16,7 @@
 {{end}}{{if .Took}}<dt>Took</dt><dd>{{.Took}}</dd>
 {{end}}{{if .Source}}<dt>Source</dt><dd>{{.Source}}</dd>
 {{end}}{{if or .For .Config}}<dt>Config</dt><dd>{{if .For}}{{.For}}'s{{end}}{{if .Config}} <code>{{.Config}}</code>{{end}}</dd>
-{{end}}{{if .Artifact}}<dt>Artifact</dt><dd><code>{{.Artifact}}</code>{{if .Size}} <span class="dim">{{.Size}}</span>{{end}}{{if .Reused}} <span class="dim">reused</span>{{end}}</dd>
+{{end}}{{if .Artifact}}<dt>Artifact</dt><dd>{{template "copy" (copy "the artifact sha256" .Artifact)}}{{if .Size}} <span class="dim">{{.Size}}</span>{{end}}{{if .Reused}} <span class="dim">reused</span>{{end}}</dd>
 {{end}}</dl>
 {{if .CanCancel}}<p>{{template "take" ($.Take (print "/builds/" .ID "/cancel") "Cancel" .CancelSentence)}}</p>
 {{end}}</section>
@@ -28,7 +28,7 @@
 {{range .Files}}<tr>
 <td data-label="File"><a href="{{href (print "/api/builds/" $.Data.ID "/files/" .Name)}}">{{.Name}}</a></td>
 <td data-label="Size" class="nowrap">{{.Size}}</td>
-<td data-label="sha256"><code>{{.SHA}}</code></td>
+<td data-label="sha256">{{template "copy" (copy (print "the sha256 of " .Name) .SHA)}}</td>
 </tr>
 {{end}}</tbody>
 </table></div>

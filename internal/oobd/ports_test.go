@@ -27,9 +27,9 @@ func testdata(t *testing.T, name string) string {
 func TestPortsAreFoundByTheRIDTheToolMatches(t *testing.T) {
 	ports := parsePorts(testdata(t, "ioreg-applehpm.txt"))
 	want := map[int]hpmPort{
-		0: {rid: 0, receptacle: 1, connected: true, productID: 29453, plugCount: 42},
+		0: {rid: 0, receptacle: 1, connected: true, macLink: true, productID: 29453, plugCount: 42},
 		1: {rid: 1, receptacle: 2, plugCount: 27},
-		2: {rid: 2, receptacle: 3, connected: true, productID: 29448, plugCount: 40},
+		2: {rid: 2, receptacle: 3, connected: true, macLink: true, productID: 29448, plugCount: 40},
 		5: {rid: 5, receptacle: 1, plugCount: 1},
 	}
 	if len(ports) != len(want) {
@@ -63,9 +63,14 @@ func TestANameIsReadOnTheReceptacleItsBusBelongsTo(t *testing.T) {
 // stubs puts an ioreg and a system_profiler that print the captured text in a folder.
 func stubs(t *testing.T) SystemPorts {
 	t.Helper()
+	return stubsOf(t, "ioreg-applehpm.txt")
+}
+
+func stubsOf(t *testing.T, ioreg string) SystemPorts {
+	t.Helper()
 	dir := t.TempDir()
 	here, _ := os.Getwd()
-	for name, file := range map[string]string{"ioreg": "ioreg-applehpm.txt", "system_profiler": "thunderbolt.json"} {
+	for name, file := range map[string]string{"ioreg": ioreg, "system_profiler": "thunderbolt.json"} {
 		script := "#!/bin/sh\necho \"$*\" >> " + dir + "/" + name + ".args\ncat " + filepath.Join(here, "testdata", file) + "\n"
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -96,6 +101,29 @@ func TestTheMinisPortsAsTheControllerReportsThem(t *testing.T) {
 	// An empty port has no name to look for.
 	if n := strings.Count(testdataArgs(t, sp.Profiler), "\n"); n != 2 {
 		t.Errorf("system_profiler ran %d times, want once for each connected port", n)
+	}
+}
+
+// The mini on 2026-11-16: a display on RID 1, connected on CC alone with no
+// USB-PD product id, which the reset tool cannot reach.
+func TestADisplayOnCCAloneIsNoMac(t *testing.T) {
+	sp := stubsOf(t, "ioreg-applehpm-display.txt")
+	want := map[int]oob.Port{
+		0: {RID: 0, Connected: true, ProductID: 29453, PlugCount: 42},
+		1: {RID: 1, Connected: true, PlugCount: 2, NoMac: true},
+		2: {RID: 2, Connected: true, Name: "omarchy-m1-pro", ProductID: 29448, PlugCount: 40},
+	}
+	for rid, w := range want {
+		got, err := sp.Read(context.Background(), rid)
+		if err != nil {
+			t.Fatalf("RID %d: %v", rid, err)
+		}
+		if got != w {
+			t.Errorf("RID %d: %+v, want %+v", rid, got, w)
+		}
+		if got, _ := sp.Look(context.Background(), rid); got.NoMac != w.NoMac {
+			t.Errorf("RID %d: a look says no Mac %v, want %v", rid, got.NoMac, w.NoMac)
+		}
 	}
 }
 

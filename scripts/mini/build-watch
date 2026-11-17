@@ -119,12 +119,17 @@ if [[ $had != "$cpus" ]]; then
 fi
 loaded "$BUILDER_LABEL" || fail "the Builder is not running ($BUILDER_LABEL): the set-up starts it once it has its token (scripts/mini/setup)"
 # What lab-builder builds with: its scratch folder and the two images, as
-# the set-up makes them from the Deployed build.
+# the set-up makes them from the Deployed build and starts the Builder with.
 [[ -d $BUILDER_IO ]] || fail "the Builder's scratch folder ($BUILDER_IO) is not there: the set-up makes it (scripts/mini/setup). No build was waited for"
 for pair in $BUILDER_IMAGES; do
-  "$watch" as "$user" image inspect "${pair%:*}" >/dev/null 2>&1 ||
-    fail "the Builder's image ${pair%:*} is not there: the set-up builds it from the Deployed build (scripts/mini/setup, with --builder-rootfs FILE for the package image). No build was waited for"
+  IFS=: read -r name option dir <<<"$pair"
+  image="$(builder_image "$name" "$dir" "$LAB_CURRENT")"
+  if [[ -z $image ]] || ! "$watch" as "$user" image inspect "$image" >/dev/null 2>&1; then
+    fail "the Builder's image ${image:-$name} is not there: the set-up builds it from the Deployed build (scripts/mini/setup, with --builder-rootfs FILE for the package image). No build was waited for"
+  fi
 done
+behind="$(builder_behind "$LAB_CURRENT")"
+[[ -z $behind ]] || fail "$(head -n 1 <<<"$behind"): the set-up starts the Builder with the Deployed build's images (scripts/mini/setup). No build was waited for"
 
 if (( cold )); then
   pair="${BUILDER_VOLUMES%% *}"

@@ -413,6 +413,37 @@ not_whole() {
   fail "$2: a daemon run from the copy would still run files the admin account can write. Nothing was changed"
 }
 
+# rewrite_kegs NEW: a script in the copy that runs another copied keg by
+# its Homebrew path is pointed at that keg's copy, in this folder. That is
+# how a wrapper on a Java tree runs from the copy: Homebrew's signal-cli on
+# Java is a script that runs the keg's own script on openjdk, which brew
+# names among its needs and the copy takes whole. Anything else that names
+# Homebrew is left, and whole refuses it.
+rewrite_kegs() {
+  local new="$1" file i from to end text changed mode pat rep
+  while IFS= read -r -d '' file; do
+    [[ -f $file && ! -L $file && "$(head -c 2 "$file")" == '#!' ]] || continue
+    text="$(cat "$file"; printf x)"
+    text="${text%x}"
+    changed="$text"
+    for (( i = 0; i < ${#KEG_NAMES[@]}; i++ )); do
+      to="$new/${KEG_NAMES[i]}"
+      for from in "${KEG_PATHS[i]}" "$BREW_PREFIX/Cellar/${KEG_NAMES[i]}/$(basename "${KEG_PATHS[i]}")" "$BREW_PREFIX/opt/${KEG_NAMES[i]}"; do
+        for end in / '"' "'" ' ' $'\n'; do
+          # Unquoted: bash 3.2 would keep the quotes of a quoted replacement.
+          pat="$from$end" rep="$to$end"
+          changed="${changed//"$pat"/$rep}"
+        done
+      done
+    done
+    [[ $changed != "$text" ]] || continue
+    if [[ -x $file ]]; then mode=0555; else mode=0444; fi
+    chmod u+w "$file"
+    printf '%s' "$changed" > "$file"
+    chmod "$mode" "$file"
+  done < <(grep -rlF --null "$BREW_PREFIX" "$new" 2>/dev/null || true)
+}
+
 # The daemons run the Homebrew tools from a copy only root can write, never
 # from the prefix, which the admin account can write. The copy this one
 # replaces is kept as the way back after a bad upgrade.
@@ -421,9 +452,14 @@ new_copy() {
   new="$(mktemp -d "$LAB_TOOLS/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
   for (( i = 0; i < ${#KEG_NAMES[@]}; i++ )); do
     cp -R "${KEG_PATHS[i]}" "$new/${KEG_NAMES[i]}"
-    # Homebrew's own notes about a keg name its prefix, and no tool reads them.
-    rm -rf "$new/${KEG_NAMES[i]}"/{.brew,INSTALL_RECEIPT.json,sbom.spdx.json} "$new/${KEG_NAMES[i]}"/homebrew.*
+    # Homebrew's own notes about a keg name its prefix, and no tool reads them:
+    # its receipts, and the service files at the keg's top (sh.brew.<name>,
+    # homebrew.mxcl.<name> before, or the formula's own name); the lab's
+    # LaunchDaemon files in deploy/ start the daemons.
+    rm -rf "$new/${KEG_NAMES[i]}"/{.brew,INSTALL_RECEIPT.json,sbom.spdx.json} "$new/${KEG_NAMES[i]}"/{homebrew.*,sh.brew.*,*.plist,*.service,*.timer}
   done
+  rewrite_kegs "$new"
+  repoint "$new" "$new" || not_whole "$new" "a script of the copy could not be pointed at it"
   whole "$new"
   printf '%s' "$1" > "$new/VERSIONS"
   [[ -z $KEGS_HELD ]] || printf '%s' "$KEGS_HELD" > "$new/HELD"
@@ -437,9 +473,16 @@ new_copy() {
     [[ ! -L $d ]] || continue
     case "$(basename "$d")" in
       "$(basename "$new")" | "$old") ;;
-      *) rm -rf "$d" ;;
+      *) needed_back "$d" || rm -rf "$d" ;;
     esac
   done
+}
+
+# needed_back COPY: whether a Maintenance run that has not ended would switch
+# a tool back to the version COPY holds ($MAINTENANCE/upgraded: name old new).
+needed_back() {
+  [[ -f $MAINTENANCE/upgraded && -f $1/VERSIONS ]] || return 1
+  awk 'NR == FNR { want[$1 " " $2] = 1; next } ($1 " " $2) in want { found = 1 } END { exit !found }' "$MAINTENANCE/upgraded" "$1/VERSIONS"
 }
 
 # A tool whose new version failed its check in a Maintenance run was
@@ -530,8 +573,8 @@ pins() {
 
 # The Out-of-band controller. Its token is made here and never shown: root's
 # copy where only root reads, labd's copy where only the lab account does.
-# Its LaunchDaemon runs it from the Deployed build, so it starts once there
-# is one, and again whenever its token or its file changed.
+# Its LaunchDaemon runs it from the Deployed build, so the first Deploy
+# starts it; the set-up starts it again whenever its token or its file changed.
 
 TOKEN_NEW=0
 
@@ -598,7 +641,7 @@ controller() {
     again=1
   fi
   if [[ ! -x $LAB_CURRENT/bin/oobd ]]; then
-    say "the Out-of-band controller starts once a build is Deployed: run the set-up again after the first Deploy"
+    say "the Out-of-band controller is installed: the first Deploy starts it, from the build it Deploys"
     return 0
   fi
   [[ -x $RESET_TOOL ]] || say "the Deployed build has no reset tool ($RESET_TOOL): the controller answers status and refuses every reset"
@@ -720,7 +763,7 @@ sender() {
     change "start $SIGNAL_LABEL, from $SIGNAL_CLI" start_sender
   fi
   if [[ -r $SIGNAL_DATA && -z "$(ls -A "$SIGNAL_DATA")" ]]; then
-    say "the Signal sender has no number yet: scripts/mini/signal register"
+    say "the Signal sender has no account yet: scripts/mini/signal link (to your own number), or register (a number of its own)"
   fi
 }
 
@@ -928,11 +971,12 @@ install_rendered() {
   chmod 0644 "$LAUNCHD_DIR/$1.plist"
 }
 
-# rendered LABEL USER CPUS: the LaunchDaemon file with the account and the
-# cores written in, installed when it is not the one in place.
+# rendered LABEL USER CPUS [IMAGE PKG_IMAGE]: the LaunchDaemon file with the
+# account, the cores and the Builder's images written in, installed when it
+# is not the one in place.
 rendered() {
   [[ -f $deploy/$1.plist ]] || fail "no deploy/$1.plist beside scripts/"
-  sed -e "s|CONTAINER_USER|$2|g" -e "s|BUILDER_CPUS|$3|g" "$deploy/$1.plist" > "$work/$1.plist"
+  sed -e "s|CONTAINER_USER|$2|g" -e "s|BUILDER_CPUS|$3|g" -e "s|BUILDER_PKG_IMAGE|${5:-}|g" -e "s|BUILDER_IMAGE|${4:-}|g" "$deploy/$1.plist" > "$work/$1.plist"
   if ! cmp -s "$work/$1.plist" "$LAUNCHD_DIR/$1.plist" || [[ "$(looks "$LAUNCHD_DIR/$1.plist")" != "$(shape - 644) $ROOT_OWNER:$ROOT_GROUP" ]]; then
     change "install $LAUNCHD_DIR/$1.plist" install_rendered "$1"
     return 0
@@ -964,19 +1008,53 @@ build_pkg_image() {
   find "$BUILDER_PKG_CONTEXT" -mindepth 1 -maxdepth 1 ! -name "$BUILDER_ROOTFS" -exec rm -rf {} +
   cp -R "$2/." "$BUILDER_PKG_CONTEXT/"
   "$watch" as "$user" build -t "$1" "$BUILDER_PKG_CONTEXT"
+  made_image "$1"
+}
+
+build_image() {
+  "$watch" as "$user" build -t "$1" "$2"
+  made_image "$1"
+}
+
+# made_image TAG: written down as the last image of its name the set-up made.
+made_image() {
+  { grep -vxF "$1" "$BUILDER_MADE" 2>/dev/null || true; echo "$1"; } | write_as "$ROOT_OWNER" "$ROOT_GROUP" 0644 "$BUILDER_MADE"
+}
+
+# older_images TAG: the images of TAG's name the set-up made before the one
+# it made last before TAG, which is the way back. The image tagged 1, from
+# before the tags followed what an image is made from, counts as made first.
+older_images() {
+  local name="${1%:*}" t
+  local -a had=()
+  if ! grep -qxF "$name:1" "$BUILDER_MADE" 2>/dev/null && "$watch" as "$user" image inspect "$name:1" >/dev/null 2>&1; then
+    had+=("$name:1")
+  fi
+  while IFS= read -r t; do
+    [[ $t == "$1" ]] || had+=("$t")
+  done < <(grep "^$name:" "$BUILDER_MADE" 2>/dev/null || true)
+  (( ${#had[@]} > 1 )) || return 0
+  printf '%s\n' "${had[@]:0:${#had[@]}-1}"
+}
+
+# forget_image TAG: the image removed, and struck from what the set-up made.
+forget_image() {
+  if "$watch" as "$user" image inspect "$1" >/dev/null 2>&1 && ! "$watch" as "$user" image delete "$1" >/dev/null; then
+    say "container did not remove the image $1: it is left, and the next set-up that builds an image tries again"
+    return 0
+  fi
+  { grep -vxF "$1" "$BUILDER_MADE" 2>/dev/null || true; } | write_as "$ROOT_OWNER" "$ROOT_GROUP" 0644 "$BUILDER_MADE"
 }
 
 # installed_cpus: the cores the Builder's installed file gives a build.
-installed_cpus() {
-  awk '/<string>--cpus<\/string>/ { sub(/.*<string>--cpus<\/string><string>/, ""); sub(/<.*/, ""); print; exit }' "$LAUNCHD_DIR/$BUILDER_LABEL.plist" 2>/dev/null || true
-}
+installed_cpus() { builder_runs --cpus; }
 
 # deployed_cpus: the cores deploy/builder-cpus gives a build, where the
 # Builder's gate test wrote them down.
 deployed_cpus() { sed -e 's/#.*//' "$deploy/builder-cpus" 2>/dev/null | awk 'NF && !seen { print $1; seen = 1 }' || true; }
 
 builder() {
-  local user cpus settled pair name size tag dir watch="$LAB_CURRENT/scripts/mini/container" again=0 token_new=0
+  local user cpus settled pair name size tag dir option old image="" pkg_image="" watch="$LAB_CURRENT/scripts/mini/container" again=0 token_new=0
   local rootfs="$BUILDER_PKG_CONTEXT/$BUILDER_ROOTFS" rootfs_new=0
 
   user="$(cat "$CONTAINER_USER_FILE" 2>/dev/null || true)"
@@ -1017,7 +1095,9 @@ builder() {
   [[ ! -L $BUILDER_IO ]] || fail "$BUILDER_IO is a symbolic link (to $(readlink "$BUILDER_IO")), and the Builder's scratch folder is a folder of $ROOT_OWNER's own: nothing was written through it. Look at who put it there, remove the link and run this again"
   folder "$BUILDER_IO" "$ROOT_OWNER" "$ROOT_GROUP" 755
   if rendered "$CONTAINER_LABEL" "$user" "$cpus"; then again=1; fi
-  if rendered "$BUILDER_LABEL" "$user" "$cpus"; then BUILDER_AGAIN=1; fi
+  # The images it runs now, until those of the Deployed build are there.
+  image="$(builder_runs --image)" pkg_image="$(builder_runs --pkg-image)"
+  if rendered "$BUILDER_LABEL" "$user" "$cpus" "${image:-maclab-kbuild:1}" "${pkg_image:-maclab-pkgbuild:1}"; then BUILDER_AGAIN=1; fi
   if [[ ! -x $watch || ! -x $LAB_CURRENT/bin/lab-builder ]]; then
     say "container's server and the Builder start once a build is Deployed: run the set-up again after the first Deploy"
     return 0
@@ -1052,16 +1132,27 @@ builder() {
     "$watch" as "$user" volume inspect "$name" >/dev/null 2>&1 ||
       change "make the Builder's volume $name ($size)" "$watch" as "$user" volume create -s "$size" "$name"
   done
+  # An image is tagged by what it is made from: a Deploy whose builder/ is
+  # other names another tag, built here, and the Builder starts again with
+  # it. Of the images made before, the last is kept as the way back.
   for pair in $BUILDER_IMAGES; do
-    tag="${pair%:*}" dir="$LAB_CURRENT/${pair##*:}"
-    [[ -f $dir/Containerfile ]] || fail "the Deployed build has no $dir/Containerfile"
+    IFS=: read -r name option dir <<<"$pair"
+    [[ -f $LAB_CURRENT/$dir/Containerfile ]] || fail "the Deployed build has no $LAB_CURRENT/$dir/Containerfile"
+    tag="$(builder_image "$name" "$dir" "$LAB_CURRENT" "${builder_rootfs:-$rootfs}")"
+    [[ -n $tag ]] || fail "the Builder's image $name could not be named from $LAB_CURRENT/$dir"
+    if [[ $option == --image ]]; then image="$tag"; else pkg_image="$tag"; fi
     "$watch" as "$user" image inspect "$tag" >/dev/null 2>&1 && continue
-    if [[ ${pair##*:} == builder/pkg ]]; then
-      change "build the Builder's image $tag from $BUILDER_PKG_CONTEXT: $dir and the root file system" build_pkg_image "$tag" "$dir"
+    if [[ $dir == builder/pkg ]]; then
+      change "build the Builder's image $tag from $BUILDER_PKG_CONTEXT: $LAB_CURRENT/$dir and the root file system" build_pkg_image "$tag" "$LAB_CURRENT/$dir"
     else
-      change "build the Builder's image $tag from $dir" "$watch" as "$user" build -t "$tag" "$dir"
+      change "build the Builder's image $tag from $LAB_CURRENT/$dir" build_image "$tag" "$LAB_CURRENT/$dir"
     fi
+    while IFS= read -r old; do
+      [[ -n $old ]] || continue
+      change "remove the Builder's image $old, which the set-up made before the one kept as the way back" forget_image "$old"
+    done <<<"$(older_images "$tag")"
   done
+  if rendered "$BUILDER_LABEL" "$user" "$cpus" "$image" "$pkg_image"; then BUILDER_AGAIN=1; fi
 
   if [[ ! -s $BUILDER_TOKEN ]] && (( ! token_new )); then
     say "the Builder is not started: it has no token yet. As a Maintainer: lab builder add mini --kinds kernel,package -o FILE; then the set-up with --builder-token FILE"
@@ -1181,7 +1272,7 @@ keys_only() {
 NOT_KEYS_ONLY=""
 
 remote_login() {
-  local admin home keys says
+  local admin home keys says match
   admin="${SUDO_USER:-$(id -un)}"
   home="$(dscl_value "/Users/$admin" NFSHomeDirectory)"
   keys="$SYSROOT${home:-/Users/$admin}/.ssh/authorized_keys"
@@ -1199,6 +1290,11 @@ remote_login() {
   if (( ! DRY )) && [[ $says != "$SSHD_WANT" ]]; then
     NOT_KEYS_ONLY="SSH still takes a password after Unlock (sshd -T: ${says:-no answer}), though $SSHD_KEYS_ONLY says otherwise: a file sshd reads before it, in $(dirname "$SSHD_KEYS_ONLY") or sshd_config itself, sets it. Put that right and run the set-up again"
     say "$NOT_KEYS_ONLY"
+  fi
+  match="$(sshd_match)"
+  if (( ! DRY )) && [[ -n $match ]]; then
+    NOT_KEYS_ONLY+="${NOT_KEYS_ONLY:+; }a Match block lets SSH take a password after Unlock ($match), which sshd -T does not show. Take that line out and run the set-up again"
+    say "a Match block lets SSH take a password after Unlock ($match), which sshd -T does not show. Take that line out and run the set-up again"
   fi
 }
 

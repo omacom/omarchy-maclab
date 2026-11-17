@@ -19,14 +19,16 @@
 # before and after a Hard reset, a shutdown, a power-on, a cable pulled and
 # put back, and a hang.
 #
-# The rule the lab runs on is that the plug count stays through a restart
-# and moves with an unplug. If the readings say otherwise the test ends as
-# "stopped" (exit 3): the spec's answer is then a controller that watches
-# the ports continuously, which is one more slice of work before Ready.
+# The rule the lab runs on is that the plug count moves with an unplug. A
+# restart may move it too (the real mini counts plugs at every restart of
+# an Apple Silicon Mac): the lab tells that from a pull by the Mac's boot
+# id. If the pull does not move the count the test ends as "stopped" (exit
+# 3): the spec's answer is then a controller that watches the ports
+# continuously, which is one more slice of work before Ready.
 set -euo pipefail
 # shellcheck source=scripts/cutover/out-of-band/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 oob_options "$@"
 no_rest
@@ -45,14 +47,14 @@ $ME: dry run. Through $ADDRESS, under the saved login of a Maintainer, and on th
      expects: each Mac restarts for its own reset, through its new port, and the other keeps its boot id
   then, on the port of $M1, reading the mini's ports ($MINI_SCRIPTS/ports --seen) before and after each:
   4. ask: lab reset $M1
-     expects: the plug count and the connection id are recorded; the rule needs the plug count unchanged
+     expects: the plug count and the connection id are recorded; the Sighting holds whether the count moved or not
   5. STOP, by hand: shut $M1 down; read the port; then a reset powers it on
-     expects: whether the product id is read on a powered-off Mac; the plug count unchanged
+     expects: whether the product id is read on a powered-off Mac; the plug count recorded
   6. STOP, by hand: pull the cable of $M1 out of the mini, count to five, put it back in the same port
      expects: the plug count moved
   7. STOP, by hand: $HANG Read the port; then a reset brings it back
      expects: whether the product id is read on a hung Mac
-  8. judge: do the plug count and connection id tell an unplug from a restart?
+  8. judge: does the pull move the plug count, and did the restarts?
      expects: yes. If not: Result: stopped, exit 3, and the reason
   9. write docs/acceptance/$(today)-out-of-band-04.md and its line in docs/acceptance/$RESULTS_NAME
 Nothing was sent and nothing was reset.
@@ -147,12 +149,12 @@ moved s4 s5 "with the Mac hung"
 [[ "$(val s5 product)" == "$(val s0 product)" ]] || problems="$problems the product id is not read on a hung Mac ($(val s5 product)), so a Hard reset cannot bring one back;"
 back "the hung Mac"
 
-if same s0 s1 plugs && same s1 s3 plugs && ! same s3 s4 plugs; then
+if same s3 s4 plugs; then
+  stopped "the plug count did not move with the pull, so the lab cannot tell an unplug from a restart. The spec's answer is a controller that watches the ports continuously, which is one more slice"
+elif same s0 s1 plugs && same s1 s3 plugs; then
   rec "the plug count stayed through a Hard reset and through a shutdown and power-on, and moved with the pull: it tells an unplug from a restart"
-elif same s0 s1 connection && same s1 s3 connection && ! same s3 s4 connection; then
-  stopped "the plug count does not tell an unplug from a restart, the connection id does (it stayed through the restarts and changed with the pull). The lab compares the plug count: comparing the connection id instead is a change to labd and the controller, to make before Ready"
 else
-  stopped "neither the plug count nor the connection id tells an unplug from a restart. The spec's answer is a controller that watches the ports continuously, which is one more slice"
+  rec "the plug count moved through a restart too, and with the pull: the lab tells an unplug from the Mac's own restart by its boot id"
 fi
 [[ -z $problems ]] || give_up "${problems%;}"
 rec "the product id was read on the powered-off Mac and on the hung Mac"

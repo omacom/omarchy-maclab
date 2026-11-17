@@ -53,6 +53,7 @@ MINI_SCRIPTS=/usr/local/lab/current/scripts/mini
 MINI_TOOL=/usr/local/lab/current/bin/macvdmtool
 OOBD_LABEL=com.maclab.oobd
 OOBD_PLIST=/Library/LaunchDaemons/com.maclab.oobd.plist
+LABD_LABEL=org.omarchy-mac.lab.labd
 OOBD_LOG=/var/log/oobd.log
 RESULTS_NAME=out-of-band.results
 
@@ -269,6 +270,8 @@ boot_of() { "$LAB_CMD" status "$1" 2>/dev/null | sed -n 's/^  boot: *//p' | head
 state_of() { "$LAB_CMD" status "$1" 2>/dev/null | awk 'NR == 1 { print $2 }'; }
 # cable_of MAC: "sighted on the right port", "not sighted", "no cable".
 cable_of() { "$LAB_CMD" oob "$1" 2>/dev/null | sed -n "1s/^$1: //p"; }
+# since_of MAC: since when the lab holds its Sighting; empty for none.
+since_of() { "$LAB_CMD" oob "$1" 2>/dev/null | sed -n 's/^  since: *//p'; }
 # port_of MAC: the port it is placed on; empty for none.
 port_of() { cable_of "$1" | sed -n 's/^sighted on the \([a-z]*\) port.*/\1/p'; }
 # shows PORT: what lab oob says the port shows, as the controller last saw it.

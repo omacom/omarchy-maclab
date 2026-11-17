@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 //	labd import check counts --from FILE
 //	labd import check machine-id --machine-id-key FILE --public-key FILE
 //	labd import check deletion-link
+//	labd import check certificate [--save FILE]
 //
 // The address of the old site's Postgres holds its password. dump asks for
 // it at a prompt that does not show it; it is taken from no argument, no
@@ -40,7 +42,9 @@ const importUsage = `usage:
   labd import dump --to FILE
       Reads the old site's three tables from its Postgres into FILE, a new
       file only this account reads. It asks for the Postgres address at a
-      prompt and does not show it: the address is never an argument.
+      prompt and does not show it: the address is never an argument. Then
+      it asks for the CA file the Postgres certificate must chain to
+      (sslmode verify-ca); beyond this machine nothing is read without it.
   labd import load --from FILE [--data DIR]
       Fills an empty reports.db from FILE, and makes the people it names.
       It reads FILE only. On a reports.db that holds anything it refuses.
@@ -52,6 +56,12 @@ const importUsage = `usage:
   labd import check deletion-link [--data DIR]
       A deletion link the old site issued, asked for at a prompt, deletes
       its report.
+  labd import check certificate [--save FILE]
+      The certificate chain the old site's Postgres presents, each with its
+      SHA-256 fingerprint, to look at before its CA file is trusted. It asks
+      for the address at a prompt and sends neither user nor password. With
+      --save, the chain's last certificate is written to FILE, a new file,
+      for the dump's CA file.
 `
 
 // oldSiteDB is the old site's Postgres as the dump reads it.
@@ -60,11 +70,15 @@ type oldSiteDB interface {
 	Close() error
 }
 
-// openOldSite opens the old site's Postgres at the address typed.
+// openOldSite opens the old site's Postgres at the address typed, its
+// certificate checked against the CA file typed.
 var openOldSite = pgOpen
 
-func pgOpen(address string) (oldSiteDB, error) {
-	db, err := pg.Open(address)
+// oldSiteChain is the certificate chain the old site's Postgres presents.
+var oldSiteChain = pg.Chain
+
+func pgOpen(address, caFile string) (oldSiteDB, error) {
+	db, err := pg.Open(address, caFile)
 	if err != nil {
 		return nil, err
 	}
@@ -85,10 +99,25 @@ func asked(in io.Reader, errw io.Writer, prompt string) (string, error) {
 		}
 		line = string(b)
 	} else {
-		var err error
-		if line, err = bufio.NewReader(io.LimitReader(in, 8192)).ReadString('\n'); err != nil && err != io.EOF {
-			return "", errors.New("nothing could be read at the prompt")
+		// A byte at a time, so that the next prompt reads the next line.
+		var b strings.Builder
+		one := make([]byte, 1)
+		for b.Len() < 8192 {
+			n, err := in.Read(one)
+			if n == 1 {
+				if one[0] == '\n' {
+					break
+				}
+				b.WriteByte(one[0])
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return "", errors.New("nothing could be read at the prompt")
+			}
 		}
+		line = b.String()
 	}
 	return strings.TrimSpace(line), nil
 }
@@ -110,6 +139,7 @@ func importCommand(ctx context.Context, args []string, in io.Reader, out, errw i
 	githubURL := fs.String("github-url", "", "")
 	idKey := fs.String("machine-id-key", "", "")
 	publicKey := fs.String("public-key", "", "")
+	save := fs.String("save", "", "")
 	what, rest := args[0], args[1:]
 	if what == "check" && len(rest) > 0 {
 		what, rest = "check "+rest[0], rest[1:]
@@ -148,6 +178,8 @@ func importCommand(ctx context.Context, args []string, in io.Reader, out, errw i
 		err = checkMachineID(*data, *idKey, *publicKey, out)
 	case "check deletion-link":
 		err = checkDeletionLink(*data, in, out, errw)
+	case "check certificate":
+		err = checkCertificate(ctx, *save, in, out, errw)
 	default:
 		return usage()
 	}
@@ -168,7 +200,11 @@ func importDump(ctx context.Context, to string, in io.Reader, out, errw io.Write
 	if address == "" {
 		return errors.New("no address was given. Nothing was read")
 	}
-	db, err := openOldSite(address)
+	caFile, err := asked(in, errw, "CA file the old site's Postgres certificate chains to (empty only for a Postgres on this machine): ")
+	if err != nil {
+		return err
+	}
+	db, err := openOldSite(address, caFile)
 	address = ""
 	if err != nil {
 		return err
@@ -373,4 +409,55 @@ func runImport(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return importCommand(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// fingerprint is a certificate's SHA-256, as a browser shows it.
+func fingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = fmt.Sprintf("%02X", b)
+	}
+	return strings.Join(parts, ":")
+}
+
+// checkCertificate shows the chain the old site's Postgres presents, and
+// with save keeps its last certificate as the CA file for the dump.
+func checkCertificate(ctx context.Context, save string, in io.Reader, out, errw io.Writer) error {
+	if save != "" {
+		if _, err := os.Lstat(save); err == nil {
+			return fmt.Errorf("%s is already there: it is never replaced. Name another file, or remove that one", save)
+		}
+	}
+	address, err := asked(in, errw, "Address of the old site's Postgres (it is not shown): ")
+	if err != nil {
+		return err
+	}
+	if address == "" {
+		return errors.New("no address was given. Nothing was asked")
+	}
+	certs, err := oldSiteChain(ctx, address)
+	address = ""
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "The old site's Postgres presents %d certificates, its own first:\n", len(certs))
+	for i, cert := range certs {
+		fmt.Fprintf(out, "%d. subject %s\n   issuer %s\n   valid %s to %s\n   SHA-256 %s\n", i+1, cert.Subject, cert.Issuer,
+			cert.NotBefore.UTC().Format(time.DateOnly), cert.NotAfter.UTC().Format(time.DateOnly), fingerprint(cert.Raw))
+	}
+	if save == "" {
+		return nil
+	}
+	last := certs[len(certs)-1]
+	f, err := os.OpenFile(save, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("%s could not be made: %v", save, err)
+	}
+	if err := errors.Join(pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: last.Raw}), f.Close()); err != nil {
+		os.Remove(save)
+		return fmt.Errorf("%s could not be written: %v", save, err)
+	}
+	fmt.Fprintf(out, "Wrote %s: certificate %d, the chain's last. Give it at the dump's CA file prompt only once its fingerprint is the one you checked.\n", save, len(certs))
+	return nil
 }

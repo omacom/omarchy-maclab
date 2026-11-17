@@ -83,7 +83,6 @@ type gapsPage struct {
 	Reported            []reportedGroup
 	Unclaimed           []unclaimedRow
 	Missing, Unverified catalogueGapsView
-	Credit              string
 }
 
 var reportedTitles = map[string]string{"not-in-aurora": "Not yet in Aurora", "not-in-asahi": "Not yet in Asahi", "unknown-hardware": "Unknown hardware"}
@@ -114,7 +113,7 @@ func (s *Server) pGaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cat, gaps, issues := s.catalogue, p.Gaps(), s.issues(r, p)
-	page := gapsPage{Issues: issues != nil, Credit: cat.AsahiCredit()}
+	page := gapsPage{Issues: issues != nil}
 	for _, open := range p.OpenRegressions(p.Runs()) {
 		latest, pass := open.Latest(), open.Pass()
 		row := regressionRow{Feature: open.Feature, FeatureHref: s.href("/features/" + open.Feature), FeatureName: cat.FeatureName(open.Feature),
@@ -181,7 +180,6 @@ type auroraPage struct {
 	Package                      string
 	SourceURL, SourceTitle, Note string
 	Version                      int
-	Credit                       string
 }
 
 // pAurora is the Aurora feature-support table per chip generation, from
@@ -193,7 +191,7 @@ func (s *Server) pAurora(w http.ResponseWriter, r *http.Request) {
 	}
 	cat, support := s.catalogue, p.Aurora()
 	page := auroraPage{Empty: support.Empty(), Package: reports.AuroraPackage, SourceURL: cat.Source("aurora", "url"), SourceTitle: cat.Source("aurora", "title"),
-		Note: cat.Source("aurora", "note"), Version: cat.Version(), Credit: cat.AsahiCredit()}
+		Note: cat.Source("aurora", "note"), Version: cat.Version()}
 	for _, chip := range support.Chips() {
 		v := auroraChipView{Key: chip.Key, Name: cat.ChipName(chip.Key),
 			Line: reports.Plural(chip.Machines(), "Verified machine") + ", " + reports.Plural(len(chip.Runs), "run") + ": " + strings.Join(chip.Models(), ", ") +

@@ -16,7 +16,10 @@
 # By hand: sudo -u lab /usr/local/lab/current/scripts/mini/dead-man
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# Run by hand as the lab account from where the admin stands, often a home
+# that account cannot read, every command it starts would say so.
+cd / 2>/dev/null
 # shellcheck source=scripts/mini/lib.sh
 . "$here/lib.sh"
 umask 077

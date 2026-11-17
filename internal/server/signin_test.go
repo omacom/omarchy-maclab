@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -914,5 +916,178 @@ func TestAHeldBodyOfALiveSessionIsTaken(t *testing.T) {
 	w := l.signedIn(maintainerID).heldPost("/api/enroll-tokens", "application/json", `{"name":"slow-mini","model":"desktop"}`)()
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "enr_") {
 		t.Errorf("a slow body of a live session: %d %s", w.Code, w.Body)
+	}
+}
+
+// countedBody counts the bytes labd reads of a body.
+type countedBody struct {
+	r io.Reader
+	n int
+}
+
+func (c *countedBody) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// A form with a session cookie that names no session is not read: labd
+// looks the session up first, and a made-up cookie costs it no byte of the
+// body, however long the body says it is.
+func TestAFormOfAMadeUpSessionIsNotRead(t *testing.T) {
+	l := rolesLab(t, nil)
+	l.signedIn(graceID)
+	body := &countedBody{r: strings.NewReader("sure=yes&x=" + strings.Repeat("a", formMax-11))}
+	r := httptest.NewRequest("POST", "http://"+labHost+personPath(graceID, "block"), body)
+	r = r.WithContext(onTunnel(r.Context()))
+	r.RemoteAddr = "@"
+	for name, value := range map[string]string{"X-Forwarded-Proto": "https", "CF-Connecting-IP": "203.0.113.9", "User-Agent": "TestBrowser/9.75",
+		"Origin": labAddress, "Content-Type": formType} {
+		r.Header.Set(name, value)
+	}
+	r.AddCookie(&http.Cookie{Name: sessionCookie(true), Value: "made-up"})
+	r.Header.Set("X-CSRF-Token", csrfToken("made-up"))
+	w := httptest.NewRecorder()
+	l.h.ServeHTTP(w, r)
+	if body.n != 0 {
+		t.Errorf("labd read %d bytes of a form whose cookie names no session", body.n)
+	}
+	if l.who(graceID).Blocked {
+		t.Errorf("a made-up session Blocked a person: %d", w.Code)
+	}
+}
+
+// A signed-in browser's form must come whole within formWait: one that
+// trickles in is cut off at the deadline and does nothing, and the
+// connection is not held open for it.
+func TestASlowFormOfASessionIsCutOffAndDoesNothing(t *testing.T) {
+	old := formWait
+	formWait = 300 * time.Millisecond
+	defer func() { formWait = old }()
+	l := rolesLab(t, nil)
+	ravi := l.signedIn(maintainerID)
+	l.signedIn(graceID)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(onTunnel(r.Context()))
+		r.RemoteAddr = "@"
+		l.h.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	form := "sure=yes&csrf_token=" + ravi.csrf() + "&x=" + strings.Repeat("a", 100)
+	start := time.Now()
+	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nX-Forwarded-Proto: https\r\nCF-Connecting-IP: 203.0.113.9\r\nUser-Agent: TestBrowser/9.75\r\nOrigin: %s\r\nCookie: %s=%s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n",
+		personPath(graceID, "block"), labHost, labAddress, sessionCookie(true), ravi.session().Value, formType, len(form))
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for i := range len(form) {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			if _, err := c.Write([]byte{form[i]}); err != nil {
+				return
+			}
+		}
+	}()
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	answer, _ := bufio.NewReader(c).ReadString('\n')
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("the slow form held the connection %s", took)
+	}
+	if !strings.Contains(answer, " 400 ") && !strings.Contains(answer, " 408 ") {
+		t.Errorf("answer to a slow form: %q", answer)
+	}
+	if l.who(graceID).Blocked {
+		t.Errorf("a form that came after its deadline Blocked a person")
+	}
+}
+
+// sendHeld posts to target over a real connection, as from the tunnel: the
+// headers, then the first bytes of a body of length bytes, then one more
+// byte every gap until the body is sent or the test ends. It returns the
+// first line of labd's answer and how long it took.
+func sendHeld(t *testing.T, h http.Handler, target string, hdr map[string]string, body string, length int, gap time.Duration) (answer string, took time.Duration) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(onTunnel(r.Context()))
+		r.RemoteAddr = "@"
+		h.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nX-Forwarded-Proto: https\r\nCF-Connecting-IP: 203.0.113.9\r\nUser-Agent: TestBrowser/9.75\r\nOrigin: %s\r\nContent-Length: %d\r\n", target, labHost, labAddress, length)
+	for name, value := range hdr {
+		head += name + ": " + value + "\r\n"
+	}
+	start := time.Now()
+	first, rest := body, ""
+	if gap > 0 {
+		first, rest = body[:min(len(body), 16)], body[min(len(body), 16):]
+	}
+	if _, err := io.WriteString(c, head+"\r\n"+first); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for i := range len(rest) {
+			select {
+			case <-stop:
+				return
+			case <-time.After(gap):
+			}
+			if _, err := c.Write([]byte{rest[i]}); err != nil {
+				return
+			}
+		}
+	}()
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	answer, _ = bufio.NewReader(c).ReadString('\n')
+	return answer, time.Since(start)
+}
+
+// A cookie that names no session leaves its body unread, and the body may
+// not hold the connection either: Go's server drains a small unread body
+// after the answer, and that drain meets the read deadline every body has
+// from its start.
+func TestAMadeUpSessionsHeldBodyIsCutAtTheDeadline(t *testing.T) {
+	old := bodyWait
+	bodyWait = 300 * time.Millisecond
+	defer func() { bodyWait = old }()
+	l := rolesLab(t, nil)
+	l.signedIn(graceID)
+	answer, took := sendHeld(t, l.h, personPath(graceID, "block"), map[string]string{
+		"Cookie": sessionCookie(true) + "=made-up", "Content-Type": formType, "X-CSRF-Token": csrfToken("made-up"),
+	}, "sure=yes&x=aaaa", 64<<10, 0)
+	if took > 3*time.Second || answer == "" {
+		t.Errorf("a made-up session's held body kept the connection %s, answered %q", took, answer)
+	}
+	if l.who(graceID).Blocked {
+		t.Errorf("a made-up session Blocked a person")
+	}
+}
+
+// The deletion link's form is anyone's, and must come whole within formWait,
+// as a signed-in browser's must: one that trickles in is cut off.
+func TestASlowReportDeletionFormIsCutOff(t *testing.T) {
+	old := formWait
+	formWait = 300 * time.Millisecond
+	defer func() { formWait = old }()
+	l := rolesLab(t, nil)
+	form := "_method=delete&token=" + strings.Repeat("a", 2000)
+	answer, took := sendHeld(t, l.h, "/reports/8c1f02ab", map[string]string{"Content-Type": formType}, form, len(form), 20*time.Millisecond)
+	if took > 3*time.Second || answer == "" {
+		t.Errorf("a slow deletion form held the connection %s, answered %q", took, answer)
 	}
 }

@@ -958,3 +958,24 @@ button.chip { background: transparent; cursor: pointer; font-family: inherit; }
   .stack tr.person-detail > td { padding: 1rem 0.6rem; }
   .stack .actions { justify-content: flex-start; padding: 0.4em 0.3em 0; white-space: normal; }
 }
+
+/* a value to copy, its Copy button beside it (shown by app.js) */
+
+.copyable { align-items: baseline; display: inline-flex; flex-wrap: wrap; gap: 0.2em 0.5em; max-width: 100%; vertical-align: baseline; white-space: normal; }
+.copyable [data-copy] { min-width: 0; overflow-wrap: anywhere; }
+.copy-button { flex: none; font-size: 0.75em; line-height: 1.4; padding: 0.05em 0.55em; }
+.copy-button[hidden] { display: none; }
+.copyable-block { align-items: flex-start; display: flex; flex-wrap: nowrap; margin: 0 0 0.8em; }
+.copyable-block > pre { flex: 1; margin: 0; min-width: 0; }
+.copyable-block > .copy-button { margin-top: 0.7rem; }
+.copyable-title { display: flex; margin: 0 0 0.4em; }
+.copyable-title h1 { margin: 0; }
+.command .copyable { white-space: pre-wrap; }
+
+.visually-hidden { clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
+
+@media (max-width: 40rem) {
+  .copyable-block { flex-direction: column; }
+  .copyable-block > pre { width: 100%; }
+  .copyable-block > .copy-button { align-self: flex-end; margin-top: 0.4em; }
+}

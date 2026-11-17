@@ -299,3 +299,19 @@ func TestAPayloadLineIsADigestAndAPathBelowTheKernelsFolder(t *testing.T) {
 		t.Fatalf("a good payload list: %v %v", got, err)
 	}
 }
+
+// A manifest that names one package at two versions says nothing certain
+// of that package: it is refused at the freeze, whichever version comes last.
+func TestAManifestNamingOnePackageTwiceIsRefused(t *testing.T) {
+	m, _, _, _ := fixture(t)
+	payload := []byte(vml + "  vmlinuz\n" + dtb1 + "  dtbs/t-a.dtb\n" + dtb2 + "  dtbs/t-b.dtb\n" + mtr + "  modules.dep\n")
+	again := m.Artifacts[0]
+	again.Version = "7.1.12.aurora2-11"
+	for _, version := range []string{again.Version, m.Artifacts[0].Version} {
+		again.Version = version
+		m.Artifacts = append(m.Artifacts[:1], again)
+		if err := m.Validate(payload); err == nil || !strings.Contains(err.Error(), `"linux-aurora"`) || !strings.Contains(err.Error(), "twice") {
+			t.Errorf("a manifest naming linux-aurora at %s and %s: %v", m.Artifacts[0].Version, version, err)
+		}
+	}
+}

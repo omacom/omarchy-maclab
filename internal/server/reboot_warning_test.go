@@ -113,8 +113,7 @@ func rwLab(t *testing.T, c labConfig, open bool) (*lab, *agent.FakeClock, int) {
 	}
 	l.removeWindow(w)
 	if open {
-		l.mustVolunteer("open", "--until", clock.Now().Add(2*time.Hour).Format("15:04"))
-		time.Sleep(time.Second) // check-ins carry it to labd
+		l.openUntil(clock.Now().Add(2 * time.Hour))
 	}
 	return l, clock, len(ns)
 }
@@ -432,8 +431,16 @@ func (l *lab) rwLabdAuditCopyHas(id string, notShown bool) {
 
 // rwConfig is a lab whose labd warns Volunteers 5 minutes before a job's
 // first reboot (the production default; the harness default is no warning).
+// The clock moves on while a check-in is on its way, by the steps and at
+// wall speed between them, and a loaded machine was measured taking 2.7 s
+// for one: against the harness's 3 s quietGrace that lost a Mac that was
+// checking in. Nothing here is about losing the Mac, so labd gets a grace
+// no check-in comes near.
 func rwConfig() labConfig {
-	return labConfig{config: func(c *Config) { c.SetRebootWarning(rwWarning) }}
+	return labConfig{config: func(c *Config) {
+		c.SetRebootWarning(rwWarning)
+		c.QuietGrace = time.Minute
+	}}
 }
 
 func TestNoRebootWarningNorWaitWhenLabdsRebootWarningIsZero(t *testing.T) {

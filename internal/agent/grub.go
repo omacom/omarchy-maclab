@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -36,7 +35,7 @@ type mount struct {
 }
 
 func findMount(path string) (mount, error) {
-	out, err := exec.Command("findmnt", "-J", "-T", path, "-o", "SOURCE,TARGET,FSTYPE,UUID").Output()
+	out, err := toolOutput("findmnt", "-J", "-T", path, "-o", "SOURCE,TARGET,FSTYPE,UUID")
 	if err != nil {
 		return mount{}, fmt.Errorf("findmnt %s: %w", path, err)
 	}
@@ -235,7 +234,7 @@ func (g *grubLayout) installHook() error {
 		}
 	}
 	if _, err := os.Stat(g.EnvFile); os.IsNotExist(err) {
-		if out, err := exec.Command("grub-editenv", g.EnvFile, "create").CombinedOutput(); err != nil {
+		if out, err := toolCombined("grub-editenv", g.EnvFile, "create"); err != nil {
 			return fmt.Errorf("grub-editenv create: %v: %s", err, out)
 		}
 	}
@@ -249,13 +248,13 @@ func (g *grubLayout) arm(entry string) error {
 	if _, err := os.Stat(filepath.Join(stageDir(), strings.TrimPrefix(entry, entryPrefix), "entry.cfg")); err != nil {
 		return fmt.Errorf("entry %s is not staged", entry)
 	}
-	if out, err := exec.Command("grub-editenv", g.EnvFile, "set", envVar+"="+entry).CombinedOutput(); err != nil {
+	if out, err := toolCombined("grub-editenv", g.EnvFile, "set", envVar+"="+entry); err != nil {
 		return fmt.Errorf("grub-editenv set: %v: %s", err, out)
 	}
 	if got := g.armed(); got != entry {
 		return fmt.Errorf("one-shot readback: got %q, want %q", got, entry)
 	}
-	exec.Command("sync").Run()
+	tool(nil, nil, "sync")
 	return nil
 }
 
@@ -264,7 +263,7 @@ func (g *grubLayout) armed() string {
 	if _, err := os.Stat(g.EnvFile); os.IsNotExist(err) {
 		return ""
 	}
-	out, _ := exec.Command("grub-editenv", g.EnvFile, "list").Output()
+	out, _ := toolOutput("grub-editenv", g.EnvFile, "list")
 	for _, l := range strings.Split(string(out), "\n") {
 		if v, ok := strings.CutPrefix(l, envVar+"="); ok {
 			return v
@@ -277,7 +276,7 @@ func (g *grubLayout) disarm() error {
 	if g.armed() == "" {
 		return nil
 	}
-	if out, err := exec.Command("grub-editenv", g.EnvFile, "unset", envVar).CombinedOutput(); err != nil {
+	if out, err := toolCombined("grub-editenv", g.EnvFile, "unset", envVar); err != nil {
 		return fmt.Errorf("grub-editenv unset: %v: %s", err, out)
 	}
 	return nil
