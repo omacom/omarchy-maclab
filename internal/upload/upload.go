@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
@@ -52,6 +53,36 @@ type Sender struct {
 	// Progress is told after each part how many of the upload's parts labd
 	// holds; nil is told nothing.
 	Progress func(held, total int)
+	// Hold, for the Front door's test of a cut upload alone, stops one part
+	// halfway once labd holds two, until the upload is canceled or lab is
+	// killed: labd then holds part of a part for as long as the test needs.
+	Hold bool
+}
+
+// holdAt reads the size bytes of f in parts of part bytes, but a read from
+// the middle of a part on, once ready says so, waits until ctx ends: the
+// first part to get there does, and that part only. No read crosses a
+// middle, so the part held has sent its first half and nothing more.
+type holdAt struct {
+	io.ReaderAt
+	ctx        context.Context
+	part, size int64
+	ready      func() bool
+	held       *atomic.Int64
+}
+
+func (h holdAt) ReadAt(p []byte, off int64) (int, error) {
+	n := off/h.part + 1
+	start := (n - 1) * h.part
+	mid := start + min(h.part, h.size-start)/2
+	if off < mid && off+int64(len(p)) > mid {
+		p = p[:mid-off]
+	}
+	if off >= mid && (h.held.Load() == n || h.ready() && h.held.CompareAndSwap(0, n)) {
+		<-h.ctx.Done()
+		return 0, h.ctx.Err()
+	}
+	return h.ReaderAt.ReadAt(p, off)
 }
 
 // refused is labd turning a request down: sending it again cannot help.
@@ -124,21 +155,31 @@ func (s Sender) Send(ctx context.Context, f io.ReaderAt, size int64) (string, er
 		mu    sync.Mutex
 		first error
 		held  = total - len(missing)
+		body  = f
 	)
+	if s.Hold {
+		body = holdAt{ReaderAt: f, ctx: ctx, part: state.PartBytes, size: size, held: new(atomic.Int64), ready: func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return held >= 2
+		}}
+	}
 	for range min(workers, len(missing)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for n := range queue {
 				off := int64(n-1) * state.PartBytes
-				err := s.part(ctx, f, sha, n, off, min(state.PartBytes, size-off))
+				err := s.part(ctx, body, sha, n, off, min(state.PartBytes, size-off))
 				mu.Lock()
 				if err != nil && first == nil {
 					first = err
 				}
-				if err == nil && s.Progress != nil {
+				if err == nil {
 					held++
-					s.Progress(held, total)
+					if s.Progress != nil {
+						s.Progress(held, total)
+					}
 				}
 				mu.Unlock()
 				if err != nil {

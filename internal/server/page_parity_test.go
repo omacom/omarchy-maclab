@@ -28,6 +28,11 @@ type pinnedElement struct {
 	Data  map[string]string `json:"data"`
 }
 
+// portOnly are the data- attributes the port marks and the old site never
+// had: data-copy is the value a Copy button beside it copies. An element
+// pinned by one of them alone is not pinned; one with an id still is.
+var portOnly = map[string]bool{"data-copy": true}
+
 func pinnedIn(main *node) []pinnedElement {
 	var list []pinnedElement
 	var walk func(*node)
@@ -42,7 +47,7 @@ func pinnedIn(main *node) []pinnedElement {
 				e.Class = []string{}
 			}
 			for name, value := range c.attrs {
-				if strings.HasPrefix(name, "data-") {
+				if strings.HasPrefix(name, "data-") && !portOnly[name] {
 					e.Data[name] = value
 				}
 			}
@@ -201,5 +206,18 @@ func TestThePagesPinWhatTheOldSitesPin(t *testing.T) {
 				t.Errorf("%s, pinned element %d:\n  the old site %s\n  the port     %s", target, i, a, b)
 			}
 		}
+	}
+}
+
+// A Copy button's target is the port's own mark: the parity of pinned
+// elements reads past it, and still reads every other id and data- attribute.
+func TestACopyMarkIsNotAPinnedElement(t *testing.T) {
+	main := parseHTML(t, `<main><div class="copyable copyable-block"><pre class="command"><code data-copy id="install">curl</code></pre> <button class="copy-button" type="button" aria-label="Copy the install command" hidden>Copy</button></div>`+
+		`<span class="dim">report <span class="copyable"><code data-copy>preview-1</code></span></span>`+
+		`<tr data-build="b1" data-copy><td data-label="sha256">x</td></tr></main>`).children[0]
+	got, _ := json.Marshal(pinnedIn(main))
+	want := `[{"tag":"code","id":"install","class":[],"data":{}},{"tag":"tr","id":"","class":[],"data":{"data-build":"b1"}},{"tag":"td","id":"","class":[],"data":{"data-label":"sha256"}}]`
+	if string(got) != want {
+		t.Errorf("pinned:\n%s\nwant:\n%s", got, want)
 	}
 }

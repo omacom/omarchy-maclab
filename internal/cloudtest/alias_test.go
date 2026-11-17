@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -360,7 +361,7 @@ func (p *porkbun) run(args ...string) (string, int) {
 	// after the script orders the test's plain use of p.records with it.
 	p.mu.Lock()
 	p.mu.Unlock()
-	out, code := script(p.t, nil, []string{"LAB_PORKBUN_API=" + p.srv.URL + "/api/json/v3", "PORKBUN_API_KEY=" + porkbunKey, "PORKBUN_SECRET_KEY=" + porkbunSecret}, recordScript, args...)
+	out, code := script(p.t, nil, []string{"LAB_PORKBUN_API=" + p.srv.URL + "/api/json/v3"}, recordScript, append(args, "--porkbun-keys", porkbunKeys(p.t, 0o600))...)
 	for _, secret := range []string{porkbunKey, porkbunSecret} {
 		if strings.Contains(out, secret) {
 			p.t.Errorf("%s printed a key", recordScript)
@@ -442,12 +443,108 @@ func TestTheRehearsalsRecordNeverTouchesAnotherRecord(t *testing.T) {
 // Porkbun's stand-in is the tests' and takes a loopback address only.
 func TestThePorkbunStandInTakesOnlyLoopback(t *testing.T) {
 	for _, api := range []string{"https://example.org/api/json/v3", "http://127.0.0.1:1@lab.invalid/api", "http://127.0.0.1:/api"} {
-		out, code := script(t, nil, []string{"LAB_PORKBUN_API=" + api, "PORKBUN_API_KEY=k", "PORKBUN_SECRET_KEY=s"}, recordScript, "--check", "--name", rehearsal)
+		out, code := script(t, nil, []string{"LAB_PORKBUN_API=" + api}, recordScript, "--check", "--name", rehearsal, "--porkbun-keys", porkbunKeys(t, 0o600))
 		if code == 0 || !strings.Contains(out, "loopback") {
 			t.Errorf("LAB_PORKBUN_API=%s: exit %d\n%s", api, code, out)
 		}
 	}
 	if !strings.Contains(source(t, "lib.sh"), `PORKBUN_API="https://api.porkbun.com/api/json/v3"`) {
 		t.Error("lib.sh does not name Porkbun's API")
+	}
+}
+
+// porkbunKeys is a file of the made-up keys, API key then secret key, one
+// to a line, with that mode.
+func porkbunKeys(t testing.TB, mode os.FileMode) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "porkbun.keys")
+	if err := os.WriteFile(file, []byte(porkbunKey+"\n"+porkbunSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(file, mode); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+// Porkbun's two keys come from a file only its owner reads, as the
+// Cloudflare token does: never from the environment or the Keychain, and a
+// file others can read is refused before anything is sent.
+func TestPorkbunsKeysComeFromAFileOnlyItsOwnerReads(t *testing.T) {
+	p := newPorkbun(t)
+	api := "LAB_PORKBUN_API=" + p.srv.URL + "/api/json/v3"
+	refused := func(what string, env []string, args ...string) {
+		t.Helper()
+		out, code := script(t, nil, append([]string{api}, env...), recordScript, append([]string{"--check", "--name", rehearsal}, args...)...)
+		if n := len(p.sent()); code == 0 || n != 0 {
+			t.Errorf("%s: exit %d, %d calls to Porkbun\n%s", what, code, n, out)
+		}
+		if strings.Contains(out, porkbunKey) || strings.Contains(out, porkbunSecret) {
+			t.Errorf("%s: a key was printed", what)
+		}
+	}
+	refused("keys in the environment", []string{"PORKBUN_API_KEY=" + porkbunKey, "PORKBUN_SECRET_KEY=" + porkbunSecret})
+	for _, mode := range []os.FileMode{0o644, 0o640, 0o604, 0o660} {
+		refused(fmt.Sprintf("a file of mode %o", mode), nil, "--porkbun-keys", porkbunKeys(t, mode))
+	}
+	refused("no such file", nil, "--porkbun-keys", filepath.Join(t.TempDir(), "none"))
+	half := porkbunKeys(t, 0o600)
+	os.WriteFile(half, []byte(porkbunKey+"\n"), 0o600)
+	refused("a file with one key", nil, "--porkbun-keys", half)
+
+	// The keys file by default: ~/.config/omarchy-mac-lab/porkbun.keys.
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".config", "omarchy-mac-lab"), 0o700)
+	if err := os.Rename(porkbunKeys(t, 0o600), filepath.Join(home, ".config", "omarchy-mac-lab", "porkbun.keys")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := script(t, nil, []string{api, "HOME=" + home}, recordScript, "--check", "--name", rehearsal); code != 1 || len(p.sent()) != 1 || strings.Contains(out, "Invalid API key") {
+		t.Errorf("with the file in its place: exit %d\n%s", code, out)
+	}
+	if strings.Contains(source(t, "lib.sh"), "security find-generic-password") {
+		t.Error("lib.sh still reads the Keychain")
+	}
+}
+
+// withACL gives file an access control list that lets another account read
+// it, with the file's mode left as it is.
+func withACL(t testing.TB, file string) {
+	t.Helper()
+	if exec.Command("chmod", "+a", "everyone allow read", file).Run() == nil {
+		return
+	}
+	if exec.Command("setfacl", "-m", "u:nobody:r", file).Run() == nil {
+		return
+	}
+	t.Skip("no access control lists here")
+}
+
+// A 0600 credential file whose ACL lets another account read it is
+// refused before anything is sent: the Porkbun keys and the Cloudflare
+// token alike. On macOS the mode column shows @ for any extended
+// attribute, and then no + for the ACL.
+func TestACredentialFileWithAnACLIsRefused(t *testing.T) {
+	p := newPorkbun(t)
+	keys := porkbunKeys(t, 0o600)
+	withACL(t, keys)
+	out, code := script(t, nil, []string{"LAB_PORKBUN_API=" + p.srv.URL + "/api/json/v3"}, recordScript, "--check", "--name", rehearsal, "--porkbun-keys", keys)
+	if n := len(p.sent()); code == 0 || n != 0 || !strings.Contains(out, "ACL") {
+		t.Errorf("Porkbun keys with an ACL: exit %d, %d calls to Porkbun\n%s", code, n, out)
+	}
+
+	f := asSpec(t)
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte(f.token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withACL(t, token)
+	for _, name := range []string{zoneScript, tunnelScript} {
+		out, code := script(t, f, nil, name, "--check", "--token-file", token)
+		if code == 0 || !strings.Contains(out, "ACL") {
+			t.Errorf("%s took a token file with an ACL: exit %d\n%s", name, code, out)
+		}
+	}
+	if n := len(f.sent()); n != 0 {
+		t.Errorf("%d calls were made with a token others may read", n)
 	}
 }

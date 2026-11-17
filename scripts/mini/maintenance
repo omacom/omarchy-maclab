@@ -157,7 +157,9 @@ kegs() {
 # "name old new", in $MAINTENANCE/upgraded. Written before the set-up as
 # well, which selects the new copy before it starts the daemons. A record
 # left by a run that stopped stays for each tool still at its new version:
-# a run started again finds that version in use already.
+# a run started again finds that version in use already. One that upgrades
+# that tool again keeps the version the record began from, the last one
+# checked, and its copy is kept with it.
 record_upgraded() {
   local file="$MAINTENANCE/upgraded"
   { cat "$file" 2>/dev/null || true; } | BEFORE="$1" AFTER="$2" awk '
@@ -169,7 +171,13 @@ record_upgraded() {
       for (i = 1; i <= n; i++) {
         split(a[i], f, " "); name = f[1]; now = f[2]
         if (name == "") continue
-        if ((name in was) && was[name] != now) { print name, was[name], now; continue }
+        if ((name in was) && was[name] != now) {
+          # An open record of the same tool keeps the version it began from.
+          old = was[name]
+          if (name in earlier) { split(earlier[name], e, " "); if (e[2] == old || e[2] == now) old = e[1] }
+          if (old != now) print name, old, now
+          continue
+        }
         if (name in earlier) { split(earlier[name], e, " "); if (e[2] == now && e[1] != now) print name, e[1], now }
       }
     }' > "$file.new"
@@ -186,6 +194,8 @@ RESTARTING=0
 # shellcheck disable=SC2329
 first_half_ended() {
   local status=$?
+  # A second stop does not cut the way out short.
+  trap '' HUP INT TERM
   (( DRAINING && ! RESTARTING )) || return 0
   lift_drain
   tell "Maintenance run on the mini stopped before its restart (exit $status): the mini was not restarted, and jobs start again.${REPORT:+ The report is $REPORT on the mini.}"
@@ -353,13 +363,44 @@ state() { awk -v k="$1" '$1 == k { sub(/^[^ ]+ /, ""); print; exit }' "$STATE"; 
 
 # back TOOL OLD NEW: the tool's folder in the copy the daemons run from is
 # the previous copy's again, and its daemon starts from it. The copy names
-# NEW in HELD, so that the set-up does not copy that version again.
+# NEW in HELD, so that the set-up does not copy that version again. A stop
+# meanwhile waits until the folder is whole and the daemon started again,
+# then ends the run.
+STOPPED_AT=0
 back() {
+  local status=0
+  STOPPED_AT=0
+  trap 'STOPPED_AT=129' HUP
+  trap 'STOPPED_AT=130' INT TERM
+  switch_back "$@" || status=$?
+  trap 'exit 129' HUP
+  trap 'exit 130' INT TERM
+  (( ! STOPPED_AT )) || exit "$STOPPED_AT"
+  return "$status"
+}
+
+# kept_copy TOOL VERSION: a copy other than the one in use whose VERSIONS
+# names that version of the tool, the previous copy first. The set-up keeps
+# each copy an open record of the upgrade needs.
+kept_copy() {
+  local d cur
+  cur="$(cd -P "$LAB_TOOLS/current" 2>/dev/null && pwd -P)" || return 1
+  for d in "$LAB_TOOLS/previous" "$LAB_TOOLS"/*; do
+    d="$(cd -P "$d" 2>/dev/null && pwd -P)" || continue
+    [[ $d != "$cur" && -d $d/$1 ]] || continue
+    if awk -v n="$1" -v v="$2" '$1 == n && $2 == v { found = 1 } END { exit !found }' "$d/VERSIONS" 2>/dev/null; then
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+switch_back() {
   local name="$1" label cur prev held
   label="$(daemon_of "$name")"
   cur="$(cd -P "$LAB_TOOLS/current" 2>/dev/null && pwd -P)" || return 1
-  prev="$(cd -P "$LAB_TOOLS/previous" 2>/dev/null && pwd -P)" || return 1
-  [[ -d $prev/$name && $cur != "$prev" ]] || return 1
+  prev="$(kept_copy "$name" "$2")" || { note "tool $name: no copy kept holds $2"; return 1; }
   if [[ -n $label ]] && loaded "$label"; then stopped "$label" || { again "$label"; return 1; }; fi
   rm -rf "${cur:?}/.$name.failed" || { again "$label"; return 1; }
   mv "$cur/$name" "$cur/.$name.failed" || { again "$label"; return 1; }
@@ -367,7 +408,8 @@ back() {
   # VERSIONS and HELD are written in full the tool's own folder is kept, and
   # anything that fails puts it back as it was, with its daemon started.
   held="$(grep -v "^$name " "$cur/HELD" 2>/dev/null || true)"
-  if ! cp -R "$prev/$name" "$cur/$name" || ! chown -Rh "$ROOT_OWNER:$ROOT_GROUP" "$cur/$name" || ! chmod -R ug-s,go-w "$cur/$name" ||
+  if ! cp -R "$prev/$name" "$cur/$name" || ! repoint "$cur/$name" "$LAB_TOOLS/$(basename "$cur")" ||
+    ! chown -Rh "$ROOT_OWNER:$ROOT_GROUP" "$cur/$name" || ! chmod -R ug-s,go-w "$cur/$name" ||
     ! awk -v n="$name" -v v="$2" '$1 == n { print n, v; next } { print }' "$cur/VERSIONS" > "$cur/VERSIONS.new" ||
     ! printf '%s%s %s\n' "${held:+$held$'\n'}" "$name" "$3" > "$cur/HELD.new" ||
     ! mv -f "$cur/VERSIONS.new" "$cur/VERSIONS"; then
@@ -462,6 +504,8 @@ second_half() {
   [[ $REPORT == "$MAINTENANCE"/report-*.txt && -f $REPORT && ! -L $REPORT ]] || fail "$STATE names no report of this folder"
   mkdir "$MAINTENANCE/.second-half" 2>/dev/null || fail "the second half of the Maintenance run is running already ($MAINTENANCE/.second-half)"
   trap 'rmdir "$MAINTENANCE/.second-half" 2>/dev/null || true' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT TERM
   note "the mini is back, macOS $(macos_now) (it was $(state macos))"
 
   # labd tells "Agents" nothing before it runs.

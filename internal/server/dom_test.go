@@ -73,10 +73,14 @@ func parseHTML(t testing.TB, text string) *node {
 	return root
 }
 
-// text is the node's text, as a reader sees it.
+// text is the node's text, as a reader sees it: what is hidden, such as a
+// Copy button before the script shows it, is not read.
 func (n *node) text() string {
 	if n.tag == "" {
 		return n.chars
+	}
+	if n.has["hidden"] {
+		return ""
 	}
 	var b strings.Builder
 	for _, c := range n.children {

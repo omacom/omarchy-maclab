@@ -132,9 +132,6 @@ func TestTheCatalogue(t *testing.T) {
 	if c.FeatureName("thunderbolt") != "Thunderbolt" || c.FeatureName("made-up") != "made-up" || c.Feature("made-up") != nil {
 		t.Error("feature names")
 	}
-	if !strings.Contains(c.AsahiCredit(), "CC BY 3.0") {
-		t.Errorf("credit %q", c.AsahiCredit())
-	}
 	if got := c.ChecksFor("boot-chain"); !reflect.DeepEqual(got, []string{"boot.kernel-package", "boot.chain"}) && len(got) < 2 {
 		t.Errorf("checks of boot-chain: %q", got)
 	}

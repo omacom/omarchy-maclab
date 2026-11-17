@@ -53,9 +53,9 @@
 <section class="card narrow">
 <h2 class="card-title">artifacts and agents</h2>
 <p class="dim">A kernel artifact is a tarball with one <code>usr/lib/modules/&lt;release&gt;/</code>. The same from a terminal or an agent:</p>
-<pre class="command"><span class="prompt">$ </span>lab pack --build ~/aurora-build/…/build/base
-<span class="prompt">$ </span>lab run {{.GuideMac}} --kernel kernel-7.2.0-lab1.tar.zst --gui-test gui-smoke
-<span class="prompt">$ </span>lab mcp</pre>
+<pre class="command"><span class="prompt" aria-hidden="true">$ </span>{{template "copy" (copy "the lab pack command" "lab pack --build ~/aurora-build/…/build/base")}}
+<span class="prompt" aria-hidden="true">$ </span>{{template "copy" (copy "the lab run command" (print "lab run " .GuideMac " --kernel kernel-7.2.0-lab1.tar.zst --gui-test gui-smoke"))}}
+<span class="prompt" aria-hidden="true">$ </span>{{template "copy" (copy "lab mcp" "lab mcp")}}</pre>
 <p class="dim"><code>lab run</code> uploads the file and waits for the job. <code>lab mcp</code> gives an agent the same commands as tools.</p>
 </section>
 {{end}}{{end}}

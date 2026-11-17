@@ -68,5 +68,4 @@
   <% if @feature["models"].present? %>
     <p class="dim">Per board: <%= safe_join(@feature["models"].map { |board, states| "#{board} " + states.map { |layer, state| "#{layer} #{expected_words(state)}" }.join(", ") }, "; ") %>.</p>
   <% end %>
-  <p class="credit dim"><%= Catalogue.asahi_credit %></p>
 <% end %>

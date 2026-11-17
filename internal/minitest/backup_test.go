@@ -522,8 +522,8 @@ func TestTheBackupsDryRunSaysWhatWouldRunAndRunsNothing(t *testing.T) {
 		"backup: would copy " + data + "/labd.db to " + data + "/snapshots/labd.db with VACUUM INTO",
 		"backup: would copy " + data + "/reports.db to " + data + "/snapshots/reports.db with VACUUM INTO",
 		"backup: would run, for the house copy: the data directory to lab-backup: restic backup --host lab-mini" +
-			" --exclude " + data + "/labd.db --exclude " + data + "/labd.db-* --exclude " + data + "/.labd.db-litestream" +
-			" --exclude " + data + "/reports.db --exclude " + data + "/reports.db-* --exclude " + data + "/.reports.db-litestream" +
+			" --exclude " + data + "/labd.db --exclude " + data + "/labd.db-* --exclude " + data + "/labd.db.restored --exclude " + data + "/.labd.db-litestream" +
+			" --exclude " + data + "/reports.db --exclude " + data + "/reports.db-* --exclude " + data + "/reports.db.restored --exclude " + data + "/.reports.db-litestream" +
 			" --exclude " + data + "/callers --exclude .upload-* " + data,
 		"backup: would run, for the off-site copy: the databases' copies to R2: restic backup --host lab-mini " + data + "/snapshots",
 		"backup: would run, for the off-site copy's retention: restic forget --group-by host --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune",
@@ -611,5 +611,22 @@ func TestSetupStopsWithoutJq(t *testing.T) {
 	}
 	if m.daemonLoaded(litestreamLabel) || m.daemonLoaded(backupLabel) {
 		t.Error("a backup was started on a machine with no jq")
+	}
+}
+
+// A copy a Deploy left beside a database is a whole database: like the live
+// files, the house copy leaves it out.
+func TestTheHouseCopyLeavesADeploysCopyBesideTheDatabasesOut(t *testing.T) {
+	b := newBackedUp(t)
+	for _, name := range []string{"labd.db", "reports.db"} {
+		write(t, b.path("var/lab/data/"+name+".restored"), "a whole database\n", 0o600)
+	}
+
+	out := b.ok("backup")
+
+	for _, f := range b.carried("house", "00000001") {
+		if strings.HasSuffix(f, ".restored") {
+			t.Errorf("the house copy carries %s\n%s", f, out)
+		}
 	}
 }

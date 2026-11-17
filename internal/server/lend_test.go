@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -61,7 +60,7 @@ func (w *lockedBuffer) String() string {
 	return w.b.String()
 }
 
-var reJoinLine = regexp.MustCompile(`(?s)<pre class="legal"><code>(.*?)</code></pre>`)
+var reJoinLine = regexp.MustCompile(`(?s)<pre class="command"><span class="prompt" aria-hidden="true">\$ </span><code data-copy>(.*?)</code></pre>`)
 
 // joinCommandOn is the Join command a page shows: its one line, as a shell
 // reads it, and its token.
@@ -72,6 +71,7 @@ func joinCommandOn(t *testing.T, body string) (line, token string) {
 		t.Fatalf("the page shows no Join command:\n%s", refusalIn(body))
 	}
 	line = html.UnescapeString(m[1])
+	offersToCopy(t, body, "the Join command", line)
 	token = regexp.MustCompile(`enr_[0-9a-f]{32}`).FindString(line)
 	if token == "" {
 		t.Fatalf("the Join command carries no token: %s", line)
@@ -336,18 +336,14 @@ func TestTheJoinCommandIsGoodForOneMacOnce(t *testing.T) {
 	if strings.ContainsAny(line, "\n\r") {
 		t.Errorf("the Join command is more than one line: %q", line)
 	}
-	for _, want := range []string{" T='" + first + "'", "U='" + labAddress + "'", "--proto '=https' --tlsv1.2", `printf 'Authorization: Bearer %s\n' "$T" | curl`, "-H @-",
-		`"$U/api/join/lab-agent"`, "sha256sum -c --quiet", `printf '%s\n' "$T" | sudo "$D/lab-agent" setup --server "$U" --token-stdin`} {
-		if !strings.Contains(line, want) {
-			t.Errorf("the Join command lacks %q:\n%s", want, line)
-		}
+	if want := " curl -fsSL " + labAddress + "/join | LAB_JOIN=" + first + " bash"; line != want {
+		t.Errorf("the Join command is\n%q\nwant\n%q", line, want)
 	}
-	if strings.Count(line, first) != 1 || strings.Contains(line, "?") || strings.Contains(line, "--token ") {
-		t.Errorf("the token is used more than once, or in a URL or an argument:\n%s", line)
-	}
-	// Every address in a line a person is told to run is the Lab address.
-	for _, u := range regexp.MustCompile(`https?://[^\s'"]+`).FindAllString(line, -1) {
-		if u != labAddress {
+	// Every address in a line a person is told to run, and in the script
+	// it runs, is the Lab address.
+	script := l.asMac("GET", "/join", "", "").Body.String()
+	for _, u := range regexp.MustCompile(`https?://[^\s'"]+`).FindAllString(line+"\n"+script, -1) {
+		if u != labAddress && u != labAddress+"/join" {
 			t.Errorf("the Join command names %s, which is not the Lab address", u)
 		}
 	}
@@ -703,45 +699,22 @@ func TestLabEnrollsTokenLastsAnHour(t *testing.T) {
 // names the case. Run by bash with a stand-in for curl that answers as the
 // lab or its front door would.
 func TestTheJoinCommandNamesWhyItWasRefused(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash")
-	}
 	l, _ := lendLab(t)
 	ravi := l.signedIn(maintainerID)
 	line, _ := ravi.makeJoin("shelf-mac")
+	run := newJoinRun(t, l.asMac("GET", "/join", "", "").Body.Bytes(), []byte("not the agent"), nil)
 	for _, c := range []struct{ answer, says string }{
 		{"401", "expired or was used: make a new one on Lend a Mac"},
 		{"429", "Too many refused attempts from this network: wait 15 minutes"},
 		{"403challenge", "challenged this request"},
 		{"503", "did not answer as expected (503)"},
 	} {
-		bin, rec := t.TempDir(), t.TempDir()
-		os.WriteFile(filepath.Join(bin, "curl"), []byte("#!/bin/bash\ncat >/dev/null\necho run >> \"$REC/curl.runs\"\nprintf '%s' \"$ANSWER\"\n"), 0o755)
-		for _, tool := range []string{"sudo", "sha256sum", "chmod"} {
-			os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/bash\necho run >> \"$REC/"+tool+".runs\"\n"), 0o755)
+		out, reached := run.run(line, "CODE="+c.answer)
+		if run.exit == 0 || reached || !strings.Contains(out, c.says) {
+			t.Errorf("answered %s: exit %d, sudo reached %v, said %q, want %q", c.answer, run.exit, reached, out, c.says)
 		}
-		path := bin
-		for _, tool := range []string{"mktemp", "cat"} {
-			p, err := exec.LookPath(tool)
-			if err != nil {
-				t.Skip("no " + tool)
-			}
-			path += ":" + filepath.Dir(p)
-		}
-		cmd := exec.Command(bash, "-c", line)
-		cmd.Env = []string{"PATH=" + path, "REC=" + rec, "ANSWER=" + c.answer, "USER=owner", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
-		out, err := cmd.CombinedOutput()
-		if err == nil || !strings.Contains(string(out), c.says) {
-			t.Errorf("answered %s: %v, said %q, want %q", c.answer, err, out, c.says)
-		}
-		if runs, _ := os.ReadFile(filepath.Join(rec, "curl.runs")); strings.Count(string(runs), "run") != 1 {
-			t.Errorf("answered %s: curl ran %d times, want once", c.answer, strings.Count(string(runs), "run"))
-		}
-		for _, tool := range []string{"sudo", "sha256sum", "chmod"} {
-			if _, err := os.Stat(filepath.Join(rec, tool+".runs")); err == nil {
-				t.Errorf("answered %s: %s ran after the refusal", c.answer, tool)
-			}
+		if n := strings.Count(run.read("curl.argv"), "/api/join/lab-agent\n"); n != 1 {
+			t.Errorf("answered %s: the agent was asked for %d times, want once", c.answer, n)
 		}
 	}
 }

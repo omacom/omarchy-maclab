@@ -18,7 +18,7 @@ class ExportsTest < ActionDispatch::IntegrationTest
     assert_response :success
     body = response.parsed_body
     assert_equal "CC0-1.0", body.dig("license", "id")
-    assert_match "CC BY 3.0", body["note"]
+    assert_nil body["note"]
     assert_equal [ @m2["id"], @m1["id"] ], body["reports"].map { |r| r["id"] }
     assert_equal golden("m2-max-image2"), body["reports"][0]["report"]
     assert_equal @m2["report_url"], body["reports"][0]["url"]

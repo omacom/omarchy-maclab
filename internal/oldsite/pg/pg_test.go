@@ -266,7 +266,7 @@ func TestOnlyAWholePostgresAddressIsTaken(t *testing.T) {
 		"postgres://u:sekret@db.example.net/d?options=-c%20x", "postgres://u:sekret@db.example.net/d?service=old",
 		"postgres://u:sekret@db.example.net,other.example.net/d", "postgres://u:sekret@db.example.net:notaport/d",
 	} {
-		p, err := Open(address)
+		p, err := Open(address, "")
 		if err == nil {
 			p.Close()
 			t.Errorf("%q was taken as an address", address)
@@ -280,9 +280,15 @@ func TestOnlyAWholePostgresAddressIsTaken(t *testing.T) {
 	}
 }
 
-func config(t *testing.T, address string) *pgx.ConnConfig {
+func config(t *testing.T, address string, caFile ...string) *pgx.ConnConfig {
 	t.Helper()
-	p, err := Open(address)
+	ca := ""
+	if len(caFile) > 0 {
+		ca = caFile[0]
+	} else if !strings.Contains(address, "@127.0.0.1") && !strings.Contains(address, "@localhost") && !strings.Contains(address, "@[::1]") {
+		ca = newAuthority(t).CAFile
+	}
+	p, err := Open(address, ca)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +408,7 @@ func TestAFailureSaysNothingOfTheAddress(t *testing.T) {
 	_, closedPort, _ := net.SplitHostPort(closed.Addr().String())
 	closed.Close()
 	for _, p := range []string{port, closedPort} {
-		pg, err := Open("postgres://marker-user:marker-sekret@127.0.0.1:" + p + "/marker-db?sslmode=disable")
+		pg, err := Open("postgres://marker-user:marker-sekret@127.0.0.1:"+p+"/marker-db?sslmode=disable", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -494,7 +500,7 @@ func TestTheReaderReadsARealPostgres(t *testing.T) {
 		}
 	}
 	c := corpus(t)
-	p, err := Open(address)
+	p, err := Open(address, "")
 	if err != nil {
 		t.Fatal(err)
 	}

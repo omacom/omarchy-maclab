@@ -20,3 +20,7 @@ signal-cli
 # Backups. Litestream is a tap's formula: Homebrew core has none.
 benbjohnson/litestream/litestream   # both databases to the house, a second behind: deploy/org.omarchy-mac.lab.litestream.plist
 restic        # the nightly backup: deploy/org.omarchy-mac.lab.backup.plist
+
+# Not qrencode: its program loads libpng from /opt/homebrew, so the copy would
+# refuse it. scripts/mini/signal link has the Deployed labd draw the QR code
+# (labd qr), and uses no qrencode at all.

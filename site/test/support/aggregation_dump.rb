@@ -70,7 +70,7 @@ module AggregationDump
       timeless.({ license: DataExport::LICENSE, generated_at: Time.current.utc.iso8601, **(by_model ? json.merge(group: "model") : json) })
     when "benchmarks.json" then timeless.({ license: DataExport::LICENSE, generated_at: Time.current.utc.iso8601, **BenchmarkScores.visible.as_json })
     when "aurora.json"
-      timeless.({ license: DataExport::LICENSE, note: DataExport::ASAHI_NOTE, generated_at: Time.current.utc.iso8601, **AuroraSupport.visible.as_json(url_for) })
+      timeless.({ license: DataExport::LICENSE, generated_at: Time.current.utc.iso8601, **AuroraSupport.visible.as_json(url_for) })
     end
   end
 

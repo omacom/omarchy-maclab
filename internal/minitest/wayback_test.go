@@ -84,12 +84,13 @@ func TestADeployCutOffAfterTheSwitchPutsThePreviousBuildBack(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	for wait := 0; m.current() != bad || !m.loaded(); wait++ {
-		if wait > 600 {
+	// Cut off as soon as it switched: a signal taken around labd's start is
+	// the one bash alone did not turn into the way back.
+	for end := time.Now().Add(30 * time.Second); m.current() != bad || !m.loaded(); time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
 			cmd.Process.Kill()
 			t.Fatalf("the Deploy never switched\n%s", out.String())
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 	cmd.Process.Signal(syscall.SIGTERM)
 	if err := cmd.Wait(); err == nil {

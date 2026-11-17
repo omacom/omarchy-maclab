@@ -70,8 +70,8 @@ func (s *Server) termsTookEffect() {
 // Mac in the lab, the terms it was accepted under are not the shipped ones,
 // and its Volunteer is not on the M team or a Maintainer. It is decided at
 // the start and again at each check-in, since a mark may change between. A
-// Mac that waits has its Lease ended as a Pause does, and its Volunteer is
-// told by one Notice for each Mac and each text.
+// Mac that waits has its running job stopped and its Lease ended as a Pause
+// does, and its Volunteer is told by one Notice for each Mac and each text.
 func (s *Server) decideTerms(v *dev) {
 	_, sum := s.terms()
 	d := v.snapshot()
@@ -80,7 +80,11 @@ func (s *Server) decideTerms(v *dev) {
 	waits := v.d.VolunteerID == d.VolunteerID && !noTerms && v.d.IsVolunteer() && v.d.State != api.StateLeft && v.d.TermsSHA256 != sum
 	changed := v.termsWait != waits
 	v.termsWait = waits
+	active := ""
 	if waits {
+		if v.siteCut.job != v.d.ActiveJob {
+			active = v.cutJobLocked(termsCut)
+		}
 		if v.d.TermsNoticed != sum {
 			v.d.TermsNoticed = sum
 			v.saveLocked()
@@ -99,6 +103,9 @@ func (s *Server) decideTerms(v *dev) {
 		v.bump()
 	}
 	v.mu.Unlock()
+	if active != "" {
+		s.cancelJob(active, termsCut)
+	}
 	if waits {
 		s.lapse(v)
 	}

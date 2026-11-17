@@ -291,6 +291,54 @@ func TestTheTermsAreAskedAgainAtEachCheckIn(t *testing.T) {
 	}
 }
 
+// A Mac that comes to wait for the terms at a check-in, its Volunteer
+// taken off the M team mid-job, takes nothing more from the lab: its
+// running job is stopped as a Pause stops it, incomplete, and the Mac is
+// put back on its own system.
+func TestUnmarkingAVolunteerMidJobStopsTheJobAtTheNextCheckIn(t *testing.T) {
+	const vera = 4242
+	h := newCommandHold()
+	l, clock, _ := windowLab(t, labConfig{wrap: h.wrap, lender: vera})
+	if err := l.s.store.setMark(vera, "m_team", true); err != nil {
+		t.Fatal(err)
+	}
+	l.s.shippedTerms.Store(&newTerms)
+	l.s.termsTookEffect()
+	l.addWindow(weekly(clock.Now().Add(-time.Minute), 6*time.Hour))
+	h.armed.Store(true)
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-unmarked behavior=ok")})
+	select {
+	case <-h.held:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the job was never sent to the Mac")
+	}
+	if err := l.s.store.setMark(vera, "m_team", false); err != nil {
+		t.Fatal(err)
+	}
+	close(h.release)
+	// Stopped: cut short for the terms and restoring the Mac, which can take
+	// a while when the cut came as the one-shot was armed, or done.
+	v := l.s.dev(l.name)
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		j, _ := l.s.store.job(id)
+		if j.State == api.JobDone {
+			if j.Outcome != api.OutcomeIncomplete || !strings.Contains(j.Summary, termsCut) {
+				t.Fatalf("the job on a Mac that came to wait for the terms ended %s: %s", j.Outcome, j.Summary)
+			}
+			break
+		}
+		if j.State == api.JobRestoring && v.siteCutOf(id) == termsCut {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the job on a Mac that came to wait for the terms is %s: %v", j.State, j.Events)
+		}
+	}
+	if !l.s.view(l.s.dev(l.name)).TermsWaiting {
+		t.Error("the Mac does not wait for its Volunteer")
+	}
+}
+
 // labd's own log is outside what a forgetting reaches, so an acceptance is
 // logged with the account, never the handle.
 func TestAnAcceptanceIsLoggedWithNoHandle(t *testing.T) {

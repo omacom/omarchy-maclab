@@ -18,7 +18,7 @@ module Api
       end
 
       def aurora
-        render json: { license: DataExport::LICENSE, note: DataExport::ASAHI_NOTE, generated_at: Time.current.utc.iso8601,
+        render json: { license: DataExport::LICENSE, generated_at: Time.current.utc.iso8601,
                        **AuroraSupport.visible.as_json(->(report) { report_url(report) }) }
       end
 

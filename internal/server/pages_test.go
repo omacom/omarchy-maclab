@@ -209,7 +209,8 @@ func TestTermsAndPrivacyServeTheShippedTexts(t *testing.T) {
 		if served != want {
 			t.Errorf("GET %s: the sha256 of the text served is %x, the shipped file's is %x", target, served, want)
 		}
-		for _, piece := range []string{`<time datetime="2026-11-14">2026-11-14</time>`, hex.EncodeToString(want[:])} {
+		offersToCopy(t, body, "the sha256 of this text", hex.EncodeToString(want[:]))
+		for _, piece := range []string{`<time datetime="` + c.text.Date + `">` + c.text.Date + `</time>`, hex.EncodeToString(want[:])} {
 			if !strings.Contains(body, piece) {
 				t.Errorf("GET %s: the page lacks %s", target, piece)
 			}

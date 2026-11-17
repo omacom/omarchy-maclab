@@ -32,11 +32,17 @@ func macRows(page string) (rows map[string]string, order []string) {
 	return rows, order
 }
 
+// reHiddenButton is a button the page renders hidden for its script to show,
+// such as Copy: no reader sees it before then.
+var reHiddenButton = regexp.MustCompile(`(?s)<button [^>]*\bhidden>.*?</button>`)
+
 func rowText(row string) string {
+	row = reHiddenButton.ReplaceAllString(row, "")
 	return html.UnescapeString(strings.Join(strings.Fields(reTag.ReplaceAllString(row, " ")), " "))
 }
 
 func buttons(row string) string {
+	row = reHiddenButton.ReplaceAllString(row, "")
 	var out []string
 	for _, m := range regexp.MustCompile(`(?s)<button[^>]*>(.*?)</button>`).FindAllStringSubmatch(row, -1) {
 		out = append(out, strings.TrimSpace(m[1]))

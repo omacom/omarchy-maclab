@@ -1,6 +1,11 @@
 package server
 
-import "time"
+import (
+	"strings"
+	"time"
+
+	"github.com/omacom/omarchy-maclab/internal/api"
+)
 
 // brisbane is the time lines are told in. Brisbane keeps one offset all year.
 var brisbane = time.FixedZone("AEST", 10*60*60)
@@ -94,6 +99,30 @@ func (a agentsLines) Recovered(key, text string) bool {
 	}
 	a.l.post(lineAgents, text)
 	return true
+}
+
+// NeedsHands is a Lab-owned Mac starting to Need hands, once while it
+// does; NoLongerNeedsHands is its end, and only after "Agents" was told.
+// A Volunteer's Mac is its Volunteer's to hear of, by Notice.
+func (a agentsLines) NeedsHands(key, mac, why string) {
+	text := mac + " needs hands"
+	if why != "" {
+		text += ": " + strings.TrimSuffix(why, ".")
+	}
+	a.Trouble("needs-hands:"+key, text+". Its page says what to do.")
+}
+
+func (a agentsLines) NoLongerNeedsHands(key, mac string, now api.DeviceState) {
+	var is string
+	switch now {
+	case api.StateReady:
+		is = "it is ready again"
+	case api.StateLeft:
+		is = "it left the lab"
+	default:
+		is = "it is " + string(now) + " now"
+	}
+	a.Recovered("needs-hands:"+key, mac+" no longer needs hands: "+is+".")
 }
 
 // BackAfterRestart is the lab running again after the mini restarted, with

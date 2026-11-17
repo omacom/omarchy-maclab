@@ -186,8 +186,11 @@ type Device struct {
 	// latest check-in said: a Mac that can't is not eligible for Installed runs.
 	SnapshotEligible bool `json:"snapshot_eligible"`
 	// Window is a Volunteer Mac's Availability window settings as its latest
-	// check-in carried them. Only the Volunteer changes them, on the Mac.
+	// check-in carried them.
 	Window *window.Settings `json:"window,omitempty"`
+	// WindowWanted is the weekly schedule its Volunteer set on My Macs that
+	// the Mac does not hold yet; nil when nothing waits for the Mac.
+	WindowWanted *WindowWanted `json:"window_wanted,omitempty"`
 	// AccessLevel is what Maintainers may do on a Volunteer's Mac, and
 	// Publish whether its omarchy-m-test reports may be published, as its
 	// latest check-in carried them. Only the Volunteer changes them, on the Mac.
@@ -370,6 +373,9 @@ type Checkin struct {
 	// publishing opt-in; a Lab-owned Mac sends no AccessLevel.
 	AccessLevel string `json:"access_level,omitempty"`
 	Publish     bool   `json:"publish,omitempty"`
+	// AgentStart is a number this run of lab-agent picked as it started: a
+	// new one says the agent was started again, whatever its version.
+	AgentStart string `json:"agent_start,omitempty"`
 }
 
 // Report carries command results and kernel events as soon as they exist.
@@ -467,6 +473,24 @@ type CheckinResponse struct {
 	Held bool `json:"held,omitempty"`
 	// AuditHave is how much of the Mac's Audit log labd's copy holds, in bytes.
 	AuditHave int64 `json:"audit_have,omitempty"`
+	// Window is the weekly schedule the Mac's Volunteer set on My Macs, for
+	// the Mac to take unless its own changed later; nil when none waits.
+	Window *WindowWanted `json:"window,omitempty"`
+}
+
+// WindowWanted is a weekly schedule set on My Macs, at At by labd's clock,
+// on its way to the Mac. No Rules is no window: the Mac is closed.
+type WindowWanted struct {
+	Rules []window.Rule `json:"rules"`
+	At    time.Time     `json:"at"`
+}
+
+// WindowChange is one change to a Volunteer's Mac's weekly schedule on
+// labd's API: a window to add or one to remove, in `window add` syntax,
+// "mon-fri 19:00-07:00" or "always".
+type WindowChange struct {
+	Add    string `json:"add,omitempty"`
+	Remove string `json:"remove,omitempty"`
 }
 
 // Command kinds sent to the agent.
@@ -998,16 +1022,19 @@ const PromotedFromRevoked = "promoted from a revoked Release"
 // Release is a Release as the lab lists it, from the moment its manifest is
 // frozen: what it is and its Macs, fixed then, and what happened since.
 type Release struct {
-	Name           string           `json:"name"`
-	FrozenBy       string           `json:"frozen_by"`
-	FrozenByID     int64            `json:"frozen_by_id,omitempty"`
-	FrozenAt       time.Time        `json:"frozen_at"`
-	ManifestSHA256 string           `json:"manifest_sha256"`
-	Kernel         string           `json:"kernel"`
-	Packages       []ReleasePackage `json:"packages"`
-	Macs           []ReleaseMac     `json:"macs"`
-	State          string           `json:"state"`
-	StateAt        *time.Time       `json:"state_at,omitempty"`
+	Name           string    `json:"name"`
+	FrozenBy       string    `json:"frozen_by"`
+	FrozenByID     int64     `json:"frozen_by_id,omitempty"`
+	FrozenAt       time.Time `json:"frozen_at"`
+	ManifestSHA256 string    `json:"manifest_sha256"`
+	// ApprovedBy is the handles of who approved the manifest, a manifest
+	// frozen from 2026-11-16 naming them by account id.
+	ApprovedBy []string         `json:"approved_by,omitempty"`
+	Kernel     string           `json:"kernel"`
+	Packages   []ReleasePackage `json:"packages"`
+	Macs       []ReleaseMac     `json:"macs"`
+	State      string           `json:"state"`
+	StateAt    *time.Time       `json:"state_at,omitempty"`
 	// Passed of Configurations have a passed Installed run.
 	Configurations int `json:"configurations"`
 	Passed         int `json:"configurations_passed"`
@@ -1298,9 +1325,10 @@ type EnrollTokenResponse struct {
 	Name    string    `json:"name"`
 	Token   string    `json:"token"`
 	Expires time.Time `json:"expires"`
-	// JoinCommand is the one-liner that joins a Mac with this token: run on
-	// the Mac by its owner, it downloads lab-agent, checks its sha256, shows
-	// the terms and sets the Mac up. Empty when labd has no lab-agent to
+	// JoinCommand is the one line that joins a Mac with this token,
+	// curl -fsSL <Lab address>/join | LAB_JOIN=<token> bash: run on the Mac
+	// by its owner, its script downloads lab-agent, checks its sha256 and
+	// signature, shows the terms and sets the Mac up. Empty when labd has no lab-agent to
 	// hand out.
 	JoinCommand string `json:"join_command,omitempty"`
 }

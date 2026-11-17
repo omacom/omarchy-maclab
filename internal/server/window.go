@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
@@ -61,21 +62,35 @@ func (v *dev) windowStateLocked() (window.Settings, window.State) {
 // the Volunteer changed on the Mac is an event of the Mac's record and a
 // line for the Lab group: a new weekly schedule, a Pause, an Open now, a
 // Resume. A window opening or closing on schedule changes no setting, so it
-// is no event. Caller holds v.mu.
+// is no event. A weekly schedule set on My Macs waits until a check-in
+// carries it, said when it was set, or one the Mac changed later. Caller
+// holds v.mu.
 func (v *dev) syncWindowLocked(s *window.Settings) bool {
 	if s == nil || !v.d.IsVolunteer() {
 		return false
 	}
+	changed, taken := false, false
+	if w := v.d.WindowWanted; w != nil {
+		switch {
+		case (window.Settings{Rules: w.Rules}).Schedule() == s.Schedule():
+			v.d.WindowWanted, changed, taken = nil, true, true
+		case s.RulesAt.After(w.At):
+			v.d.WindowWanted, changed = nil, true
+		}
+	}
 	old, _ := json.Marshal(v.d.Window)
 	now, _ := json.Marshal(s)
 	if string(old) == string(now) {
-		return false
+		return changed
 	}
 	var was window.Settings
 	if v.d.Window != nil {
 		was = *v.d.Window
 	}
 	v.d.Window = s
+	if taken {
+		was.Rules = s.Rules
+	}
 	v.windowChangedLocked(was, *s)
 	return true
 }
@@ -104,6 +119,99 @@ func (v *dev) windowChangedLocked(was, is window.Settings) {
 		v.said(macOpenNow, "its Volunteer opened it now, until "+whenDated(is.OpenUntil))
 		v.s.labGroup.OpenNow(name, is.OpenUntil)
 	}
+}
+
+// ---- The weekly schedule, set on the site ----
+
+// changeWindow is the Mac's Volunteer adding or removing one weekly window
+// on My Macs or with their Lab token. It changes what the Mac holds, or what
+// already waits for it, and waits for the Mac's next check-in: the Mac
+// enforces its window itself, with labd down too, so labd only hands it
+// over. Said in the Mac's record and to the Lab group now.
+func (s *Server) changeWindow(v *dev, by Person, add bool, r window.Rule) error {
+	if err := s.lends(v, by); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	var rules []window.Rule
+	switch {
+	case v.d.WindowWanted != nil:
+		rules = slices.Clone(v.d.WindowWanted.Rules)
+	case v.d.Window != nil:
+		rules = slices.Clone(v.d.Window.Rules)
+	}
+	i := slices.Index(rules, r)
+	switch {
+	case add && i >= 0:
+		v.mu.Unlock()
+		return refuse(http.StatusConflict, "%s is already one of this Mac's windows.", r)
+	case !add && i < 0:
+		v.mu.Unlock()
+		return refuse(http.StatusConflict, "%s is not one of this Mac's windows.", r)
+	case add:
+		rules = append(rules, r)
+	default:
+		rules = slices.Delete(rules, i, i+1)
+	}
+	if rules == nil {
+		rules = []window.Rule{}
+	}
+	v.d.WindowWanted = &api.WindowWanted{Rules: rules, At: s.now()}
+	words := (window.Settings{Rules: rules}).Schedule()
+	if words == "" {
+		v.said(macWindow, "its Volunteer removed its weekly Availability window on My Macs")
+		words = "none"
+	} else {
+		v.said(macWindow, "its Volunteer set its weekly Availability window on My Macs: "+words)
+	}
+	name := v.d.Name
+	v.saveLocked()
+	v.publishLocked()
+	v.bump()
+	v.mu.Unlock()
+	s.labGroup.WindowChanged(name, words)
+	return nil
+}
+
+// windowChangeOf reads one change of the weekly schedule: a window to add
+// or one to remove, in `window add` syntax.
+func windowChangeOf(c api.WindowChange) (add bool, r window.Rule, err error) {
+	text := c.Add
+	switch {
+	case (c.Add == "") == (c.Remove == ""):
+		return false, r, refuse(http.StatusUnprocessableEntity, "Add one window or remove one, like mon-fri 19:00-07:00 or always.")
+	case c.Remove != "":
+		text = c.Remove
+	}
+	if r, err = window.ParseRule(text); err != nil {
+		return false, r, refuse(http.StatusUnprocessableEntity, "%v", err)
+	}
+	return c.Add != "", r, nil
+}
+
+// hWindow is POST /api/devices/{name}/window: changeWindow for the Mac's
+// own Volunteer, by their Lab token.
+func (s *Server) hWindow(w http.ResponseWriter, r *http.Request) {
+	p := credentialOf(r)
+	v := s.dev(r.PathValue("name"))
+	if p == nil || v == nil || s.lends(v, *p) != nil {
+		httpErr(w, http.StatusNotFound, "No Mac of yours has that name.")
+		return
+	}
+	var c api.WindowChange
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		httpErr(w, http.StatusBadRequest, "a window change is JSON: {\"add\": \"mon-fri 19:00-07:00\"} or {\"remove\": ...}")
+		return
+	}
+	add, rule, err := windowChangeOf(c)
+	if err == nil {
+		err = s.changeWindow(v, *p, add, rule)
+	}
+	if err != nil {
+		httpErr(w, statusOf(err), "%v", err)
+		return
+	}
+	writeJSON(w, v.snapshot().WindowWanted)
 }
 
 // ---- Pause, taken on the site ----

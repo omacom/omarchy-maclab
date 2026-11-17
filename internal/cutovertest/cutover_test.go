@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,19 @@ func repo(t *testing.T) string {
 	t.Helper()
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..", "..")
+}
+
+// recordsAdded snapshots the records in docs/acceptance that match pattern
+// and returns a check of the ones added since: the records of real runs are
+// committed there and keep arriving, and a local or dry run adds none.
+func recordsAdded(t *testing.T, pattern string) func() []string {
+	t.Helper()
+	glob := filepath.Join(repo(t), "docs", "acceptance", pattern)
+	kept, _ := filepath.Glob(glob)
+	return func() []string {
+		all, _ := filepath.Glob(glob)
+		return slices.DeleteFunc(all, func(f string) bool { return slices.Contains(kept, f) })
+	}
 }
 
 func frontDoor(t *testing.T, name string) string {
@@ -208,6 +222,7 @@ func TestTheDraftOfTheAskSaysWhatTheMemberDoesFirst(t *testing.T) {
 // With no option every test says what it would do and runs nothing: no lab,
 // no curl, no ssh.
 func TestADryRunSaysTheStepsAndSendsNothing(t *testing.T) {
+	added := recordsAdded(t, "*front-door*")
 	stubs := t.TempDir()
 	log := filepath.Join(stubs, "calls")
 	for _, tool := range []string{"lab", "curl", "ssh"} {
@@ -241,7 +256,7 @@ func TestADryRunSaysTheStepsAndSendsNothing(t *testing.T) {
 	if b, _ := os.ReadFile(log); len(b) != 0 {
 		t.Errorf("a dry run ran:\n%s", b)
 	}
-	if entries, _ := filepath.Glob(filepath.Join(repo(t), "docs", "acceptance", "*front-door*")); len(entries) != 0 {
+	if entries := added(); len(entries) != 0 {
 		t.Errorf("a dry run left a record: %v", entries)
 	}
 }

@@ -11,10 +11,14 @@
 #      SECRET_KEY_BASE. It becomes /var/lab/secrets/machine-id-key, the lab
 #      account's alone, and labd is restarted to read it. The same line goes
 #      into the off-machine copy by your own hand.
-# run  1. labd import dump reads the old site's Postgres into a new dump
-#         file only the lab account reads. It asks for the Postgres address
-#         at its own prompt and shows nothing of it. With --dump FILE that
-#         is there, the old site is not read.
+# run  1. labd import check certificate shows the certificate chain the
+#         old site's Postgres presents, with each SHA-256 fingerprint, and
+#         keeps its last certificate as /var/lab/import/old-site-ca.pem.
+#         Then labd import dump reads the old site's Postgres into a new
+#         dump file only the lab account reads, the certificate checked
+#         against the CA file given at its prompt (verify-ca). Each asks
+#         for the Postgres address at its own prompt and shows nothing of
+#         it. With --dump FILE that is there, the old site is not read.
 #      2. reports.db is emptied: labd stops, the file moves aside into
 #         /var/lab/import/reports-before (the copy before it goes), labd
 #         starts and makes an empty one.
@@ -29,8 +33,9 @@
 #      passed leaves its day in /var/lab/import/imported, which the opening
 #      (scripts/cutover/open) reads. With --dumped FILE the dump must be
 #      there: the old site is never read.
-# dump only step 1, into FILE, which must not be there yet: the final dump
-#      of the day (the Cutover's step 21), after the old site is stopped.
+# dump only the dump of step 1, into FILE, which must not be there yet: the
+#      final dump of the day (the Cutover's step 21), after the old site is
+#      stopped. Its CA file is the one the rehearsal kept.
 #
 #   --dry-run  say what would be asked and done, and change nothing
 #
@@ -43,7 +48,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/cutover/mini.sh
 . "$here/mini.sh"
 
-usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 step="${1:-}"
 [[ $# -gt 0 ]] && shift
@@ -63,6 +68,7 @@ done
 
 folder="$LAB_HOME/import"
 before="$folder/reports-before"
+ca="$folder/old-site-ca.pem"
 
 checks() {
   (( DRY )) || need_root
@@ -136,7 +142,8 @@ run() {
     if (( given )) && [[ -e $dump ]]; then
       say "would read $dump: the old site is not read"
     else
-      say "would have labd import dump ask for the address of the old site's Postgres and write $dump"
+      say "would have labd import check certificate ask for the address of the old site's Postgres and show its certificate chain, keeping the last as $ca"
+      say "would have labd import dump ask for the address of the old site's Postgres and its CA file, and write $dump"
     fi
     say "would stop labd and Litestream, move $LAB_DATA/reports.db aside into $before, and start them again"
     say "would have labd import load fill reports.db from the dump"
@@ -153,11 +160,14 @@ run() {
     say "$dump is there: the old site is not read"
   else
     (( ! given )) || as_lab test -d "$(dirname "$dump")" || fail "no folder for $dump that $LAB_OWNER can write in: leave --dump out, and it goes in $folder"
+    chain
     say "reading the old site's Postgres into $dump"
     as_lab "$LABD" import dump --to "$dump" || fail "no dump was written, and nothing of the lab was changed"
   fi
 
   # The lab may have opened from another terminal since the first check.
+  # From here to the pass's mark no opening and no other import runs.
+  hold_lab
   in_preview || fail "the lab is open ($(lab_stage)) since this run began: its reports are its own now. Nothing was emptied"
   # An earlier pass says nothing of what this run leaves: only its own pass
   # writes the mark again.
@@ -173,7 +183,7 @@ run() {
 
   out="$(mktemp "${TMPDIR:-/tmp}/lab-rehearsal.XXXXXX")"
   # shellcheck disable=SC2064
-  trap "rm -f '$out'" EXIT
+  trap "rm -f '$out'; let_go_of_lab" EXIT
   load=(import load --from "$dump" --data "$LAB_DATA")
   [[ -z $SYSROOT || -z ${LAB_GITHUB_URL:-} ]] || load+=(--github-url "$LAB_GITHUB_URL")
   as_lab "$LABD" "${load[@]}" | tee -a "$out" || fail "the import stopped: reports.db holds what it holds now, and the next run empties it again"
@@ -192,19 +202,34 @@ run() {
   TZ=Australia/Brisbane date +%Y-%m-%d | lab_file "$folder/imported" 600
 }
 
+# chain shows the certificate chain the old site's Postgres presents, so it
+# can be looked at before the day, and keeps its last certificate as the
+# dump's CA file the first time.
+chain() {
+  say "the certificate chain the old site's Postgres presents (the address is asked for again by the dump):"
+  if as_lab test -e "$ca"; then
+    as_lab "$LABD" import check certificate || fail "the old site's Postgres showed no certificate chain: nothing was read, and nothing of the lab was changed"
+    say "compare its last fingerprint with $ca, kept by an earlier rehearsal: openssl x509 -noout -fingerprint -sha256 -in $ca"
+  else
+    as_lab "$LABD" import check certificate --save "$ca" || fail "the old site's Postgres showed no certificate chain: nothing was read, and nothing of the lab was changed"
+  fi
+  say "at the dump's CA file prompt give $ca, once the fingerprint is the one you checked"
+}
+
 # only_dump: the day's final dump and nothing else.
 only_dump() {
   [[ -n $dump && $dump == /* ]] || usage
   checks
   if (( DRY )); then
-    say "would have labd import dump ask for the address of the old site's Postgres and write $dump, which must not be there yet"
+    say "would have labd import dump ask for the address of the old site's Postgres and its CA file ($ca, kept by the rehearsal), and write $dump, which must not be there yet"
     return 0
   fi
   no_link "$folder"
   lab_folder "$folder" 700
   ! as_lab test -e "$dump" || fail "$dump is there already: a dump is never written over. Name another file, or remove that one if it is from a rehearsal"
   as_lab test -d "$(dirname "$dump")" || fail "no folder for $dump that $LAB_OWNER can write in: name a file in $folder"
-  say "reading the old site's Postgres into $dump"
+  as_lab test -r "$ca" || fail "no CA file at $ca: the rehearsal keeps it (sudo $0 run). Nothing was read"
+  say "reading the old site's Postgres into $dump: at the CA file prompt give $ca"
   as_lab "$LABD" import dump --to "$dump" || fail "no dump was written, and nothing of the lab was changed"
   say "the dump is $dump: the import reads it with --dumped $dump"
 }

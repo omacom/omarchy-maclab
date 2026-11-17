@@ -30,7 +30,8 @@
 #     root's alone and leading nowhere back into Homebrew, with the versions
 #     in them;
 #   - every formula of deploy/homebrew-formulae installed, by version;
-#   - container at its pin and the reset tool's checksum;
+#   - container at its pin and the reset tool's checksum, and the Builder
+#     running the images of the Deployed build;
 #   - the mini on the tailnet, tagged tag:lab, the old node gone;
 #   - SSH with keys only after Unlock, Remote Login and Screen Sharing on and
 #     answering on the wired address and the tailnet's;
@@ -46,7 +47,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib.sh"
 deploy="$(cd "$here/../.." && pwd)/deploy"
 
-usage() { sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 mode="${1:-all}"
 case "$mode" in
@@ -291,7 +292,7 @@ formulas() {
 }
 
 pinned() {
-  local name version sum url have
+  local name version sum url have behind line
   echo
   echo "What is pinned by version and checksum:"
   if [[ -L $LAB_CURRENT ]]; then
@@ -320,6 +321,15 @@ pinned() {
     good "container is at $(shown "$CONTAINER"), which only $ROOT_OWNER can write"
   else
     bad "container is not at $(shown "$CONTAINER"), or another account than $ROOT_OWNER can change it"
+  fi
+  [[ -f $LAUNCHD_DIR/$BUILDER_LABEL.plist && -L $LAB_CURRENT ]] || return 0
+  behind="$(builder_behind "$LAB_CURRENT")"
+  if [[ -z $behind ]]; then
+    good "the Builder runs $(builder_runs --image) and $(builder_runs --pkg-image), the images of the Deployed build"
+  else
+    while IFS= read -r line; do
+      bad "$line: the set-up builds it and starts the Builder with it"
+    done <<<"$behind"
   fi
 }
 
@@ -379,6 +389,10 @@ remote() {
         bad "sshd -T does not say $key no: after Unlock, SSH would take a password"
       fi
     done
+  fi
+  what="$(sshd_match)"
+  if [[ -n $what ]]; then
+    bad "a Match block lets SSH take a password after Unlock ($what), which sshd -T does not show"
   fi
   admin="${SUDO_USER:-$(id -un)}"
   home="$SYSROOT/Users/$admin"

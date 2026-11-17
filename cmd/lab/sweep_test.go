@@ -412,3 +412,69 @@ func TestAVerdictAndAPromotionAskBeforeTheyAct(t *testing.T) {
 		confirmed = nil
 	}
 }
+
+// confirm set on the first call goes on in that one call, as `lab --yes`
+// does: the lab is asked first and its sentence, warnings and all, is in
+// the answer beside what was done. Each tool's description says so.
+func TestConfirmOnTheFirstCallDoesWhatLabYesDoes(t *testing.T) {
+	var asked, confirmed []string
+	c := labAt(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["confirm"] == true {
+			if len(asked) == len(confirmed) {
+				t.Errorf("%s confirmed before the lab was asked", r.URL.Path)
+			}
+			confirmed = append(confirmed, r.URL.Path)
+			io.WriteString(w, `{"release":{"name":"12.0","state":"qualified"},"device":"m1-pro"}`)
+			return
+		}
+		asked = append(asked, r.URL.Path)
+		io.WriteString(w, `{"confirm":"Record 12.0 as qualified? Warning: m2-max failed after the verdict."}`)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st, ct := mcp.NewInMemoryTransports()
+	if _, err := newMCP(c).Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	described := map[string]string{}
+	for _, tool := range tools.Tools {
+		schema, _ := json.Marshal(tool.InputSchema)
+		described[tool.Name] = tool.Description + " " + string(schema)
+	}
+	for tool, args := range map[string]map[string]any{
+		"lab_installed_verdict": {"release": "12.0", "verdict": "qualified", "note": "three Macs passed", "confirm": true},
+		"lab_installed_promote": {"release": "12.0", "device": "m1-pro", "job_id": "j1", "confirm": true},
+	} {
+		if d := described[tool]; !strings.Contains(d, "lab installed") || !strings.Contains(d, "--yes") || !strings.Contains(d, "one call") {
+			t.Errorf("%s does not say that confirm in one call does what --yes does: %s", tool, d)
+		}
+		asked, confirmed = nil, nil
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil || res.IsError {
+			t.Fatalf("%s: %v %+v", tool, err, res)
+		}
+		var said string
+		for _, part := range res.Content {
+			if text, ok := part.(*mcp.TextContent); ok {
+				said += text.Text
+			}
+		}
+		if len(asked) != 1 || len(confirmed) != 1 {
+			t.Errorf("%s in one call: asked %v, confirmed %v", tool, asked, confirmed)
+		}
+		if !strings.Contains(said, "Warning: m2-max failed after the verdict.") || !strings.Contains(said, "12.0") || strings.Contains(said, "Nothing was done") {
+			t.Errorf("%s in one call answered %q", tool, said)
+		}
+	}
+}

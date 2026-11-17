@@ -377,8 +377,9 @@ func TestAMacArrivesClosedAtQualificationAndTheLabQueuesItsFirstBaseline(t *test
 
 // The site only takes away, and undoes only what it took: Pause until a
 // time or Resume, Limit to Qualification until "Remove limit". They are the
-// Mac's own Volunteer's. Open now, the weekly schedule, raising to Full and
-// turning publishing on have no route: they happen at the Mac.
+// Mac's own Volunteer's. Open now, raising to Full and turning publishing on
+// have no route: they happen at the Mac. The weekly schedule is the one
+// thing the site gives (window_from_site_test.go).
 func TestTheSiteOnlyTakesAwayAndUndoesOnlyWhatItTook(t *testing.T) {
 	l, _ := lendLab(t)
 	ravi := l.signedIn(maintainerID)
@@ -516,7 +517,7 @@ func TestTheSiteOnlyTakesAwayAndUndoesOnlyWhatItTook(t *testing.T) {
 	}
 
 	// Only the Mac gives: the site has no button for it.
-	for _, action := range []string{"open", "open-now", "window", "schedule", "access", "full", "raise", "publish", "publishing"} {
+	for _, action := range []string{"open", "open-now", "schedule", "access", "full", "raise", "publish", "publishing"} {
 		if w := grace.post(at(action), "sure", "yes", "until", "23:00", "level", "full", "on", "true"); w.Code != http.StatusNotFound {
 			t.Errorf("POST %s: %d, want no such route", at(action), w.Code)
 		}

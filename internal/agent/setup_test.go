@@ -436,39 +436,29 @@ func TestAMacArrivesAtQualificationWithPublishingOffAndKeepsItsWindow(t *testing
 	}
 }
 
-// Setup ends by asking once for the weekly Availability window; Enter
-// decides later, and an answer it cannot read is not asked for again.
-func TestJoinAsksOnceForTheAvailabilityWindow(t *testing.T) {
-	for answer, want := range map[string][]string{
-		"mon-fri 19:00-07:00\n":       {"mon-fri 19:00-07:00"},
-		"\n":                          nil,
-		"whenever\nsat 10:00-12:00\n": nil,
-	} {
-		lab, sim := newJoinLab(t), goodMac(t)
-		run := lab.join(sim, "yes\n"+answer, nil)
-		if run.err != nil {
-			t.Fatalf("answer %q: %v", answer, run.err)
-		}
-		if n := strings.Count(run.tty, "When may the lab use this Mac"); n != 1 {
-			t.Errorf("answer %q: asked %d time(s):\n%s", answer, n, run.tty)
-		}
-		s, set, err := readWindow(sim.WorkDir)
-		var got []string
-		for _, r := range s.Rules {
-			got = append(got, r.String())
-		}
-		if err != nil || !slices.Equal(got, want) || set != (want != nil) {
-			t.Errorf("answer %q: window %v (set %v, %v), want %v", answer, got, set, err, want)
-		}
-		if want == nil && (!strings.Contains(run.said, "takes nothing from the lab") || !strings.Contains(run.said, "sudo lab-agent window add")) {
-			t.Errorf("answer %q: setup does not say the Mac is closed and how to open it:\n%s", answer, run.said)
-		}
-	}
-	// A Lab-owned Mac has no window to ask for.
+// Join asks nothing about the weekly Availability window: the Mac arrives
+// closed, and setup's last line says where its Volunteer sets the window.
+func TestJoinAsksNoWindowAndPointsToMyMacs(t *testing.T) {
 	lab, sim := newJoinLab(t), goodMac(t)
+	run := lab.join(sim, "yes\nmon-fri 19:00-07:00\n", nil)
+	if run.err != nil {
+		t.Fatal(run.err)
+	}
+	if strings.Contains(run.tty, "When may the lab") || strings.Contains(run.tty, "Availability window") {
+		t.Errorf("Join asked for a window:\n%s", run.tty)
+	}
+	if s, set, err := readWindow(sim.WorkDir); err != nil || set || len(s.Rules) != 0 {
+		t.Errorf("the Mac joined with a window: %+v (set %v, %v)", s, set, err)
+	}
+	want := "Set when the lab may use this Mac on My Macs: " + lab.srv.URL + "/my-macs"
+	if lines := strings.Split(strings.TrimSpace(run.said), "\n"); !strings.Contains(lines[len(lines)-1], want) {
+		t.Errorf("setup does not end with %q:\n%s", want, run.said)
+	}
+	// A Lab-owned Mac has no window to point to.
+	lab, sim = newJoinLab(t), goodMac(t)
 	lab.kind = api.KindLabOwned
-	if run := lab.join(sim, "yes\n", nil); run.err != nil || strings.Contains(run.tty, "When may the lab") {
-		t.Errorf("a Lab-owned Mac: %v\n%s", run.err, run.tty)
+	if run := lab.join(sim, "yes\n", nil); run.err != nil || strings.Contains(run.said, "Set when the lab may use") {
+		t.Errorf("a Lab-owned Mac: %v\n%s", run.err, run.said)
 	}
 }
 

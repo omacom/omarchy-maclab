@@ -314,17 +314,23 @@ func (l *Linux) awaitLabBootLock(ctx context.Context) error {
 	if _, err := os.Stat(labBootAutologinPath); err != nil {
 		return nil
 	}
-	deadline := time.Now().Add(labBootLockWait)
+	return l.awaitLock(ctx, labBootLockedPath, labBootLockWait)
+}
+
+// awaitLock is awaitLabBootLock's wait, reading the lock unit's note at
+// locked for up to wait.
+func (l *Linux) awaitLock(ctx context.Context, locked string, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
 	for {
-		b, _ := os.ReadFile(labBootLockedPath)
+		b, _ := os.ReadFile(locked)
 		switch got := string(b); {
 		case got == "locked":
 			return nil
 		case strings.HasPrefix(got, "failed"):
 			return fmt.Errorf("the Volunteer's session could not be locked (%s); no test ran on it", got)
 		case time.Now().After(deadline):
-			exec.Command("loginctl", "terminate-user", l.GUIUser).Run()
-			return fmt.Errorf("the Volunteer's session was not locked within %s; it was terminated and no test ran on it", labBootLockWait)
+			tool(nil, nil, "loginctl", "terminate-user", l.GUIUser)
+			return fmt.Errorf("the Volunteer's session was not locked within %s; it was terminated and no test ran on it", wait)
 		}
 		select {
 		case <-ctx.Done():

@@ -1,8 +1,8 @@
 #!/bin/bash
-# The Front door's test 7: the Go CLI, the Python CLI, the agent and
-# curl … /install pass the edge unchallenged, and an exec body full of shell
-# text is not blocked (spec section 16, Ready item 1; section 6, "Edge
-# settings").
+# The Front door's test 7: the Go CLI, the Python CLI, the agent,
+# curl … /install and curl … /join pass the edge unchallenged, and an exec
+# body full of shell text is not blocked (spec section 16, Ready item 1;
+# section 6, "Edge settings").
 #
 #   fd07-clients-pass [--dry-run | --local | --lab] [--mac NAME] [--records DIR]
 #
@@ -15,20 +15,23 @@
 #     in its own words. Nothing is uploaded.
 #   - lab-agent: the Mac is checking in, which only its agent does.
 #   - curl -fsSL …/install: the install script, as a shell script.
+#   - curl -fsSL …/join: the Join command's script, as a shell script that
+#     nothing keeps (no-store). A labd started here (--local) has no
+#     lab-agent to hand out: its own refusal (503) is its answer then.
 #   - lab exec with a body full of what a firewall takes for an attack:
 #     shell, SQL and script text. On the Mac all of it is the body of a
 #     here-document given to ":", which reads nothing and runs nothing; the
 #     command then prints one word. It needs a Lease, which the test takes.
 #     The text stays in the Exec record, as every lab exec does.
 #
-# The Join command's own run through the Front door is recorded with the
-# Lab-owned Macs' Join, not here.
+# The Join command's own run through the Front door, with a token, is
+# recorded with the Lab-owned Macs' Join, not here.
 set -euo pipefail
 # shellcheck source=scripts/cutover/front-door/lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 # shellcheck source=scripts/cutover/front-door/edge.sh
 . "$FD_HERE/edge.sh"
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 fd_options "$@"
 no_rest
@@ -40,10 +43,11 @@ $ME: dry run. Through $ADDRESS, under the saved login, it would:
   2. with the Python CLI's own HTTP code: GET /install, and POST an empty report to /api/v1/reports, which labd refuses itself
   3. ask whether $MAC is checking in: only its lab-agent does that
   4. run: curl -fsSL $ADDRESS/install
-  5. run: lab lease $MAC, then lab exec $MAC with a body of shell, SQL and script text that the Mac never runs
-  6. want every answer to be labd's own: no challenge, no page of the edge's
-  7. run: lab release $MAC
-  8. write docs/acceptance/$(TZ=Australia/Brisbane date +%Y-%m-%d)-front-door-07.md
+  5. run: curl -fsSL $ADDRESS/join, with no token: the Join command's script, kept by nobody
+  6. run: lab lease $MAC, then lab exec $MAC with a body of shell, SQL and script text that the Mac never runs
+  7. want every answer to be labd's own: no challenge, no page of the edge's
+  8. run: lab release $MAC
+  9. write docs/acceptance/$(TZ=Australia/Brisbane date +%Y-%m-%d)-front-door-07.md
 The exec's text stays in the Exec record. Nothing was sent.
 PLAN
   exit 0
@@ -119,7 +123,18 @@ else
   bad=1
 fi
 
-# 5. An exec body full of shell text. Everything between the two FD07 lines
+# 5. The Join command's script, asked for as the Join command asks.
+ask join -L "$ADDRESS/join"
+if [[ $STATUS == 200 ]] && ! edge_page join && head -c 2 "$WORK/join.body" | grep '^#!' >/dev/null && [[ "$(header join cache-control)" == no-store ]]; then
+  rec "curl -fsSL …/join: the Join command's script ($(wc -c < "$WORK/join.body" | tr -d ' ') bytes), no-store"
+elif [[ $MODE == local && $STATUS == 503 ]] && ! edge_page join && grep -q 'makes no Join command' "$WORK/join.body"; then
+  rec "curl -fsSL …/join: labd's own answer, from a labd with no lab-agent to hand out (HTTP 503)"
+else
+  rec "FAIL: curl -fsSL …/join: $(where join)"
+  bad=1
+fi
+
+# 6. An exec body full of shell text. Everything between the two FD07 lines
 # is read by ":" and thrown away.
 own_lease
 mark="fd07-$(nonce)"

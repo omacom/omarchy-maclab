@@ -91,3 +91,28 @@ func TestABrowserRequestHasADeadline(t *testing.T) {
 		}
 	}
 }
+
+// --rows reads a key inside an object (a build's source.input) as well as
+// one at the top.
+func TestRowsReadAKeyInsideAnObject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"id":"b1","source":{"input":"https://github.com/o/linux-aurora"}},{"id":"b2","source":{}},{"id":"b3"}]`))
+	}))
+	defer srv.Close()
+	t.Setenv("LAB_ADDRESS", srv.URL)
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("lab_x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	out = &buf
+	defer func() { out = os.Stdout }()
+	if err := askCommand(flag.NewFlagSet("ask", flag.ContinueOnError), []string{"--token-file", token, "--rows", "id,source.input,id.x", "GET", "/api/builds"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"row=b1|https://github.com/o/linux-aurora|\n", "row=b2||\n", "row=b3||\n"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the rows lack %q:\n%s", want, buf.String())
+		}
+	}
+}

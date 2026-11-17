@@ -223,7 +223,7 @@ check_layout() {
 	[[ $UKI_NAME =~ ^[a-z0-9]+$ ]] || die "$LIMINE has no CUSTOM_UKI_NAME that Limine would use"
 	ESP=$(limine_value ESP_PATH)
 	[[ -n $ESP && -d $ESP/EFI/Linux ]] || die "ESP_PATH ($ESP) in $LIMINE has no EFI/Linux folder"
-	command -v objcopy >/dev/null || die "reading a UKI needs objcopy (binutils)"
+	command -v objcopy >/dev/null && command -v objdump >/dev/null || die "reading a UKI needs objcopy and objdump (binutils)"
 	command -v lsinitcpio >/dev/null || die "no lsinitcpio to read the boot images"
 	# The limine.conf Limine reads: the first of its own search paths on the ESP.
 	LIMINE_CONF=
@@ -328,51 +328,209 @@ uki_token() {
 	if has_word "$line" "$TOKEN"; then echo yes; else echo no; fi
 }
 
-# The limine.conf entries that boot this Mac's UKIs, one "<entry>\t<state>" line each, where
-# state is yes or no (the entry's own cmdline: has TOKEN or not) or none (no cmdline: line, so the
-# UKI's embedded one applies). Snapshot entries and the maclab block are left out: those still
-# ask for the passphrase. On an Omarchy Mac the entries carry their own cmdline: and systemd-stub
-# boots that one, so the UKI's .cmdline alone doesn't say what boots.
-limine_entries() {
+# Every entry in Limine's menu that boots something, from LIMINE_CONF, one line each:
+#   E <group> <default> <name> <protocol> <path> <cmd> <modules>      (tab-separated, "-" for empty)
+# group: lab (lab-agent's maclab block), snapshot (under an entry named like "snapshot", booted
+# by hand) or menu (everything else). default: 1 for the entry Limine boots when no one picks one.
+# cmd: none (no cmdline: of its own, so a UKI's embedded one applies), yes or no (it has TOKEN).
+# A line "D <why>" says Limine boots no entry by itself; "W <text>" is a warning about the menu.
+# default_entry follows Limine's CONFIG.md and menu.c: unset is 1; a number counts the entries
+# as the menu first shows them, from 1, directories included and the entries inside a directory
+# only when it opens by default (/+name); a path (Dir/Entry, #N for the Nth of a name) names one
+# entry. remember_last_entry: yes boots the last booted entry instead, when there is one.
+menu_entries() {
 	[[ -n $LIMINE_CONF && -r $LIMINE_CONF ]] || return 0
-	TOK=$TOKEN UKI=$UKI_NAME awk '
-		function flush(   st, d, full) {
-			if (name != "" && !skip && path ~ ("/EFI/Linux/" uki "_[^/#]*\\.efi")) {
-				gsub(/[[:space:]]+/, " ", cmd)
-				st = !hascmd ? "none" : (index(" " cmd " ", " " tok " ") ? "yes" : "no")
-				print name "\t" st
-			}
-			name = ""; path = ""; cmd = ""; hascmd = 0
-		}
-		BEGIN { tok = ENVIRON["TOK"]; uki = ENVIRON["UKI"] }
-		/^[[:space:]]*# maclab: begin/ { flush(); inlab = 1; next }
-		/^[[:space:]]*# maclab: end/ { flush(); inlab = 0; next }
+	TOK=$TOKEN awk '
+		function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+		function dash(s) { return s == "" ? "-" : s }
+		BEGIN { tok = ENVIRON["TOK"]; n = 0; inlab = 0; dflt = ""; remember = "" }
+		/^[[:space:]]*# maclab: begin/ { inlab = 1; next }
+		/^[[:space:]]*# maclab: end/ { inlab = 0; next }
+		/^[[:space:]]*#/ { next }
 		/^[[:space:]]*\// {
-			flush()
-			line = $0; sub(/^[[:space:]]*/, "", line)
-			depth = match(line, /[^\/]/) - 1
-			if (depth < 1) next
-			label = substr(line, depth + 1); sub(/^\+/, "", label)
-			names[depth] = label
-			skip = inlab; name = ""
-			for (d = 1; d <= depth; d++) {
-				if (tolower(names[d]) ~ /snapshot/) skip = 1
-				name = name (d > 1 ? " / " : "") names[d]
-			}
+			line = trim($0)
+			d = match(line, /[^\/]/) - 1
+			if (d < 1) next
+			label = substr(line, d + 1); ex = 0
+			if (substr(label, 1, 1) == "+") { ex = 1; label = substr(label, 2) }
+			n++; depth[n] = d; name[n] = trim(label); open[n] = ex; lab[n] = inlab
+			par[n] = d > 1 ? last[d - 1] : 0; last[d] = n
+			proto[n] = ""; path[n] = ""; cmd[n] = ""; hascmd[n] = 0; mods[n] = ""
 			next
 		}
-		/^[[:space:]]*[A-Za-z_]+:/ {
+		/^[[:space:]]*[A-Za-z_]+[[:space:]]*[:=]/ {
 			key = $0; sub(/^[[:space:]]*/, "", key); val = key
-			sub(/:.*/, "", key); key = tolower(key); sub(/^[^:]*:[[:space:]]*/, "", val)
-			if (key == "path" || key == "image_path" || key == "kernel_path") path = val
-			else if (key == "cmdline" || key == "kernel_cmdline") { cmd = val; hascmd = 1 }
+			sub(/[[:space:]]*[:=].*/, "", key); key = tolower(key)
+			sub(/^[^:=]*[:=]/, "", val); val = trim(val)
+			if (n == 0) {
+				if (key == "default_entry") dflt = val
+				else if (key == "remember_last_entry") remember = tolower(val)
+				next
+			}
+			if (key == "protocol") proto[n] = tolower(val)
+			else if (key == "path" || key == "image_path" || key == "kernel_path") path[n] = val
+			else if (key == "cmdline" || key == "kernel_cmdline") { cmd[n] = val; hascmd[n] = 1 }
+			else if (key == "module_path") mods[n] = mods[n] (mods[n] == "" ? "" : " ") val
 		}
-		END { flush() }
+		END {
+			for (i = 1; i <= n; i++) {
+				dir[i] = i < n && depth[i + 1] > depth[i]
+				shown[i] = par[i] == 0 ? 1 : shown[par[i]] && open[par[i]]
+			}
+			def = 0; why = ""
+			if (dflt == "") dflt = "1"
+			if (dflt ~ /^[0-9]+$/) {
+				k = 0
+				for (i = 1; i <= n && !def; i++) if (shown[i] && ++k == dflt + 0) def = i
+				if (!def) why = "default_entry: " dflt " names no entry (the menu first shows " k ", counted from 1)"
+			} else {
+				p = 0; ok = 1; want = dflt; sub(/^\/+/, "", want)
+				cnt = split(want, parts, "/")
+				for (j = 1; j <= cnt && ok; j++) {
+					c = parts[j]; nth = 1
+					if (match(c, /#[0-9]+$/)) { nth = substr(c, RSTART + 1) + 0; c = substr(c, 1, RSTART - 1) }
+					found = 0; seen = 0
+					for (i = 1; i <= n && !found; i++) if (par[i] == p && name[i] == c && ++seen == nth) found = i
+					if (found) p = found; else ok = 0
+				}
+				if (ok && p) def = p; else why = "default_entry: " dflt " names no entry"
+			}
+			if (def && dir[def]) { why = "default_entry: " dflt " is the directory \"" name[def] "\""; def = 0 }
+			if (why != "") print "D\t" why ", so Limine stops at its menu"
+			if (remember == "yes") print "W\tremember_last_entry: yes, so Limine boots whichever entry booted last, not only the default"
+			for (i = 1; i <= n; i++) {
+				if (dir[i]) continue
+				full = ""; snap = 0
+				for (a = i; a; a = par[a]) { full = name[a] (full == "" ? "" : " / " full); if (tolower(name[a]) ~ /snapshot/) snap = 1 }
+				c = cmd[i]; gsub(/[[:space:]]+/, " ", c)
+				st = !hascmd[i] ? "none" : (index(" " c " ", " " tok " ") ? "yes" : "no")
+				print "E\t" (lab[i] ? "lab" : snap ? "snapshot" : "menu") "\t" (i == def ? 1 : 0) "\t" dash(full) "\t" dash(proto[i]) "\t" dash(path[i]) "\t" st "\t" dash(mods[i])
+			}
+		}
 	' "$LIMINE_CONF"
 }
 
+# The "<entry>\t<cmd>" of the menu entries (not snapshots, not lab-agent's), for disable.
+limine_entries() { menu_entries | awk -F'\t' '$1 == "E" && $2 == "menu" { print $4 "\t" $7 }'; }
+
+# The file on the ESP that a Limine path (boot():/x, with or without a #hash) names, or nothing.
+limine_path_file() {
+	local p=${1%%#*}
+	case $p in
+		boot\(\):/*) p=${p#boot():} ;;
+		*) return 0 ;;
+	esac
+	printf '%s\n' "$ESP/${p#/}"
+}
+
+# uki, other (an EFI program without a .linux section) or unreadable.
+uki_kind() {
+	local h
+	h=$(objdump -h "$1" 2>/dev/null) || { echo unreadable; return 0; }
+	if grep -qE '^[[:space:]]*[0-9]+[[:space:]]+\.linux[[:space:]]' <<<"$h"; then echo uki; else echo other; fi
+}
+
+# Whether boot image $1 holds the current key; sets WHY when it doesn't.
+image_has_key() {
+	local k
+	k=$(image_key "$1")
+	case $k in
+		yes) ;;
+		no) WHY="$1 doesn't hold the key file"; return 1 ;;
+		*) WHY="couldn't read $1"; return 1 ;;
+	esac
+	[[ -n $KEY_SLOT ]] || { WHY="$1 holds a key file, but $KEY opens no key slot to compare it with"; return 1; }
+	image_current_key "$1" || { WHY="$1 holds an old or different key, not $KEY's"; return 1; }
+}
+
+# Sets VERDICT and WHY for what one menu entry boots: ok (the current key and TOKEN: no
+# passphrase prompt), ask (WHY says why it asks for the passphrase, or can't be checked), other
+# (WHY: it boots no Linux) or later (pre: an image REBUILD rebuilds, checked after the rebuild).
+entry_verdict() {
+	local mode=$1 group=$2 proto=$3 path=$4 cmd=$5 mods=$6 f m kind t
+	VERDICT=ask WHY=
+	case $proto in
+		efi|efi_chainload|uefi|uefi_chainload)
+			f=$(limine_path_file "$path")
+			[[ -n $f ]] || { WHY="it boots $path, which isn't a boot():/ path on $ESP this can read"; return 0; }
+			if [[ $mode == pre && $group != lab && $f == "$ESP/EFI/Linux/${UKI_NAME}_"*.efi ]]; then VERDICT=later; return 0; fi
+			[[ -f $f ]] || { WHY="it boots $f, which isn't there"; return 0; }
+			kind=$(uki_kind "$f")
+			case $kind in
+				uki) ;;
+				other) VERDICT=other WHY="it starts $f, an EFI program that isn't a Linux UKI"; return 0 ;;
+				*) WHY="couldn't read $f"; return 0 ;;
+			esac
+			image_has_key "$f" || return 0
+			case $cmd in
+				yes) ;;
+				no) WHY="its cmdline in $LIMINE_CONF has no $TOKEN"; return 0 ;;
+				*) t=$(uki_token "$f")
+				   [[ $t == yes ]] || { WHY="it has no cmdline of its own and the one built into $f has no $TOKEN ($t)"; return 0; } ;;
+			esac
+			;;
+		linux)
+			[[ $mods != - ]] || { WHY="it loads no initramfs (no module_path), so nothing in it holds the key"; return 0; }
+			for m in $mods; do
+				f=$(limine_path_file "$m")
+				[[ -n $f && -f $f ]] || { WHY="it loads $m, which this can't find on $ESP"; return 0; }
+				image_has_key "$f" || return 0
+			done
+			[[ $cmd == yes ]] || { WHY="its cmdline in $LIMINE_CONF has no $TOKEN"; return 0; }
+			;;
+		*) VERDICT=other WHY="protocol ${proto/#-/none}: it boots no Linux this can check"; return 0 ;;
+	esac
+	VERDICT=ok
+}
+
+# menu_entries with a verdict: "E <group> <default> <name> <verdict> <why>" per entry, and the D
+# and W lines as they are.
+menu_report() {
+	local kind group dflt name proto path cmd mods
+	while IFS=$'\t' read -r kind group dflt name proto path cmd mods; do
+		case $kind in
+			E) entry_verdict "$1" "$group" "$proto" "$path" "$cmd" "$mods"
+			   printf 'E\t%s\t%s\t%s\t%s\t%s\n' "$group" "$dflt" "$name" "$VERDICT" "${WHY:--}" ;;
+			D|W) printf '%s\t%s\n' "$kind" "$group" ;;
+		esac
+	done < <(menu_entries)
+}
+
+# Sets MENU_DEFAULT (the default entry's name, or empty) and REFUSALS to why the menu in report
+# $1 would still stop for a passphrase or a person: Limine boots no entry by itself, the default
+# entry doesn't boot unattended, or a menu entry asks. Snapshot entries and lab-agent's own aren't
+# refusals (menu_status shows them): they are booted by hand or by lab-agent, never by default.
+menu_refusals() {
+	local kind group dflt name verdict why any=0
+	MENU_DEFAULT= REFUSALS=()
+	while IFS=$'\t' read -r kind group dflt name verdict why; do
+		case $kind in
+			D) REFUSALS+=("$group") ;;
+			E) any=1
+			   (( dflt )) && MENU_DEFAULT=$name
+			   case $verdict in
+				   ask) if (( dflt )); then REFUSALS+=("the default boot entry \"$name\" would ask for the passphrase: $why")
+				        elif [[ $group == menu ]]; then REFUSALS+=("boot entry \"$name\" would ask for the passphrase: $why"); fi ;;
+				   other) (( !dflt )) || REFUSALS+=("the default boot entry \"$name\" boots no Linux: $why") ;;
+			   esac ;;
+		esac
+	done <<<"$1"
+	(( any )) || REFUSALS+=("no entry in $LIMINE_CONF boots anything")
+	return 0
+}
+
+# Refuses enable, before anything changes, when the boot menu would stop at boot whatever the
+# rebuild does: REBUILD rebuilds only the Limine tools' own entries, the UKIs in EFI/Linux.
+refuse_menu() {
+	local r
+	menu_refusals "$(menu_report pre)"
+	(( ${#REFUSALS[@]} )) || return 0
+	for r in "${REFUSALS[@]:1}"; do printf '%s: also NOT UNATTENDED: %s\n' "$PROG" "$r" >&2; done
+	die "${REFUSALS[0]}. $REBUILD rebuilds only ${UKI_NAME}_*.efi in $ESP/EFI/Linux and their entries, so enable can't fix this: remove that entry from $LIMINE_CONF (or rebuild its image with $KEY in its initramfs and $TOKEN on its cmdline), and keep default_entry on the Omarchy entry; then run enable again. Nothing changed"
+}
+
 all_images_keyed() {
-	local f e
+	local f
 	[[ -n $(ukis) ]] || return 1
 	while read -r f; do
 		[[ -z $f ]] || { [[ $(image_key "$f") == yes && $(uki_token "$f") == yes ]] && image_current_key "$f"; } || return 1
@@ -380,9 +538,8 @@ all_images_keyed() {
 	while read -r f; do
 		[[ -z $f ]] || { [[ $(image_key "$f") == yes ]] && image_current_key "$f"; } || return 1
 	done < <(initramfs_images)
-	e=$(limine_entries)
-	[[ -n $e ]] || return 1
-	! grep -q $'\tno$' <<<"$e"
+	menu_refusals "$(menu_report post)"
+	(( ${#REFUSALS[@]} == 0 ))
 }
 
 has_word() { [[ " $1 " == *[[:space:]]"$2"[[:space:]]* ]]; }
@@ -649,17 +806,41 @@ status() {
 	if [[ -z $LIMINE_CONF ]]; then
 		say "boot menu: no limine.conf found on $ESP"
 	else
-		e=$(limine_entries)
-		[[ -n $e ]] || say "boot menu: no entry in $LIMINE_CONF boots ${UKI_NAME}_*.efi"
-		while IFS=$'\t' read -r f ok; do
-			[[ -n $f ]] || continue
-			case $ok in
-				none) say "boot entry \"$f\" ($LIMINE_CONF): no cmdline of its own, boots the UKI's" ;;
-				*) say "boot entry \"$f\" ($LIMINE_CONF): $TOKEN on its cmdline $ok" ;;
-			esac
-		done <<<"$e"
+		menu_status
 	fi
 	readable_warnings
+}
+
+# Every entry of the boot menu and whether it boots without the passphrase, the default first.
+menu_status() {
+	local r kind group dflt name verdict why what
+	r=$(menu_report status)
+	while IFS=$'\t' read -r kind group; do
+		case $kind in
+			D) say "boot menu: $LIMINE_CONF: $group: NO UNATTENDED BOOT" ;;
+			W) say "boot menu: $LIMINE_CONF: WARNING: $group" ;;
+		esac
+	done <<<"$r"
+	grep -q '^E' <<<"$r" || say "boot menu: no entry in $LIMINE_CONF boots anything"
+	while IFS=$'\t' read -r kind group dflt name verdict why; do
+		[[ $kind == E ]] || continue
+		case $group in
+			lab) what=" (lab-agent's)" ;;
+			snapshot) what=" (a snapshot, booted by hand)" ;;
+			*) what= ;;
+		esac
+		(( dflt )) && what+=" (THE DEFAULT)"
+		case $verdict in
+			ok) say "boot entry \"$name\"$what: has the key and $TOKEN, boots without the passphrase" ;;
+			other) say "boot entry \"$name\"$what: $why" ;;
+			*) if (( dflt )) || [[ $group == menu ]]; then
+				say "boot entry \"$name\"$what: ASKS FOR THE PASSPHRASE: $why. Remove the entry from $LIMINE_CONF, or rebuild its image with $KEY and $TOKEN"
+			   else
+				say "boot entry \"$name\"$what: asks for the passphrase: $why"
+			   fi ;;
+		esac
+	done < <(grep $'^E\t[^\t]*\t1\t' <<<"$r"; grep $'^E\t[^\t]*\t0\t' <<<"$r")
+	return 0
 }
 
 # ---- enable ----------------------------------------------------------------------------------
@@ -669,7 +850,8 @@ enable() {
 	probe_key
 	refuse_kept
 	if [[ -n $KEY_SLOT && -f $DROPIN && $(cat "$DROPIN") == "$line" ]] && cmdfile_has_token && all_images_keyed; then
-		say "Already enabled: the key file opens key slot $KEY_SLOT and every boot image and entry has it. Nothing to do."
+		menu_status
+		say "Already enabled: the key file opens key slot $KEY_SLOT; the boot images, the default boot entry \"$MENU_DEFAULT\" and every other menu entry have it. Nothing to do."
 		readable_warnings
 		return 0
 	fi
@@ -683,6 +865,7 @@ enable() {
 	check_cmdfile add
 	need_rebuild_tools
 	[[ -n $LIMINE_CONF ]] || die "no limine.conf on $ESP, so there is no way to check what boots; nothing changed"
+	refuse_menu
 	[[ -n $KEY_SLOT ]] || need_tty
 
 	cat <<EOF
@@ -750,22 +933,16 @@ EOF
 		[[ -n $f ]] || continue
 		if [[ $(image_key "$f") == yes ]] && image_current_key "$f"; then say "image $f: has the current key"; else say "image $f: MISSING, DIFFERENT or UNREADABLE current key"; bad=1; fi
 	done < <(initramfs_images)
-	# The command line that boots: an entry's own cmdline: wins over the UKI's embedded one.
-	e=$(limine_entries)
-	[[ -n $e ]] || { say "boot menu: no entry in $LIMINE_CONF boots ${UKI_NAME}_*.efi, so this can't check what boots"; bad=1; }
-	while IFS=$'\t' read -r f ok; do
-		[[ -n $f ]] || continue
-		case $ok in
-			yes) say "boot entry \"$f\": has $TOKEN on its cmdline" ;;
-			none) say "boot entry \"$f\": no cmdline of its own, boots the UKI's (checked above)" ;;
-			*) say "boot entry \"$f\": its cmdline in $LIMINE_CONF has no $TOKEN; that entry asks for the passphrase"; bad=1 ;;
-		esac
-	done <<<"$e"
 	probe_key
 	[[ -n $KEY_SLOT ]] || die "the key file no longer opens the disk; run status"
-	(( !bad )) || die "not every boot image or entry has the key; run status (disable undoes it all)"
+	# What boots: every menu entry, the default above all, with the command line it boots (an
+	# entry's own cmdline: wins over the UKI's embedded one).
+	menu_status
+	menu_refusals "$(menu_report post)"
+	for f in "${REFUSALS[@]}"; do say "NOT UNATTENDED: $f"; bad=1; done
+	(( !bad )) || die "this Mac would still stop at boot (see above); fix it and run enable again, or run status (disable undoes it all)"
 	readable_warnings
-	say "Enabled: key slot $KEY_SLOT, in every boot image and entry. Reboot: there should be no passphrase prompt."
+	say "Enabled: key slot $KEY_SLOT, in every boot image; the default boot entry \"$MENU_DEFAULT\" and every other menu entry have it. Reboot: there should be no passphrase prompt."
 	say "Then lab-agent preflight should no longer report the disk as encrypted."
 }
 

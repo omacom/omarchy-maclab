@@ -356,6 +356,39 @@ func TestAProbeAsksTheToolForNothingButItsAnswer(t *testing.T) {
 	}
 }
 
+// A display on CC alone is no Mac: the tool's "No connection detected" there
+// is its right answer, not a failure. Anywhere else it still fails.
+func TestAProbeOfADisplayIsNoMacAndNoFailure(t *testing.T) {
+	r := newRig(t)
+	r.ports.ports[1] = oob.Port{RID: 1, Connected: true, PlugCount: 2, NoMac: true}
+	noConnection := "Mac type: J873sAP\nLooking for HPM devices...\nFound RID 1: IOService:/hpm1@A/AppleHPMARMSPMI\nConnection: None\nExiting DBMa mode... OK\nNo connection detected"
+	probe := func(rid int) (oob.Port, string) {
+		t.Helper()
+		code, body := r.do("GET", fmt.Sprintf("/v1/ports/%d/status?probe=1", rid), testToken, "")
+		if code != 200 {
+			t.Fatalf("probe of RID %d: %d %s", rid, code, body)
+		}
+		var got oob.Port
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got, body
+	}
+
+	r.tool.fail = map[int]string{1: noConnection, 0: noConnection}
+	got, body := probe(1)
+	if !got.NoMac || got.ToolFailed || !strings.Contains(got.Tool, "No connection detected") || !strings.Contains(body, `"no_mac":true`) {
+		t.Errorf("a display: %s", body)
+	}
+	if got, body := probe(0); got.NoMac || !got.ToolFailed {
+		t.Errorf("a Mac on USB2 the tool finds no connection on passed: %s", body)
+	}
+	r.tool.fail = map[int]string{1: "IOKit says no"}
+	if got, body := probe(1); !got.ToolFailed {
+		t.Errorf("a tool failing otherwise on a display passed: %s", body)
+	}
+}
+
 // The controller compares the port with what labd saw at the Sighting, once
 // more, under the lock a reset holds.
 func TestAResetIsRefusedWhenThePortIsNotAsItWasSeen(t *testing.T) {

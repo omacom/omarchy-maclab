@@ -4,7 +4,7 @@ name: Catalogue drift
 # Asahi layer. Runs weekly and on demand rather than on every push, so an
 # upstream edit never breaks unrelated pull requests. A red run means: run
 # `python catalogue/asahi_tables.py update --live`, review, bump
-# catalogue_version and refresh catalogue/asahi-snapshot/.
+# catalogue_version and set sources.asahi.commit to the Asahi commit it read.
 
 on:
   schedule:

@@ -13,6 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
@@ -76,9 +79,22 @@ func (s *Server) endEnrollment(v *dev, l leaving) error {
 		v.mu.Unlock()
 		return errMacGone
 	}
+	if v.resetting {
+		// it would go to a retired Mac
+		v.mu.Unlock()
+		return refuse(http.StatusConflict, "a Hard reset of %s is on its way: end its enrollment once it has gone out and the Mac is back", name)
+	}
 	v.forgotten = true
+	// The recovery ladder's Hard reset waiting at the controller is called
+	// off, and no other sets out (resetOOB): the Mac is retired once the
+	// controller's call has ended.
+	if v.oobCallCancel != nil {
+		v.oobCallCancel()
+	}
 	d := v.d
 	v.mu.Unlock()
+	v.oobCallMu.Lock()
+	v.oobCallMu.Unlock()
 	if s.dev(name) != v {
 		return errMacGone
 	}
@@ -96,9 +112,7 @@ func (s *Server) endEnrollment(v *dev, l leaving) error {
 		return fmt.Errorf("%s's enrollment could not be ended: %w", name, err)
 	}
 	s.endLeaseOfLeaving(v, reason)
-	s.mu.Lock()
-	delete(s.devs, name)
-	s.mu.Unlock()
+	s.retireAudit(v, name, d.ID)
 	s.afterRetiring(&d, l)
 
 	v.mu.Lock()
@@ -145,17 +159,38 @@ func (s *Server) endEnrollment(v *dev, l leaving) error {
 	return nil
 }
 
-// retired does what leaving the lab does to a Mac's record, d as it stood:
-// the record is Retired, then the three lines (the Mac's record, the People
-// record, the Lab group) are written and what labd kept under the Mac's
-// name goes. When the record cannot be Retired, nothing else is done.
-func (s *Server) retired(d *api.Device, l leaving) error {
-	if err := s.store.retire(d, l.how, s.now(), nil); err != nil {
-		s.log.Printf("retire %s: %v", d.Name, err)
-		return err
+// statusOr500 is a refusal's status, or 500 for any other error.
+func statusOr500(err error) int {
+	var r *refusal
+	if errors.As(err, &r) {
+		return r.code
 	}
-	s.afterRetiring(d, l)
-	return nil
+	return http.StatusInternalServerError
+}
+
+// retireAudit takes v out of the fleet, and renames labd's copy of its Audit
+// log after the enrollment (id), while no report adds to it: an entry
+// copied as the Mac leaves is in the renamed copy, and a report for it still
+// on its way adds to the renamed copy too, never to a new one under the name
+// the next Mac may take. A forgetting's sweep of the copies waits for those
+// reports as it does for an enrolled Mac's (auditWrite).
+func (s *Server) retireAudit(v *dev, name, id string) {
+	s.auditWrite.RLock()
+	defer s.auditWrite.RUnlock()
+	v.auditMu.Lock()
+	defer v.auditMu.Unlock()
+	a := s.auditPath(name)
+	renamed := strings.TrimSuffix(a, ".jsonl") + "." + id + ".jsonl"
+	if err := os.Rename(a, renamed); err != nil && !os.IsNotExist(err) {
+		s.log.Printf("forget %s: audit log: %v", name, err)
+	}
+	s.mu.Lock()
+	delete(s.devs, name)
+	if s.retiredAudit == nil {
+		s.retiredAudit = map[*dev]string{}
+	}
+	s.retiredAudit[v] = renamed
+	s.mu.Unlock()
 }
 
 // afterRetiring is what follows a Mac's record being Retired.
@@ -179,7 +214,7 @@ func (s *Server) afterRetiring(d *api.Device, l leaving) {
 	if _, err := s.store.dropTokens(d.Name); err != nil {
 		s.log.Printf("retire %s: its enrollment tokens: %v", d.Name, err)
 	}
-	s.dropNamedState(d.Name, d.ID)
+	s.dropNamedState(d.Name)
 }
 
 // leftOnPeopleRecord writes a Mac's leaving in the People record, which is
@@ -217,19 +252,43 @@ func (s *Server) leftOnPeopleRecord(d *api.Device, l leaving) {
 	}
 }
 
-// endEnrollmentsOf has every Mac the person lends leave the lab, as l says.
-// A Mac that could not is in the error, and still enrolled: its secret
-// still works.
+// retiringWait is how long endEnrollmentsOf waits for a Mac of the
+// person's that is leaving the lab already.
+var retiringWait = 10 * time.Second
+
+// endEnrollmentsOf has every Mac enrolled under the person's account id
+// leave the lab, as l says, the ones that told the lab they are leaving
+// among them. A Mac another ending holds is waited for: when that ending
+// fails, this one ends it. A Mac that could not leave is in the error, and
+// still enrolled: its secret still works.
 func (s *Server) endEnrollmentsOf(accountID int64, l leaving) error {
-	var errs []error
-	for _, name := range s.macsLentBy(accountID) {
-		if v := s.dev(name); v != nil {
+	if accountID == 0 {
+		return nil
+	}
+	deadline := time.Now().Add(retiringWait)
+	for {
+		names, err := scanNames(s.store.db.Query(`SELECT name FROM devices WHERE json_extract(data, '$.volunteer_id') = ? ORDER BY name`, accountID))
+		if err != nil {
+			return err
+		}
+		var errs []error
+		for _, name := range names {
+			v := s.dev(name)
+			if v == nil {
+				continue
+			}
 			if err := s.endEnrollment(v, l); err != nil && !errors.Is(err, errMacGone) {
 				errs = append(errs, err)
 			}
 		}
+		if len(errs) > 0 || len(names) == 0 {
+			return errors.Join(errs...)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s is leaving the lab already, and has not left yet", strings.Join(names, ", "))
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	return errors.Join(errs...)
 }
 
 // leaveMac is the Mac's Volunteer leaving the lab from the site. The Mac
@@ -257,7 +316,7 @@ func (s *Server) hEndEnrollment(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errMacGone):
 		httpErr(w, 404, "no device %q", name)
 	case err != nil:
-		httpErr(w, 500, "%v", err)
+		httpErr(w, statusOr500(err), "%v", err)
 	default:
 		w.Write([]byte("enrollment ended\n"))
 	}

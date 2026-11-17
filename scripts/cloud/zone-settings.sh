@@ -176,7 +176,7 @@ mail() {
 
   if [[ $1 == fix ]]; then
     if [[ $routing != true ]]; then
-      send POST "/zones/{zone}/email/routing/dns" "$(jq -nc --arg d "$LAB_DOMAIN" '{name: $d}')"
+      send POST "/zones/{zone}/email/routing/dns" "{}"
       say "set      $name: mail routing is on for $LAB_DOMAIN"
     fi
     if [[ $given == missing ]]; then
@@ -257,7 +257,7 @@ plan() {
   would "GET /accounts/{account}/email/routing/addresses?per_page=50"
   would "POST /accounts/{account}/email/routing/addresses {\"email\":\"<MAILBOX>\"}"
   would "GET /zones/{zone}/email/routing"
-  would "POST /zones/{zone}/email/routing/dns {\"name\":\"$LAB_DOMAIN\"}"
+  would "POST /zones/{zone}/email/routing/dns {}"
   would "GET /zones/{zone}/email/routing/rules?per_page=50"
   would "POST /zones/{zone}/email/routing/rules $(jq -nc --arg n "$MAIL_NAME" --arg to "$MAIL" '{name: $n, enabled: true, matchers: [{type: "literal", field: "to", value: $to}], actions: [{type: "forward", value: ["<MAILBOX>"]}]}')"
   say "the Alias, once edge.json says alias.wanted (now: $ALIAS_WANTED)"

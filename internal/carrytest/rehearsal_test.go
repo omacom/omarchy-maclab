@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -109,7 +111,8 @@ func TestTheRehearsalImportFillsAnEmptiedReportsDBAndPassesItsThreeChecks(t *tes
 	if out, code := m.run("", "rehearsal-import", "run", "--dry-run", "--public-key", public, "--dump", dump); code != 0 || !strings.Contains(out, "the old site is not read") || !strings.Contains(out, "would stop labd") {
 		t.Fatalf("the dry run: exit %d, %s", code, out)
 	}
-	if out, code := m.run("", "rehearsal-import", "run", "--dry-run", "--public-key", public); code != 0 || !strings.Contains(out, "ask for the address of the old site's Postgres") {
+	if out, code := m.run("", "rehearsal-import", "run", "--dry-run", "--public-key", public); code != 0 || !strings.Contains(out, "ask for the address of the old site's Postgres") ||
+		!strings.Contains(out, "show its certificate chain") || !strings.Contains(out, "and its CA file") {
 		t.Fatalf("the dry run with no dump: exit %d, %s", code, out)
 	}
 	if n := count(t, reports, `SELECT count(*) FROM reports`); n != 0 {
@@ -232,6 +235,176 @@ func TestAnOpeningDuringTheImportLeavesTheReports(t *testing.T) {
 	}
 }
 
+// openingInTheImport plays the lab account and, as the import is about to
+// take its earlier pass's mark away, starts the opening from a second
+// terminal: the mark of today is still there, labd runs in Preview.
+const openingInTheImport = `#!/bin/bash
+echo "as-lab $*" >> "$STUB_LOG"
+if [[ $1 == rm && $3 == */import/imported && ! -f $STUB_STATE/opening.code ]]; then
+  : > "$STUB_STATE/opening.code"
+  "$STUB_OPEN" --m-team 14 > "$STUB_STATE/opening.out" 2>&1
+  echo $? > "$STUB_STATE/opening.code"
+fi
+exec "$@"
+`
+
+// The opening and the import's emptying take one lock on the mini: an
+// opening started once the import has passed its last look at the stage
+// is refused, the lab stays in Preview and the import goes on to its pass.
+func TestAnOpeningStartedWhileTheImportEmptiesTheReportsIsRefused(t *testing.T) {
+	m, dump, public := rehearsal(t)
+	if out, code := m.run(hex.EncodeToString(machineIDKey())+"\n", "rehearsal-import", "key"); code != 0 {
+		t.Fatalf("the key: exit %d, %s", code, out)
+	}
+	s := openingOn(t, m, 14)
+	stub := filepath.Join(m.base, "opening-in-the-import")
+	write(t, stub, openingInTheImport, 0o755)
+	for i, e := range m.env {
+		if strings.HasPrefix(e, "LAB_AS_LAB=") {
+			m.env[i] = "LAB_AS_LAB=" + stub
+		}
+	}
+	m.env = append(m.env, "STUB_OPEN="+filepath.Join(repo(t), "scripts", "cutover", "open"))
+	out, code := m.run(oldLink+"\n", "rehearsal-import", "run", "--public-key", public, "--dumped", dump)
+	opening := read(t, filepath.Join(m.state, "opening.out"))
+	if strings.TrimSpace(read(t, filepath.Join(m.state, "opening.code"))) == "0" || !strings.Contains(opening, "changes the lab now") || !strings.Contains(opening, "Nothing was changed") {
+		t.Errorf("the opening during the import was not refused:\n%s", opening)
+	}
+	if !s.Preview() {
+		t.Fatal("the lab opened while the import emptied its reports")
+	}
+	if code != 0 || !strings.Contains(out, "the import and its three checks passed") {
+		t.Errorf("the import: exit %d, %s", code, out)
+	}
+	if exists(m.path(cutoverLock)) {
+		t.Error("the import left its lock behind")
+	}
+}
+
+// cutoverLock is the mini's lock for the opening and the import.
+const cutoverLock = "var/run/org.omarchy-mac.lab.cutover"
+
+// A lock held by a process that runs refuses the opening and the import
+// before either changes anything; a lock whose process is gone is taken.
+func TestTheCutoversLockHeldElsewhereRefusesAndALeftOneIsTaken(t *testing.T) {
+	m, dump, public := rehearsal(t)
+	if out, code := m.run(hex.EncodeToString(machineIDKey())+"\n", "rehearsal-import", "key"); code != 0 {
+		t.Fatalf("the key: exit %d, %s", code, out)
+	}
+	s := openingOn(t, m, 14)
+	mark := m.path("var/lab/import/imported")
+	lock := m.path(cutoverLock)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(strconv.Itoa(os.Getpid()), lock); err != nil {
+		t.Fatal(err)
+	}
+	reports := everyFile(t, m.path("var/lab/data"))["reports.db"]
+	os.Remove(m.log)
+	if out := m.refused("open", "--m-team", "14"); !strings.Contains(out, "changes the lab now") {
+		t.Errorf("the opening under a held lock: %s", out)
+	}
+	out, code := m.run(oldLink+"\n", "rehearsal-import", "run", "--public-key", public, "--dumped", dump)
+	if code == 0 || !strings.Contains(out, "changes the lab now") {
+		t.Errorf("the import under a held lock: exit %d, %s", code, out)
+	}
+	if !s.Preview() || !exists(mark) || strings.Contains(m.calls(), "launchctl bootout") || everyFile(t, m.path("var/lab/data"))["reports.db"] != reports {
+		t.Errorf("a refused run changed the lab:\n%s", m.calls())
+	}
+	if got, _ := os.Readlink(lock); got != strconv.Itoa(os.Getpid()) {
+		t.Errorf("a refused run took the lock: %q", got)
+	}
+
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(lock)
+	if err := os.Symlink(strconv.Itoa(gone.Process.Pid), lock); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := m.run(oldLink+"\n", "rehearsal-import", "run", "--public-key", public, "--dumped", dump); code != 0 {
+		t.Fatalf("the import under a left lock: exit %d, %s", code, out)
+	}
+	if exists(lock) {
+		t.Error("the import left its lock behind")
+	}
+}
+
+// lockRacer takes the Cutover's lock and holds it a moment.
+const lockRacer = `. "$1"
+hold_lab
+echo "took $$"
+sleep 3
+`
+
+// deadPS is a ps for which the dead holder's pid is gone only once both
+// racers have asked: the first goes on at once, the second a second later,
+// after the first has taken the lock again.
+const deadPS = `#!/bin/bash
+if [[ $1 == -p && $2 == "$DEAD_HOLDER" ]]; then
+  first=0
+  mkdir "$STUB_STATE/ps.first" 2>/dev/null && first=1
+  touch "$STUB_STATE/ps.asked.$PPID"
+  for n in $(seq 100); do
+    (( $(ls "$STUB_STATE" | grep -c '^ps\.asked\.') >= 2 )) && break
+    sleep 0.05
+  done
+  (( first )) || sleep 1
+  exit 1
+fi
+exec /bin/ps "$@"
+`
+
+// Two scripts that find the same dead holder's lock: one takes it, and the
+// other is refused by the lock the first now holds; it never removes it.
+func TestTwoRunsThatFindALeftLockTakeItOnce(t *testing.T) {
+	m := newMini(t, oldlabtest.OnOmarchyGPU)
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	lock := m.path(cutoverLock)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(strconv.Itoa(gone.Process.Pid), lock); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(m.base, "stubs", "ps"), deadPS, 0o755)
+	env := append(m.env, "DEAD_HOLDER="+strconv.Itoa(gone.Process.Pid))
+	lib := filepath.Join(repo(t), "scripts", "cutover", "mini.sh")
+	outs := make([]strings.Builder, 2)
+	cmds := make([]*exec.Cmd, 2)
+	for i := range cmds {
+		cmds[i] = exec.Command("bash", "-c", lockRacer, "racer", lib)
+		cmds[i].Env = env
+		cmds[i].Stdout, cmds[i].Stderr = &outs[i], &outs[i]
+		if err := cmds[i].Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	took, refused := 0, 0
+	for i, c := range cmds {
+		c.Wait()
+		out := outs[i].String()
+		t.Logf("racer %d:\n%s", i, out)
+		if strings.Contains(out, "took ") {
+			took++
+		}
+		if strings.Contains(out, "changes the lab now") {
+			refused++
+		}
+	}
+	if took != 1 || refused != 1 {
+		t.Errorf("%d took the lock and %d were refused, want one each", took, refused)
+	}
+	if exists(lock) {
+		t.Error("the lock was left behind")
+	}
+}
+
 // A run that empties the reports and then fails leaves no pass from earlier
 // the same day for the opening to read.
 func TestAFailedImportTakesAwayTheDaysEarlierPass(t *testing.T) {
@@ -249,5 +422,50 @@ func TestAFailedImportTakesAwayTheDaysEarlierPass(t *testing.T) {
 	}
 	if exists(mark) {
 		t.Errorf("the failed import left the earlier pass's mark: %q", read(t, mark))
+	}
+}
+
+// Reading the old site, the rehearsal shows the certificate chain its
+// Postgres presents, keeps the chain's last certificate as the CA file,
+// and the dump checks the certificate against the file given at its
+// prompt. Here the made-up Postgres passes TLS and then refuses the user:
+// no dump, and nothing of the lab changed.
+func TestTheRehearsalShowsTheCertificateChainBeforeTheDumpChecksIt(t *testing.T) {
+	m, _, public := rehearsal(t)
+	if out, code := m.run(hex.EncodeToString(machineIDKey())+"\n", "rehearsal-import", "key"); code != 0 {
+		t.Fatalf("the key: exit %d, %s", code, out)
+	}
+	a := oldsitetest.NewAuthority(t)
+	port, _ := a.TLSPostgres(t)
+	address := "postgresql://postgres:hunter2-not-real@127.0.0.1:" + port + "/railway"
+	ca := m.path("var/lab/import/old-site-ca.pem")
+	os.Remove(m.log)
+	out, code := m.run(address+"\n"+address+"\n"+ca+"\n", "rehearsal-import", "run", "--public-key", public)
+	if code == 0 || !strings.Contains(out, "did not accept that user and password") || !strings.Contains(out, "no dump was written") {
+		t.Fatalf("exit %d, %s", code, out)
+	}
+	sum := sha256.Sum256(a.CA.Raw)
+	if !strings.Contains(out, "SHA-256 ") || !strings.Contains(out, strings.ToUpper(hex.EncodeToString(sum[:1]))+":") || !strings.Contains(out, "at the dump's CA file prompt give "+ca) {
+		t.Errorf("the chain was not shown:\n%s", out)
+	}
+	if strings.Contains(out, "hunter2") {
+		t.Error("the run repeats the password")
+	}
+	if !strings.Contains(read(t, ca), "BEGIN CERTIFICATE") {
+		t.Error("the CA file was not kept")
+	}
+	calls := m.calls()
+	if c, d := strings.Index(calls, "import check certificate --save "), strings.Index(calls, "import dump --to "); c < 0 || d < c {
+		t.Errorf("the chain was not shown before the dump:\n%s", calls)
+	}
+	if strings.Contains(calls, "launchctl bootout") || strings.Contains(calls, " import load ") {
+		t.Errorf("a run with no dump changed the lab:\n%s", calls)
+	}
+
+	// The day's dump asks for the CA file the rehearsal kept.
+	os.Remove(ca)
+	day := m.path("var/lab/import/the-day.dump")
+	if out, code := m.run("", "rehearsal-import", "dump", "--dump", day); code == 0 || !strings.Contains(out, "no CA file at") || exists(day) {
+		t.Errorf("the day's dump with no CA file: exit %d, %s", code, out)
 	}
 }

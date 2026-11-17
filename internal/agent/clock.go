@@ -73,6 +73,20 @@ func (f *FakeClock) wait(d, every time.Duration) *fakeWaiter {
 	return w
 }
 
+// Next is when the earliest timer or ticker waiting on the clock falls due,
+// and whether one is waiting.
+func (f *FakeClock) Next() (time.Time, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var next time.Time
+	for _, w := range f.waiters {
+		if next.IsZero() || w.at.Before(next) {
+			next = w.at
+		}
+	}
+	return next, !next.IsZero()
+}
+
 // Advance moves the clock on and fires every timer and ticker that falls due.
 // Like a real ticker, a fake one drops ticks nobody has read.
 func (f *FakeClock) Advance(d time.Duration) {

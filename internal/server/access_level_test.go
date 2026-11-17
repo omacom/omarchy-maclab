@@ -426,8 +426,7 @@ func TestScreenshotsAndTheLiveJournalNeedALeaseInsideTheWindowAtBothLevels(t *te
 	for _, level := range []string{"qualification", "full"} {
 		l.alSetAccess(level)
 		l.alWatchRefused("at " + level + ", outside the window")
-		l.mustVolunteer("open", "--until", clock.Now().Add(2*time.Hour).Format("15:04"))
-		time.Sleep(time.Second) // check-ins carry it to labd
+		l.openUntil(clock.Now().Add(2 * time.Hour))
 		l.alWatchRefused("at " + level + ", inside the window but with no job or lease")
 		l.takeLease("connor (homework)", time.Hour)
 		l.alWatchAllowed("at " + level + ", a lease holds the Mac inside its window")

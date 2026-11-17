@@ -45,6 +45,8 @@ func (s *Server) sendJob() bool {
 	return true
 }
 
+// endJob counts a sent job as ended. The caller holds the Mac's mu, so the
+// job stops counting in the same step that frees the Mac.
 func (s *Server) endJob() {
 	s.drain.mu.Lock()
 	s.drain.jobs--

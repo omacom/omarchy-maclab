@@ -9,7 +9,7 @@
 #   --token-file FILE  the Cloudflare API token, in a file only you can read;
 #                      without it the script asks, and does not show it
 #
-# Porkbun's two keys come from the login Keychain (omarchy-mac-lab).
+# Porkbun's two keys come from --porkbun-keys FILE (see lib.sh).
 
 # shellcheck source=scripts/cloud/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

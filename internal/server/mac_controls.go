@@ -1,18 +1,21 @@
 package server
 
-// The Volunteer's controls on the site. The Mac sets the ceiling: only the
-// Mac gives (Open now, the weekly schedule, raising to Full, turning
-// publishing on are `sudo lab-agent …` at the Mac). The site only takes
-// away, and undoes only what it took: Pause until a time or Resume, Limit
-// to Qualification until "Remove limit", and Leave. They are the buttons of
-// a Mac's card on My Macs, and work for the Mac's own Volunteer only. Pause,
-// Limit and Leave take something away, so they ask twice.
+// The Volunteer's controls on the site. The Mac sets the ceiling: Open now,
+// raising to Full and turning publishing on are `sudo lab-agent …` at the
+// Mac. The site gives one thing, the weekly schedule, which the Mac takes at
+// its next check-in. Otherwise it only takes away, and undoes only what it
+// took: Pause until a time or Resume, Limit to Qualification until "Remove
+// limit", and Leave. They are the buttons of a Mac's card on My Macs, and
+// work for the Mac's own Volunteer only. Pause, Limit and Leave take
+// something away, so they ask twice.
 
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/api"
 	"github.com/omacom/omarchy-maclab/internal/web"
 )
 
@@ -22,6 +25,7 @@ func init() {
 	addPage("POST /my-macs/{name}/limit", web.SignedIn, (*Server).pLimitMac)
 	addPage("POST /my-macs/{name}/remove-limit", web.SignedIn, controlOf((*Server).unlimitMac))
 	addPage("POST /my-macs/{name}/leave", web.SignedIn, (*Server).pLeaveMac)
+	addPage("POST /my-macs/{name}/window", web.SignedIn, (*Server).pWindowMac)
 	addPage("POST /people/{id}/enrollments/{mac}/end", web.Maintainers, (*Server).pEndEnrollment)
 }
 
@@ -111,6 +115,29 @@ func (s *Server) pPauseMac(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.controlDone(w, r, v, s.pauseMac(v, *PersonOf(r), until))
+}
+
+// pWindowMac adds a weekly window, days and a from and to time, or always,
+// or removes one: what the card's window form posts.
+func (s *Server) pWindowMac(w http.ResponseWriter, r *http.Request) {
+	v := s.myMac(w, r)
+	if v == nil {
+		return
+	}
+	var c api.WindowChange
+	switch {
+	case r.PostFormValue("remove") != "":
+		c.Remove = r.PostFormValue("remove")
+	case r.PostFormValue("always") != "":
+		c.Add = "always"
+	default:
+		c.Add = strings.TrimSpace(r.PostFormValue("days")) + " " + strings.TrimSpace(r.PostFormValue("from")) + "-" + strings.TrimSpace(r.PostFormValue("to"))
+	}
+	add, rule, err := windowChangeOf(c)
+	if err == nil {
+		err = s.changeWindow(v, *PersonOf(r), add, rule)
+	}
+	s.controlDone(w, r, v, err)
 }
 
 // pLimitMac is Limit to Qualification, which asks twice.

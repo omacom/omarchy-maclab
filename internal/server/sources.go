@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
@@ -129,13 +130,15 @@ func SourceHosts(list []string) ([]string, error) {
 	return out, nil
 }
 
+var resolveWait = 45 * time.Second
+
 // resolve pins the source to a commit with a single `git ls-remote`.
 func resolve(ctx context.Context, s api.Source) (api.Source, error) {
 	if reHex40.MatchString(s.Ref) {
 		s.SHA = s.Ref
 		return s, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, resolveWait)
 	defer cancel()
 	// A redirect is never followed: the source names the host it comes from.
 	args := []string{"-c", "http.followRedirects=false", "ls-remote", "--", s.Repo}
@@ -145,7 +148,16 @@ func resolve(ctx context.Context, s api.Source) (api.Source, error) {
 	}
 	cmd := exec.CommandContext(ctx, "git", append(args, want, "refs/heads/"+want, "refs/tags/"+want, "refs/tags/"+want+"^{}")...)
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// git hands https to a helper of its own, which a host that stops
+	// answering holds: the time limit ends git's whole process group, or the
+	// helper keeps the pipes open and the call waits on it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return s, fmt.Errorf("git ls-remote %s: no answer in %s; try again", s.Repo, resolveWait)
+	}
 	if err != nil {
 		msg := err.Error()
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {

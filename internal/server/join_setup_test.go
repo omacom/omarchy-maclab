@@ -64,7 +64,7 @@ func TestTheTypedYesIsRecordedWithThePersonTheMacTheTimeAndTheTerms(t *testing.T
 		t.Errorf("a declined prompt bound the Join command to the Mac (%d)", n)
 	}
 
-	tty, err := setup("yes\nmon-fri 19:00-07:00\n")
+	tty, err := setup("yes\n")
 	if err != nil {
 		t.Fatalf("setup: %v\n%s", err, strings.Join(said, "\n"))
 	}

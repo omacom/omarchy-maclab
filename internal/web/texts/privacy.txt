@@ -1,5 +1,5 @@
 PRIVACY
-Statement of 2026-11-14
+Statement of 2026-11-16
 
 Omarchy Mac Lab is a volunteer project run by its Maintainers. Its server
 is in Brisbane, Australia, kept by @maralcbr. Write to
@@ -49,11 +49,15 @@ forgotten.
 
 Being forgotten. Ask on your own page, or write to us. Within 30 days a
 Maintainer removes your record, Lab tokens and sign-ins, your Macs leave,
-and your handle comes off your reports and every record. Four things stay:
+and your handle comes off your reports and every record. Six things stay:
 root commands you ran, until their 12 months are up; lines already sent to
 Signal, on its members' phones; the log a Mac keeps for its own Volunteer;
-backups, for 6 months. If your account was blocked, the lab keeps its
-number so that it stays blocked.
+the approver's handle in a Release frozen before 2026-11-16, which is part
+of that Release (later ones name an approver by account number, which the
+lab then shows as nobody); a run's kernel error log that holds your
+handle, which is evidence a Release is promoted on; backups, for 6
+months. If your account was
+blocked, the lab keeps its number so that it stays blocked.
 
 Others who hold something. Cloudflare (delivery, a backup copy of the
 databases, mail to the address above). GitHub (sign-in; remove the lab

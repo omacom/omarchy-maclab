@@ -310,7 +310,7 @@ class FiltersTest < ActionDispatch::IntegrationTest
   test "the reports exports take the filters, and without any are unchanged" do
     get "/api/v1/reports.json"
     body = response.parsed_body
-    assert_equal %w[license note generated_at catalogue_version reports], body.keys
+    assert_equal %w[license generated_at catalogue_version reports], body.keys
     assert_equal PRODUCTION.size, body["reports"].size
 
     get "/api/v1/reports.json", params: { gen: "m1", tool: "0.1.8" }

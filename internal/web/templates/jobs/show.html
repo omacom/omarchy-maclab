@@ -2,7 +2,7 @@
 {{end}}{{end}}{{end}}
 
 {{define "main"}}{{with .Data}}<p class="dim"><a href="{{href "/jobs"}}">Jobs</a> /</p>
-<h1>{{.ID}}</h1>
+{{template "copy-title" (copy "the job id" .ID)}}
 <p class="subtitle">{{.What}} on {{.Mac}}, asked by {{if .By}}@{{.By}}{{else}}the lab{{end}}.</p>
 {{if .Flash}}<p class="flash flash-alert" role="alert">{{.Flash}}</p>
 {{end}}<section class="card">
@@ -13,8 +13,8 @@
 <dt>Asked</dt><dd>{{.Asked}}, by {{if .By}}@{{.By}}{{else}}the lab{{end}}{{if .UnderLease}} <span class="dim">under a Lease</span>{{end}}</dd>
 {{if .Took}}<dt>Took</dt><dd>{{.Took}}</dd>
 {{end}}{{if .BootedIn}}<dt>Booted in</dt><dd>{{.BootedIn}}</dd>
-{{end}}<dt>Kernel</dt><dd>{{if .Source}}built from {{.Source}}{{if .Build}}, build {{if .BuildOpens}}<a href="{{href (print "/builds/" .Build)}}">{{.Build}}</a>{{else}}{{.Build}}{{end}}{{end}}{{if .Kernel}}<br><code>{{.Kernel}}</code>{{end}}{{else if .Kernel}}<code>{{.Kernel}}</code>{{else}}the Mac's Known-good kernel{{end}}</dd>
-{{if .Cmdline}}<dt>Arguments</dt><dd><code>{{.Cmdline}}</code></dd>
+{{end}}<dt>Kernel</dt><dd>{{if .Source}}built from {{.Source}}{{if .Build}}, build {{if .BuildOpens}}<a href="{{href (print "/builds/" .Build)}}">{{.Build}}</a>{{else}}{{.Build}}{{end}}{{end}}{{if .Kernel}}<br>{{template "copy" (copy "the kernel" .Kernel)}}{{end}}{{else if .Kernel}}{{template "copy" (copy "the kernel" .Kernel)}}{{else}}the Mac's Known-good kernel{{end}}</dd>
+{{if .Cmdline}}<dt>Arguments</dt><dd>{{template "copy" (copy "the arguments" .Cmdline)}}</dd>
 {{end}}{{if .Tests}}<dt>Tests</dt><dd>{{.Tests}}</dd>
 {{end}}{{if .Timeout}}<dt>Boot timeout</dt><dd>{{.Timeout}} s</dd>
 {{end}}{{if .RetryOf}}<dt>Retries</dt><dd><a href="{{href (print "/jobs/" .RetryOf)}}">{{.RetryOf}}</a></dd>

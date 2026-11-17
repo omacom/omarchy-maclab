@@ -79,3 +79,32 @@ func TestForgetTakesThePersonOffReportsAndKeepsTheReports(t *testing.T) {
 		t.Errorf("%d reports still name the person", n)
 	}
 }
+
+// A report kept from before the lab knew account ids names its person by
+// handle alone: it goes by every handle the person had, the ones before a
+// rename too.
+func TestForgetGoesByEveryHandleThePersonHad(t *testing.T) {
+	d := newDesk(t)
+	const vera = 7700123
+	var ids []string
+	for i, machine := range []string{"a", "b", "c"} {
+		a := d.post(t, run(t, i), machine)
+		if a.status != http.StatusCreated {
+			t.Fatalf("upload %d: %d %v", i, a.status, a.body)
+		}
+		ids = append(ids, a.text("id"))
+	}
+	for i, handle := range []string{"vera", "vee", "ravi"} {
+		if _, err := d.store.db.Exec(`UPDATE reports SET handle = ?, account_id = NULL WHERE public_id = ?`, handle, ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.store.Forget(vera, "vera", "vee"); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"", "", "ravi"} {
+		if r, err := d.store.Report(ids[i]); err != nil || r.Handle != want {
+			t.Errorf("report %d names %q, want %q (%v)", i, r.Handle, want, err)
+		}
+	}
+}

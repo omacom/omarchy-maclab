@@ -149,7 +149,7 @@ func TestSetupMakesTheControllersTokenForRootAndForLab(t *testing.T) {
 	if strings.Contains(m.calls(), "bootstrap") || m.oobdLoaded() {
 		t.Errorf("the controller was started with no build Deployed:\n%s", m.calls())
 	}
-	if !strings.Contains(out, "run the set-up again after the first Deploy") {
+	if !strings.Contains(out, "the first Deploy starts it") {
 		t.Errorf("the set-up doesn't say when the controller starts:\n%s", out)
 	}
 
@@ -271,6 +271,12 @@ echo "oobd 71 root 3u IPv4 0x0 0t0 TCP ${STUB_LISTENS:-127.0.0.1:7780} (LISTEN)"
 // build's reset tool. It returns the token.
 func portsMini(t *testing.T, tool string) (*mini, string) {
 	t.Helper()
+	return portsMiniOf(t, tool, "ioreg-applehpm.txt")
+}
+
+// portsMiniOf is portsMini with the ports of another ioreg capture.
+func portsMiniOf(t *testing.T, tool, ioreg string) (*mini, string) {
+	t.Helper()
 	need(t, "openssl", "awk")
 	m := newMini(t)
 	k := newKey(t)
@@ -280,7 +286,7 @@ func portsMini(t *testing.T, tool string) (*mini, string) {
 	m.deployed("v0.2.0-rc.1", strings.ReplaceAll(tool, "$STUB_STATE", filepath.Join(filepath.Dir(m.root), "state")))
 	m.ok("setup")
 	data := filepath.Join(repo(t), "internal", "oobd", "testdata")
-	write(t, m.bin+"/ioreg", "#!/bin/sh\ncat "+data+"/ioreg-applehpm.txt\n", 0o755)
+	write(t, m.bin+"/ioreg", "#!/bin/sh\ncat "+data+"/"+ioreg+"\n", 0o755)
 	write(t, m.bin+"/system_profiler", "#!/bin/sh\ncat "+data+"/thunderbolt.json\n", 0o755)
 	write(t, m.bin+"/lsof", lsofStub, 0o755)
 	token, err := oob.ReadToken(m.path(rootToken))
@@ -385,6 +391,46 @@ func TestThePortCheckFailsWhenTheToolFailsThroughTheController(t *testing.T) {
 	}
 	if strings.Contains(out, "FAIL  RID 1") || strings.Contains(out, "FAIL  RID 0") {
 		t.Errorf("a port with nothing on it, or a good one, failed the check:\n%s", out)
+	}
+}
+
+// The mini on 2026-11-16: the owner's display on RID 1, connected on CC
+// alone, where the tool says "No connection detected". It is no Mac and is
+// left alone, through the controller and without it; a port that carries
+// USB2 or CIO and gets that answer still fails.
+func TestThePortCheckLeavesADisplayAlone(t *testing.T) {
+	m, _ := portsMiniOf(t, strictTool, "ioreg-applehpm-display.txt")
+	display := "ok    RID 1: not a Mac (a display or power on CC only), left alone"
+	out := m.ok("ports")
+	for _, want := range []string{
+		"ok    RID 1 (Port-USB-C@2): connected, transports CC, product id none, plug count 2",
+		display,
+		"every check passed; nothing was reset",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the port check doesn't say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Errorf("a display failed the check:\n%s", out)
+	}
+
+	os.Remove(filepath.Join(filepath.Dir(m.root), "state", "loaded."+oobdLabel))
+	out = m.refused("ports")
+	if !strings.Contains(out, display) || strings.Contains(out, "FAIL  RID 1") {
+		t.Errorf("without the controller a display failed the check:\n%s", out)
+	}
+
+	m, _ = portsMiniOf(t, strings.Replace(strictTool, `0|2) echo`, `2) echo "Found RID 2"; echo "Connection: None"; echo "No connection detected"; exit 255 ;;
+  0) echo`, 1), "ioreg-applehpm-display.txt")
+	out = m.refused("ports")
+	if !strings.Contains(out, "FAIL  RID 2: the tool failed on a connected port") || strings.Contains(out, "FAIL  RID 1") || strings.Contains(out, "RID 2: not a Mac") {
+		t.Errorf("a port on USB2 and CIO the tool finds no connection on passed, or the display failed:\n%s", out)
+	}
+	os.Remove(filepath.Join(filepath.Dir(m.root), "state", "loaded."+oobdLabel))
+	out = m.refused("ports")
+	if !strings.Contains(out, "FAIL  RID 2: the tool failed on a connected port (exit") || strings.Contains(out, "FAIL  RID 1") {
+		t.Errorf("without the controller, a port on USB2 and CIO the tool finds no connection on passed:\n%s", out)
 	}
 }
 

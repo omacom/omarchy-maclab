@@ -205,6 +205,12 @@ func TestACardShowsEverythingItsVolunteerMaySeeAndDo(t *testing.T) {
 	l.s.macSaid("vol-air", id, macJoined, "Joined as a Volunteer's Mac, at Qualification with publishing off")
 	lease := grace.mustLease("vol-air", "grace@desk", 0)
 
+	cardHTML := part(t, linus.page("/my-macs"), `id="mac-vol-air"`, "</section>\n")
+	offersToCopy(t, cardHTML, "the Notices topic", "https://ntfy.example/linus-own-topic")
+	offersToCopy(t, cardHTML, "the update command", "sudo lab-agent update")
+	for _, c := range onlyAtTheMac {
+		offersToCopy(t, cardHTML, c.Line, c.Line)
+	}
 	card := linus.myMacs().sole(t, "#mac-vol-air")
 	if got := card.sole(t, "h2").words(); got != "vol-air" {
 		t.Errorf("the card is named %q", got)
@@ -269,9 +275,9 @@ func TestACardShowsEverythingItsVolunteerMaySeeAndDo(t *testing.T) {
 			t.Errorf("the commands for what only the Mac can give lack %q:\n%s", want, commands)
 		}
 	}
-	// Nothing on the site gives.
+	// Nothing on the site gives but the weekly window (window_from_site_test.go).
 	for _, f := range card.all(t, "form") {
-		for _, gives := range []string{"open", "access", "publish", "window", "full"} {
+		for _, gives := range []string{"open", "access", "publish", "full"} {
 			if strings.HasSuffix(f.attr("action"), "/"+gives) {
 				t.Errorf("the card has a form that gives: %s", f.attr("action"))
 			}
@@ -746,5 +752,27 @@ func TestACardReadsABoundedTailOfTheAuditCopy(t *testing.T) {
 	card := l.signedIn(linusID).myMacs().sole(t, "#mac-vol-air")
 	if !card.says(t, "#audit-vol-air li", "@ravi · the newest line") {
 		t.Errorf("the card's Audit log: %q", card.sole(t, "#audit-vol-air").words())
+	}
+}
+
+// A Mac lent always shows its window as always, open with no end, and the
+// command for the window at the Mac says always is an answer.
+func TestACardOfAMacLentAlwaysSaysAlways(t *testing.T) {
+	l := myMacsLab(t)
+	v := l.lentMac("vol-air", linusID, api.AccessQualification, time.Time{})
+	always, err := window.ParseRule("always")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.mu.Lock()
+	v.d.Window.Rules = []window.Rule{always}
+	v.mu.Unlock()
+	linus := l.signedIn(linusID)
+	card := linus.myMacs().sole(t, "#mac-vol-air")
+	if facts := factsOf(t, card); !strings.Contains(facts, "Availability window always (Australia/Brisbane) open always") {
+		t.Errorf("the card of an always Mac: %s", facts)
+	}
+	if !strings.Contains(card.words(), "or window add always") {
+		t.Errorf("the card does not say always is a window: %s", card.words())
 	}
 }

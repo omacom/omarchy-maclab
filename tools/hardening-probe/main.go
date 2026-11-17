@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +37,7 @@ const usage = `usage: hardening-probe <command>
       one request: its status and what it said in one line. With no
       --token-file or --session it goes under the saved login. --rows prints
       one row= line for each object of a JSON array, the values of K,K...
+      (a.b is the b inside a)
   hold [--token-file F | --session F] [--for SEC] PATH
       hold a stream (GET): opened=STATUS as soon as it answers, then
       ended=closed|timeout|error and seconds=N
@@ -50,7 +50,7 @@ const usage = `usage: hardening-probe <command>
       --page (default /me). --origin names another page's origin
   page --session F [--find REGEX] [--out FILE] PATH
       fetch a page as the browser of the session: its status, and each
-      first group of REGEX found= (never the page)
+      first group of REGEX found= in the page's order, once (never the page)
   listen
       take connections on a loopback port: port=N, then connection=N for
       each one, until stopped
@@ -299,7 +299,7 @@ func askCommand(fs *flag.FlagSet, args []string) error {
 		for _, o := range list {
 			vals := make([]string, len(keys))
 			for i, k := range keys {
-				if v, ok := o[k]; ok && v != nil {
+				if v := field(o, k); v != nil {
 					vals[i] = plain([]byte(fmt.Sprint(v)))
 				}
 			}
@@ -307,6 +307,19 @@ func askCommand(fs *flag.FlagSet, args []string) error {
 		}
 	}
 	return nil
+}
+
+// field is o's value at key, where a.b is b inside a; nil when it has none.
+func field(o map[string]any, key string) any {
+	var v any = o
+	for _, k := range strings.Split(key, ".") {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v = m[k]
+	}
+	return v
 }
 
 func holdCommand(fs *flag.FlagSet, args []string) error {
@@ -564,7 +577,6 @@ func pageCommand(fs *flag.FlagSet, args []string) error {
 				found = append(found, string(m[1]))
 			}
 		}
-		sort.Strings(found)
 		for _, f := range found {
 			say("found", plain([]byte(f)))
 		}

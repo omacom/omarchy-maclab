@@ -305,3 +305,88 @@ func TestACloseThatNamesAnotherSHA256IsAnError(t *testing.T) {
 		t.Fatalf("sha %q, %v", sha, err)
 	}
 }
+
+// Hold has one part stop halfway once labd holds two, until the upload is
+// canceled: the Front door's test 4 then finds labd holding part of a part
+// however fast the other parts went.
+func TestHoldStopsOnePartHalfwayOnceLabdHoldsTwo(t *testing.T) {
+	f, _ := newFakeLab(t)
+	half := make(chan int, 1)
+	rest := make(chan int, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/parts/3") {
+			f.ServeHTTP(w, r)
+			return
+		}
+		b := make([]byte, testPart)
+		n, _ := io.ReadFull(r.Body, b[:testPart/2])
+		half <- n
+		more, _ := io.ReadAll(r.Body)
+		rest <- len(more)
+	}))
+	t.Cleanup(ts.Close)
+	s := sender(ts)
+	s.Hold = true
+	var said []int
+	s.Progress = func(n, _ int) { said = append(said, n) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.File(ctx, fileOf(t, content(5*testPart)))
+		done <- err
+	}()
+	if n := <-half; n != testPart/2 {
+		t.Fatalf("part 3 sent %d bytes before its middle, want %d", n, testPart/2)
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("the held upload ended without an error")
+	}
+	if n := <-rest; n != 0 {
+		t.Errorf("part 3 sent %d bytes past its middle", n)
+	}
+	if fmt.Sprint(said) != "[1 2]" || f.tries[4] != 0 {
+		t.Errorf("progress %v, part 4 tried %d times: want two parts held and nothing after the held one", said, f.tries[4])
+	}
+}
+
+func TestHoldHoldsWithProgressOff(t *testing.T) {
+	f, _ := newFakeLab(t)
+	half := make(chan int, 1)
+	rest := make(chan int, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/parts/3") {
+			f.ServeHTTP(w, r)
+			return
+		}
+		b := make([]byte, testPart)
+		n, _ := io.ReadFull(r.Body, b[:testPart/2])
+		half <- n
+		more, _ := io.ReadAll(r.Body)
+		rest <- len(more)
+	}))
+	t.Cleanup(ts.Close)
+	s := sender(ts)
+	s.Hold = true
+	s.Progress = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.File(ctx, fileOf(t, content(5*testPart)))
+		done <- err
+	}()
+	<-half
+	select {
+	case n := <-rest:
+		t.Fatalf("with progress off part 3 went on past its middle (%d more bytes): the hold did not hold", n)
+	case <-time.After(500 * time.Millisecond):
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("the held upload ended without an error")
+	}
+	if f.tries[4] != 0 {
+		t.Errorf("part 4 tried %d times after the held one", f.tries[4])
+	}
+}

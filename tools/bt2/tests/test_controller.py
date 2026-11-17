@@ -69,7 +69,7 @@ def last_json(text):
 
 
 class Env:
-    def __init__(self, device='m1', kept_in_store=True, trailer=b'', m1n1_candidate=False):
+    def __init__(self, device='m1', kept_in_store=True, trailer=b'', m1n1_candidate=False, source_approved_by=()):
         self.device = device
         self.tmp = Path(tempfile.mkdtemp(prefix='bt2-ctl-', dir=SCRATCH))
         self.prof = json.loads((ROOT / 'tests/devices' / (device + '.json')).read_text())
@@ -82,7 +82,8 @@ class Env:
                  if i['pkginfo']['pkgname'] != 'm1n1-aurora']      # the baseline release keeps the installed m1n1
         kept = [artifacts.inspect(p) for p in self.co['extra']]
         macs = {device: {'board': self.prof['board'], 'board_dtb': self.prof['board_dtb'], 'bootbin': self.bootbin}}
-        _, raw, payload, _ = mgen.generate(self.prof['baseline_release'], cands + kept, macs, 'f5a82fdb-dirty')
+        _, raw, payload, _ = mgen.generate(self.prof['baseline_release'], cands + kept, macs, 'f5a82fdb-dirty',
+                                           approved_by=source_approved_by)
         pkgs.make_frozen_release(self.frozen, self.prof['baseline_release'], device, raw, payload)
         kg = self.prof['known_good_kernel']
         self.lab = fakes.FakeLabd({device: {
@@ -932,6 +933,14 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(e.run(manifest_mode='reuse'), 0, e.diag())
         man = json.loads((e.rd() / 'manifest.json').read_bytes())
         self.assertEqual((man['release'], list(man['macs'])), ('bt2-m1-test1', ['m1']))
+
+    def test_reuse_manifest_names_the_given_approvers(self):
+        # a source frozen before 2026-11-16 names its approvers by handle, which labd now refuses
+        e = self.env(source_approved_by=['edith'])
+        self.assertEqual(e.run(manifest_mode='reuse', approved_by=[7700123, 7700456]), 0, e.diag())
+        man = json.loads((e.rd() / 'manifest.json').read_bytes())
+        self.assertEqual(man['approved_by'], [7700123, 7700456])
+        self.assertEqual(e.lab.frozen['bt2-m1-test1']['manifest']['approved_by'], [7700123, 7700456])
 
     def test_reboot_exec_error_is_ambiguous_then_polled(self):
         e = self.env()

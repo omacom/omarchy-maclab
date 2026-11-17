@@ -890,6 +890,39 @@ func TestAReportHandedOverInsideIsJudgedAndCountedForItsMac(t *testing.T) {
 	}
 }
 
+// SignedBy is the machine id of the Machine key that signed a report, read
+// when the lab collects a run and before anything is published: it stores
+// nothing and counts nothing for the Mac.
+func TestSignedByIsTheMachineIDAReportIsStoredUnderAndCountsNothing(t *testing.T) {
+	d := newDesk(t)
+	a, ok := d.uploads.SignedBy(sent(t, run(t, 1), "a"))
+	b, okB := d.uploads.SignedBy(sent(t, run(t, 1), "b"))
+	if !ok || !okB || a == "" || a == b {
+		t.Fatalf("signed by a: %q %v; by b: %q %v", a, ok, b, okB)
+	}
+	forged := sign(t, run(t, 2), "mallory")
+	put(forged, testPublicKey("a"), "signature", "public_key")
+	for name, body := range map[string][]byte{"forged": encode(t, forged), "unsigned": encode(t, run(t, 3)), "junk": []byte("not json")} {
+		if id, ok := d.uploads.SignedBy(body); ok || id != "" {
+			t.Errorf("%s: signed by %q", name, id)
+		}
+	}
+	for range UploadsPerHourPerMachine * 2 {
+		d.uploads.SignedBy(sent(t, run(t, 4), "a"))
+	}
+	stored, refusal, err := d.uploads.ReceiveFromLab(sent(t, run(t, 5), "a"), site+"/install", Lab{Job: "j1", Machine: a})
+	if err != nil || refusal != nil || stored.MachineID != a {
+		t.Fatalf("the Mac's own report after SignedBy: %+v %+v %v", stored, refusal, err)
+	}
+	if d.count(t) != 1 {
+		t.Errorf("%d reports stored, want 1", d.count(t))
+	}
+	_, refusal, _ = d.uploads.ReceiveFromLab(sent(t, run(t, 6), "b"), site+"/install", Lab{Job: "j2", Machine: a})
+	if refusal == nil || refusal.Status != http.StatusForbidden || refusal.Error != AnotherMachineKey {
+		t.Errorf("a report of another key: %+v", refusal)
+	}
+}
+
 func TestTheMachineIDKeyIsReadFromAFileOnlyItsAccountReads(t *testing.T) {
 	dir := t.TempDir()
 	key := railsMachineIDKey(t, paritySecretKeyBase)

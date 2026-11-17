@@ -12,7 +12,6 @@
       <tr><td><a href="<%= api_v1_aurora_path(format: :json) %>">aurora.json</a></td><td>the Aurora feature-support table per chip generation, from tester-verified runs, with each cell's runs and the catalogue's expected states</td></tr>
     </tbody>
   </table>
-  <p class="dim">The expected Asahi states inside come from the <a href="https://asahilinux.org/docs/platform/feature-support/overview/">Asahi Linux feature-support tables</a>, CC BY 3.0: credit Asahi Linux when you reuse them.</p>
 <% end %>
 <%= card "api" do %>
   <p><code>POST <%= api_v1_reports_path %></code> takes a report in <a href="https://github.com/maralcbr/omarchy-m-testing/blob/main/schema/report-v<%= ReportSchema::VERSION %>.schema.json">report schema v<%= ReportSchema::VERSION %></a> and answers with its link and deletion link. Reports in older schemas and unknown check ids are refused with an upgrade message; uploads are limited to <%= Api::V1::ReportsController::UPLOADS_PER_HOUR %> an hour per network.</p>

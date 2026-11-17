@@ -66,20 +66,25 @@ func (l *lab) journalOf(j *api.Job, boot string) string {
 	return ""
 }
 
-// bootIDs records every boot ID the Mac goes through until stop.
+// bootIDs records every boot ID the Mac goes through until stop. stop looks
+// once more itself: the boot the Mac is on when stop is called is the last,
+// however late the last look before it came.
 func (l *lab) bootIDs() (stop func() []string) {
 	var mu sync.Mutex
 	var ids []string
+	look := func() {
+		id, _, _ := l.sim.Identity()
+		mu.Lock()
+		if len(ids) == 0 || ids[len(ids)-1] != id {
+			ids = append(ids, id)
+		}
+		mu.Unlock()
+	}
 	quit, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
 		for {
-			id, _, _ := l.sim.Identity()
-			mu.Lock()
-			if len(ids) == 0 || ids[len(ids)-1] != id {
-				ids = append(ids, id)
-			}
-			mu.Unlock()
+			look()
 			select {
 			case <-quit:
 				return
@@ -87,7 +92,7 @@ func (l *lab) bootIDs() (stop func() []string) {
 			}
 		}
 	}()
-	return func() []string { close(quit); <-done; mu.Lock(); defer mu.Unlock(); return ids }
+	return func() []string { close(quit); <-done; look(); mu.Lock(); defer mu.Unlock(); return ids }
 }
 
 // lostContactLab is a lab on a fake clock that runs at wall speed; tests jump
@@ -251,12 +256,19 @@ func TestWithNoSightingTheLadderSkipsTheHardResetRung(t *testing.T) {
 		why   []string
 	}{
 		{"no cable", func(l *lab) { l.oob.unplug(portRight) }, api.CableNone, []string{"no cable can be the one of sim-mac"}},
-		{"not sighted", func(l *lab) { l.oob.plug(portRight, l.sim, "", productM1Pro) }, api.CableNotSighted,
+		{"not sighted", func(l *lab) {
+			// Pulled and put back while the Mac stays up, and the Mac heard
+			// on its boot since: another cable, as far as the lab can tell.
+			l.oob.plug(portRight, l.sim, "", productM1Pro)
+			l.sight()
+			l.heardAgain(l.name)
+		}, api.CableNotSighted,
 			[]string{"the lab has no Sighting of sim-mac", "A Maintainer can prove its port: `lab reset sim-mac --prove right`"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			l := sightLab(t, labConfig{})
 			l.baseline()
+			l.sight()
 			c.cable(l)
 			l.sight()
 			l.wantCable(l.name, c.state, c.why...)
@@ -316,7 +328,8 @@ func TestTheMacsOwnWatchdogGetsItsTimeWhereNoHardResetReaches(t *testing.T) {
 	l.oob.stop(false)
 	l.sight()
 	check("the controller back", false)
-	l.oob.shows(portRight, "")
+	l.oob.unplug(portRight)
+	l.sight()
 	l.oob.plug(portRight, l.sim, "", productM1Pro)
 	l.sight()
 	check("not sighted", true)
@@ -415,4 +428,160 @@ func TestAfterLabdStartsAgainItRunsRecoveryOnWhateverDidNotReturn(t *testing.T) 
 	if n != 1 {
 		t.Fatalf("the result was written %d times", n)
 	}
+}
+
+// A check-in whose save waits on a busy disk is not the Mac's silence: labd
+// holds the Mac's lock until it has written the record, and a look at the
+// Mac's silence after that, taken before its next check-in, must not count
+// labd's own wait as quietGrace gone by.
+func TestACheckInLabdIsSlowToSaveIsNotSilence(t *testing.T) {
+	l, clock := lostContactLab(t, labConfig{})
+	v := l.s.dev(l.name)
+	l.sim.Sleep() // the only check-in now is the test's
+	for deadline := time.Now().Add(30 * time.Second); l.s.since(v.snapshot().LastSeen) < time.Second; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the Mac kept checking in asleep")
+		}
+	}
+	d := v.snapshot()
+	ci := api.Checkin{BootID: d.BootID, Kernel: d.Kernel, Cmdline: d.Cmdline, Health: d.Health, SnapshotEligible: d.SnapshotEligible, Facts: &d.Facts}
+	tx, err := l.s.store.db.Begin() // the disk is busy: labd's writer is taken
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { v.heartbeat(ci); close(done) }()
+	// The check-in holds the Mac's lock while it waits for the writer.
+	for held := 0; held < 20; time.Sleep(time.Millisecond) {
+		if v.mu.TryLock() {
+			v.mu.Unlock()
+			held = 0
+			continue
+		}
+		held++
+	}
+	clock.Advance(2 * quietGrace)
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	v.mu.Lock()
+	lost := v.lostLocked(l.s.now())
+	v.mu.Unlock()
+	if lost {
+		t.Fatal("labd counted the Mac silent for the time it spent saving the Mac's own check-in")
+	}
+}
+
+// A check-in on the old boot received within the reboot's grace is no sign
+// the Mac stayed up, however long labd then takes to save it: boot evidence
+// goes by when the check-in came, not by when its save ended. A test
+// kernel that hangs after it is hung, not a reboot that never happened.
+func TestACheckInSavedSlowlyAcrossTheGraceIsNoSignTheMacStayedUp(t *testing.T) {
+	l := newLab(t, true)
+	l.baseline()
+	v := l.s.dev(l.name)
+	d := v.snapshot()
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-hang behavior=hang")})
+	var armed time.Time
+	l.waitJob(id, func(j *api.Job) bool {
+		for _, e := range j.Events {
+			if strings.HasPrefix(e.Msg, "one-shot armed") {
+				armed = e.Time
+				return true
+			}
+		}
+		return false
+	})
+	if v.snapshot().BootID != d.BootID {
+		t.Skip("the test kernel checked in before the slow check-in could be made")
+	}
+	ci := api.Checkin{BootID: d.BootID, Kernel: d.Kernel, Cmdline: d.Cmdline, Health: d.Health, SnapshotEligible: d.SnapshotEligible, Facts: &d.Facts}
+	tx, err := l.s.store.db.Begin() // the disk is busy: labd's writer is taken
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { v.heartbeat(ci); close(done) }()
+	time.Sleep(time.Until(armed.Add(l.s.cfg.RebootGrace + 500*time.Millisecond)))
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	j := l.wait(id, 60*time.Second)
+	l.expect(j, api.OutcomeHung)
+}
+
+// A Mac lost during a test that checks in once more on the same boot and
+// then goes silent for good, saying nothing of sleep, has not "never left":
+// that check-in is not the last word before the deadline. It hung, is Hard
+// reset, and the test it was running is recorded as gone down with it.
+func TestOneCheckInOnTheSameBootThenSilenceIsAHangNotLostContact(t *testing.T) {
+	l := newLab(t, true)
+	l.baseline()
+	l.sim.SuspendFor = 8 * time.Second
+	l.s.cfg.TestGrace = 2 * time.Second
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-ok behavior=ok"), Tests: []api.TestSpec{{Name: "quiet-suspend-wifi", Builtin: "x", TimeoutSec: 10}}})
+	var lost time.Time
+	l.waitJob(id, func(j *api.Job) bool {
+		for _, e := range j.Events {
+			if strings.HasPrefix(e.Msg, "lost the Mac") {
+				lost = e.Time
+				return true
+			}
+		}
+		return false
+	})
+	boot := l.s.dev(l.name).snapshot().BootID
+	l.waitDevice(func(d api.Device) bool { return d.BootID == boot && d.LastSeen.After(lost) })
+	go l.sim.Quiet(10 * time.Minute) // a hang: silent, nothing said
+	j := l.wait(id, 2*time.Minute)
+	if j.Outcome == api.OutcomeLostContact {
+		t.Fatalf("a Mac heard once and then silent for good ended lost_contact: %s", j.Summary)
+	}
+	went := false
+	for _, tr := range j.Result.Tests {
+		went = went || tr.Name == "quiet-suspend-wifi" && strings.Contains(tr.Error, "went down")
+	}
+	if !went {
+		t.Fatalf("the test the Mac hung in is not recorded as gone down with it: %s %s %+v", j.Outcome, j.Summary, j.Result.Tests)
+	}
+}
+
+// The same with the check-in queued on the Mac's lock rather than on the
+// disk, and a test kernel that hangs saying nothing (no stall on the serial
+// log to go by): whatever holds v.mu, a slow save of the Mac's record, the
+// check-in counts as of when it came, and the hang is hung.
+func TestACheckInQueuedOnTheMacsLockAcrossTheGraceIsNoSignTheMacStayedUp(t *testing.T) {
+	l := newLab(t, true)
+	l.baseline()
+	v := l.s.dev(l.name)
+	d := v.snapshot()
+	id := l.submitJob(api.JobSpec{Kernel: l.artifact("krel=7.2-silent behavior=silent")})
+	var armed time.Time
+	l.waitJob(id, func(j *api.Job) bool {
+		for _, e := range j.Events {
+			if strings.HasPrefix(e.Msg, "one-shot armed") {
+				armed = e.Time
+				return true
+			}
+		}
+		return false
+	})
+	if v.snapshot().BootID != d.BootID {
+		t.Skip("the test kernel checked in before the queued check-in could be made")
+	}
+	ci := api.Checkin{BootID: d.BootID, Kernel: d.Kernel, Cmdline: d.Cmdline, Health: d.Health, SnapshotEligible: d.SnapshotEligible, Facts: &d.Facts}
+	v.mu.Lock() // a slow save holds the Mac
+	done := make(chan struct{})
+	go func() { v.heartbeat(ci); close(done) }()
+	// Let go a second before labd's wait for the Lab boot ends, so that a
+	// check-in stamped at the release would still be the Mac's last word.
+	boot := l.s.cfg.BootTimeout
+	wait := boot + max(2*boot, agent.NoContactDeadline(boot)+l.s.cfg.LabClockSkew)
+	time.Sleep(time.Until(armed.Add(wait - time.Second)))
+	v.mu.Unlock()
+	<-done
+	j := l.wait(id, 60*time.Second)
+	l.expect(j, api.OutcomeHung)
 }

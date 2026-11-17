@@ -51,7 +51,6 @@
   <ul class="links">
     <li>On Aurora: tester runs only (a signed-in, allowlisted tester's machine) on the <code><%= AuroraSupport::PACKAGE %></code> kernel. Each machine counts once, with its latest run that tested the feature; testers who disagree make it partial. Each row links the runs behind it and the Aurora versions they ran.</li>
     <li>Expected in Aurora: <a href="<%= Catalogue.data.dig("sources", "aurora", "url") %>"><%= Catalogue.data.dig("sources", "aurora", "title") %></a>, feature catalogue v<%= Catalogue.version %>. <%= Catalogue.data.dig("sources", "aurora", "note") %></li>
-    <li>Asahi: <%= Catalogue.asahi_credit %></li>
-    <li>As data: <a href="<%= api_v1_aurora_path(format: :json) %>">aurora.json</a> (CC0, apart from the Asahi states' credit).</li>
+    <li>As data: <a href="<%= api_v1_aurora_path(format: :json) %>">aurora.json</a> (CC0).</li>
   </ul>
 <% end %>

@@ -36,8 +36,8 @@ func TestTheKernelGapListShowsReportedGapsAndWhatAsahiHasButAuroraHasNotVerified
 		t.Errorf("%d reported gaps, want 5", got)
 	}
 	if !page.says(t, `#unverified-in-aurora tr.gap-row[data-feature="video-decoder"]`, "M3") ||
-		!page.says(t, "#missing-in-aurora", "nothing Asahi supports that Aurora is known to lack") || !page.says(t, ".credit", "CC BY 3.0") {
-		t.Error("the catalogue's gaps or the credit")
+		!page.says(t, "#missing-in-aurora", "nothing Asahi supports that Aurora is known to lack") {
+		t.Error("the catalogue's gaps")
 	}
 	if !page.hasText(t, ".site-nav a.current", "Kernel gaps") || page.count(t, "a.issue-link") != 0 {
 		t.Error("the current page, or an issue link for a visitor")
@@ -271,7 +271,7 @@ func TestAVerifiedRunOnAuroraFillsItsChipGenerationNextToTheExpectedStates(t *te
 		t.Error("the rows are not the kernel's features")
 	}
 	// Chip generations nobody has verified yet are named, not guessed.
-	if !page.says(t, "#untested-chips", "M1 Pro/Max/Ultra") || !page.says(t, "#sources", "Asahi Linux documentation") ||
+	if !page.says(t, "#untested-chips", "M1 Pro/Max/Ultra") ||
 		page.count(t, `#sources a[href="https://github.com/omacom/linux"]`) != 1 || !page.hasText(t, `nav a[href="/aurora"]`, "Aurora") {
 		t.Error("the untested chips, the sources or the navigation")
 	}
@@ -310,7 +310,7 @@ func TestAuroraJSONHasTheTablePerChipEachCellsSourcesAndTheCataloguesSources(t *
 	id := l.add(goldenDoc(t, "m2-max-image2"), "verified:a")
 	l.add(goldenDoc(t, "m1-pro-converged"), "c")
 	text := l.export("/api/v1/aurora.json")
-	same(t, "the members", keysInOrder(t, text), []string{"license", "note", "generated_at", "catalogue_version", "method", "sources", "features", "chips", "untested_chips"})
+	same(t, "the members", keysInOrder(t, text), []string{"license", "generated_at", "catalogue_version", "method", "sources", "features", "chips", "untested_chips"})
 	body := l.exported("/api/v1/aurora.json")
 	if at(body, "license", "id") != "CC0-1.0" || body["catalogue_version"] != float64(l.s.catalogue.Version()) {
 		t.Error("the licence or the catalogue's version")
@@ -329,7 +329,7 @@ func TestAuroraJSONHasTheTablePerChipEachCellsSourcesAndTheCataloguesSources(t *
 	gpu := at(m2, "cells", "gpu").(doc)
 	same(t, "the gpu cell", []any{gpu["state"], gpu["tester_machines"], at(gpu, "expected", "aurora", "status"), at(gpu, "expected", "asahi", "status"), gpu["reports"]},
 		[]any{"works", doc{"works": 1.0}, "asahi", "linux-asahi", []any{labAddress + "/reports/" + id}})
-	if at(body, "sources", "asahi", "license") != "CC-BY-3.0" || at(body, "sources", "aurora", "url") != "https://github.com/omacom/linux" {
+	if at(body, "sources", "asahi", "license") != nil || at(body, "sources", "aurora", "url") != "https://github.com/omacom/linux" {
 		t.Error("the catalogue's sources")
 	}
 	for _, feature := range rowsOf(body, "features") {

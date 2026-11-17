@@ -30,8 +30,11 @@
 #   --mini USER@HOST      the mini, as the owner reaches it over SSH with a key
 #   --token-file FILE     a short-lived Cloudflare token (Zone: Read, SSL and
 #                         Certificates: Edit on omarchy-mac.org), in a file
-#                         only you can read. Porkbun's keys come from the
-#                         Keychain, as for the other cloud scripts
+#                         only you can read
+#   --porkbun-keys FILE   Porkbun's API key on the first line and its secret
+#                         key on the second, in a file only you can read
+#                         (~/.config/omarchy-mac-lab/porkbun.keys), as for
+#                         the other cloud scripts
 #   --charged WORDS       what Cloudflare charged when the payment details
 #                         were entered, for the record ("nothing")
 #   --name LABEL          the throwaway label (alias-rehearsal)
@@ -55,13 +58,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/front-door/lib.sh"
 # shellcheck source=scripts/cutover/visitor.sh
 . "$here/visitor.sh"
-usage() { sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,54p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 OLD_DOMAIN="omarchy-m-testing.org"
 CLOUD="$REPO/scripts/cloud"
 FD13="$FD_HERE/fd13-cache"
 label="alias-rehearsal"
 token_file=""
+porkbun_keys="${HOME:-}/.config/omarchy-mac-lab/porkbun.keys"
 charged=""
 agents=""
 issue_minutes=30
@@ -74,11 +78,12 @@ fd_options "$@"
 set -- ${REST[@]+"${REST[@]}"}
 while (( $# )); do
   case "$1" in
-    --name | --token-file | --charged | --agents-line | --issue-minutes | --settle-minutes | --lapse-minutes | --alert-minutes | --every | --cloud | --fd13)
+    --name | --token-file | --porkbun-keys | --charged | --agents-line | --issue-minutes | --settle-minutes | --lapse-minutes | --alert-minutes | --every | --cloud | --fd13)
       (( $# >= 2 )) || fail "$1 needs a value. Nothing was done."
       case "$1" in
         --name) label="$2" ;;
         --token-file) token_file="$2" ;;
+        --porkbun-keys) porkbun_keys="$2" ;;
         --charged) charged="$2" ;;
         --agents-line) agents="$2" ;;
         --issue-minutes) issue_minutes="$2" ;;
@@ -270,6 +275,19 @@ fi
 [[ -n $MINI ]] || fail "--lab needs --mini USER@HOST"
 [[ -n $token_file ]] || fail "--lab needs --token-file FILE: the run calls Cloudflare several times, and a token is typed once into a file only you can read (scripts/cloud/owner-setup.sh makes it)"
 [[ -f $token_file ]] || fail "no token file $token_file"
+[[ -f $porkbun_keys ]] || fail "no Porkbun keys file $porkbun_keys: its API key on the first line, its secret key on the second, chmod 600; or give --porkbun-keys FILE. Nothing was made"
+# Mode 600 or 400 and no ACL: macOS marks any extended attribute with @ and
+# then shows no + for an ACL, which ls -e lists.
+# shellcheck disable=SC2012
+case "$(ls -lnLd "$porkbun_keys" | awk '{ print $1; exit }')" in
+  -r-------- | -rw------- | -r--------[@.] | -rw-------[@.]) ;;
+  *+) fail "$porkbun_keys has an ACL, which may let others read it: take it off (chmod -N $porkbun_keys). Nothing was made" ;;
+  *) fail "$porkbun_keys can be read by others: chmod 600 it. Nothing was made" ;;
+esac
+# shellcheck disable=SC2012
+if listed="$(ls -lnLde "$porkbun_keys" 2>/dev/null)" && [[ $listed == *$'\n'* ]]; then
+  fail "$porkbun_keys has an ACL, which may let others read it: take it off (chmod -N $porkbun_keys). Nothing was made"
+fi
 for tool in dig curl "$LAB_CMD"; do
   command -v "$tool" >/dev/null 2>&1 || fail "no $tool on this machine"
 done
@@ -288,7 +306,9 @@ torn=0
 cloud() {
   local script="$1"
   shift
-  "$CLOUD/$script" "$@" --token-file "$token_file" > "$WORK/cloud.out" 2>&1 < /dev/null
+  local keys=()
+  [[ $script != rehearsal-record.sh ]] || keys=(--porkbun-keys "$porkbun_keys")
+  "$CLOUD/$script" "$@" --token-file "$token_file" ${keys[@]+"${keys[@]}"} > "$WORK/cloud.out" 2>&1 < /dev/null
 }
 said() { sed 's/^/    /' "$WORK/cloud.out" | tail -n 8; }
 

@@ -22,8 +22,8 @@ const usage = `lab-agent: the Mac side of Omarchy Mac Lab
   sudo lab-agent setup --server <Lab address> --token-stdin [--gui-user you] [--accept-terms <sha256>]
         [--autologin|--stay-awake] [--volatile-journal] [--ca-file <pem>] [--allow-plain-http]
                                   what the Join command runs on the Mac: the pre-checks, the lab's terms and a
-                                  typed yes, leaving any other lab, enrolling, and one question for the weekly
-                                  Availability window (a Volunteer's Mac refuses --autologin and --stay-awake)
+                                  typed yes, leaving any other lab and enrolling; the weekly Availability window
+                                  is set on My Macs (a Volunteer's Mac refuses --autologin and --stay-awake)
   sudo lab-agent move --server <the new Lab address> [--ca-file <pem>] [--allow-plain-http] [--no-check]
                                   for a change of the Lab address only: point this enrolled Mac at it, and change
                                   nothing else (a Mac joins another lab with that lab's Join command)
@@ -32,7 +32,7 @@ const usage = `lab-agent: the Mac side of Omarchy Mac Lab
   sudo lab-agent status           what this Mac is enrolled as, its ntfy topic, its Availability window,
                                   Access level, Installed-run eligibility, latest Audit log entries, and
                                   whether the lab's changed terms wait for you on My Macs
-  sudo lab-agent window show|add|remove [<days> <HH:MM-HH:MM>]
+  sudo lab-agent window show|add|remove [<days> <HH:MM-HH:MM>|always]
                                   when the lab may use a Volunteer's Mac, e.g. window add mon-fri 19:00-07:00
   sudo lab-agent pause [--until YYYY-MM-DD]
                                   end the current window now, or stay closed until that date

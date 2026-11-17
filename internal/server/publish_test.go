@@ -1129,6 +1129,71 @@ func TestAReportOfAnotherMachineKeyIsRefusedAndTheRecordedIDStays(t *testing.T) 
 	}
 }
 
+// collected is a finished run on mac whose report labd has read as the
+// runner does, from the job's files: nobody asked to publish it.
+func (l *signInLab) collected(id, mac string, report []byte) *api.Job {
+	l.t.Helper()
+	j := l.ran(id, mac, 0, report, func(j *api.Job) { j.Result.OMT = nil })
+	j.State = api.JobCollecting
+	tr := api.TestResult{Name: omtTest, Passed: true}
+	(&jobRun{s: l.s, j: j, v: l.s.dev(mac)}).omtResult(omtTest, &tr)
+	j.State = api.JobDone
+	l.s.updateJob(j, func(*api.Job) {})
+	if j.Result.OMT == nil {
+		l.t.Fatalf("job %s has no verdict", id)
+	}
+	return j
+}
+
+// A Mac's Machine key is the one that signed the first report the lab
+// collected of it, published or not. Private runs under key A bind A, and a
+// later run signed by key B is refused when it is published.
+func TestAMacsMachineKeyIsBoundAtItsFirstCollectedReport(t *testing.T) {
+	l := publishLab(t, nil)
+	l.lrMac("m2-max", "j416c", nil)
+	ravi := l.lrMaintainer()
+	a := machineIDOf(t, "m2-max")
+	for _, id := range []string{"j-private-1", "j-private-2"} {
+		l.collected(id, "m2-max", labReport(t, "m2-max", lrKnownGood, nil))
+		if got := l.s.dev("m2-max").snapshot().MachineID; got != a {
+			t.Fatalf("after private run %s the Mac's machine id is %q, want its first report's, %q", id, got, a)
+		}
+	}
+	other := l.collected("j-other-key", "m2-max", labReport(t, "m1-pro", lrKnownGood, nil))
+	if note := ravi.jobSaid(other.ID).Result.OMT.PublishNote; note != reports.AnotherMachineKey {
+		t.Errorf("a run of another key is not marked as not publishable: %q", note)
+	}
+	ravi.notPublished("j-other-key", http.StatusConflict, reports.AnotherMachineKey)
+	if got := l.s.dev("m2-max").snapshot().MachineID; got != a {
+		t.Errorf("the Mac's machine id is %q after a report of another key, want %q", got, a)
+	}
+	if n := len(l.everyReport()); n != 0 {
+		t.Errorf("%d reports were published, want none", n)
+	}
+	ravi.published("j-private-2")
+	// A report of another enrollment under the Mac's name binds nothing.
+	l.lrMac("m1-pro", "j316s", nil)
+	l.ran("j-earlier", "m1-pro", 0, labReport(t, "another-mac", lrKnownGood, nil), func(j *api.Job) { j.DeviceID = "d-earlier"; j.Result.OMT = nil })
+	earlier, _ := l.s.store.job("j-earlier")
+	earlier.State = api.JobCollecting
+	(&jobRun{s: l.s, j: earlier, v: l.s.dev("m1-pro")}).omtResult(omtTest, &api.TestResult{Name: omtTest, Passed: true})
+	if got := l.s.dev("m1-pro").snapshot().MachineID; got != "" {
+		t.Errorf("a report of an earlier enrollment bound %q", got)
+	}
+}
+
+// A first-ever run that is published binds its own key, as before.
+func TestAFirstEverRunThatIsPublishedBindsItsOwnKey(t *testing.T) {
+	l := publishLab(t, nil)
+	l.lrMac("m2-max", "j416c", nil)
+	ravi := l.lrMaintainer()
+	l.collected("j1", "m2-max", labReport(t, "m2-max", lrKnownGood, nil))
+	report := l.report(ravi.published("j1"))
+	if want := machineIDOf(t, "m2-max"); report.MachineID != want || l.s.dev("m2-max").snapshot().MachineID != want {
+		t.Errorf("the report's machine id %q, the Mac's %q, want %q", report.MachineID, l.s.dev("m2-max").snapshot().MachineID, want)
+	}
+}
+
 // What is published is the report the run's verdict was computed from. A
 // later test of the same name that leaves another report in its place
 // changes nothing that is published: that job's report stays private.

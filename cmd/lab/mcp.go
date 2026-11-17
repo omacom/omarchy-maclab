@@ -50,6 +50,11 @@ func newMCP(c *client.Client) *mcp.Server {
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: t}}}
 	}
+	// withAsked is a confirmed call's answer: what the lab asked, then what was done.
+	withAsked := func(asked string, done any) *mcp.CallToolResult {
+		b, _ := json.MarshalIndent(done, "", "  ")
+		return text("The lab asked: " + asked + "\n\nConfirmed. Done:\n" + string(b))
+	}
 
 	type none struct{}
 	type statusArg struct {
@@ -592,15 +597,18 @@ func newMCP(c *client.Client) *mcp.Server {
 			return text(out), nil, err
 		})
 	const askFirst = "\n\nNothing was done. Show this to the person, and call again with confirm set only when they say yes."
+	// confirm in the first call is lab's --yes: the lab is still asked, and
+	// what it said is answered beside what was done.
+	const oneCall = " With confirm set in one call it goes on at once, as `lab installed %s --yes` does: only when the person has already said yes to exactly this. The answer then starts with what the lab asked, warnings and all."
 	type verdictArg struct {
 		Release string `json:"release"`
 		Verdict string `json:"verdict" jsonschema:"qualified, not-qualified, or revoke (Maintainers)"`
 		Note    string `json:"note" jsonschema:"why, in the person's words: a verdict needs a note every time"`
-		Confirm bool   `json:"confirm,omitempty" jsonschema:"set only after the person has read what the first call answered and said yes"`
+		Confirm bool   `json:"confirm,omitempty" jsonschema:"true goes on: after the person read what a first call answered and said yes, or in one call when they already said yes to exactly this, as lab's --yes"`
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "lab_installed_verdict", Description: "Record a Release's verdict: the first is any M team member's, every later one and a revoke a Maintainer's. qualified needs a passed Installed run of the Release. The verdict is the person's judgment, never yours: without confirm the lab only answers with what it is about to record and its warnings, for the person to read."},
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_installed_verdict", Description: "Record a Release's verdict: the first is any M team member's, every later one and a revoke a Maintainer's. qualified needs a passed Installed run of the Release. The verdict is the person's judgment, never yours: without confirm the lab only answers with what it is about to record and its warnings, for the person to read." + fmt.Sprintf(oneCall, "verdict")},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a verdictArg) (*mcp.CallToolResult, any, error) {
-			req := api.VerdictRequest{Note: a.Note, Confirm: a.Confirm}
+			req := api.VerdictRequest{Note: a.Note}
 			switch a.Verdict {
 			case "qualified":
 				req.State = api.ReleaseQualified
@@ -618,30 +626,37 @@ func newMCP(c *client.Client) *mcp.Server {
 			if !a.Confirm {
 				return text(ans.Confirm + askFirst), nil, nil
 			}
-			return text(ans.Release), nil, nil
+			req.Confirm = true
+			var done api.ReleaseAnswer
+			if err := c.Installed(ctx, "POST", a.Release, "verdict", req, &done); err != nil {
+				return nil, nil, err
+			}
+			return withAsked(ans.Confirm, done.Release), nil, nil
 		})
 	type promoteArg struct {
 		Release string `json:"release"`
 		Device  string `json:"device"`
 		JobID   string `json:"job_id" jsonschema:"that Mac's own passed Installed run of the Release"`
-		Confirm bool   `json:"confirm,omitempty" jsonschema:"set only after the person has read what the first call answered and said yes"`
+		Confirm bool   `json:"confirm,omitempty" jsonschema:"true goes on: after the person read what a first call answered and said yes, or in one call when they already said yes to exactly this, as lab's --yes"`
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "lab_installed_promote", Description: "Promotion (Maintainers): make a Mac's passed Installed run its references and known-good, the lab's and the agent's. Refused on a Volunteer's Mac. Without confirm the lab only answers with what it is about to do and its warnings, for the person to read."},
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_installed_promote", Description: "Promotion (Maintainers): make a Mac's passed Installed run its references and known-good, the lab's and the agent's. Refused on a Volunteer's Mac. Without confirm the lab only answers with what it is about to do and its warnings, for the person to read." + fmt.Sprintf(oneCall, "promote")},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a promoteArg) (*mcp.CallToolResult, any, error) {
 			ask := map[string]any{"device": a.Device, "job": a.JobID}
+			var asked struct {
+				Confirm string `json:"confirm"`
+			}
+			if err := c.Installed(ctx, "POST", a.Release, "promote", ask, &asked); err != nil {
+				return nil, nil, err
+			}
 			if !a.Confirm {
-				var asked struct {
-					Confirm string `json:"confirm"`
-				}
-				if err := c.Installed(ctx, "POST", a.Release, "promote", ask, &asked); err != nil {
-					return nil, nil, err
-				}
 				return text(asked.Confirm + askFirst), nil, nil
 			}
 			ask["confirm"] = true
 			var out map[string]any
-			err := c.Installed(ctx, "POST", a.Release, "promote", ask, &out)
-			return text(out), nil, err
+			if err := c.Installed(ctx, "POST", a.Release, "promote", ask, &out); err != nil {
+				return nil, nil, err
+			}
+			return withAsked(asked.Confirm, out), nil, nil
 		})
 
 	type builderAddArg struct {
