@@ -61,6 +61,20 @@ Non-test code that bypasses the seam:
 - *FakeClock races*: `Advance` before a goroutine has called `After` skips the wait. Tests that use it must wait for `Next()` to report the waiter first (helper `waitWaiter`), as `reboot_warning_test.go` does.
 - *Behaviour change*: production keeps `WallClock`; `cmd/` never sets a clock without the build tag. Each ticket's diff to non-test code is mechanical (`time.X` → `s.clock().X`).
 
+## Status (2026-11-18)
+
+| Ticket | PR | State |
+|---|---|---|
+| 1 labd waits on its clock | #15 | open, CI green |
+| 2 sim waits on a clock | #16 (on #15) | open, CI green |
+| 3 test lab on a scaled clock | #17 (on #16) | open |
+| 4 drop the server shards | | dropped: the package's serial time is still 1248 s, so the shards still pay |
+| 5 cutover runbook waits | | dropped: `cutovertest`'s time is the front door's wire timings, which must stay real, and the builder gate's waits, already set from the environment; the out-of-band waits follow labd, which ticket 7 speeds up |
+| 6 mini scripts' waits | #19 | open |
+| 7 scaled labd in the script suites | #18 (on #17) | open |
+| 8 agent package | | dropped: its slow tests time real child processes (process-group kill, SIGTERM grace, hung sync), which stay on the wall clock; ~20 s at most |
+| 9 tests' own waits | | not started |
+
 ## Tickets
 
 Ordered by time saved per effort. Each is one pull request, mergeable alone, with `scripts/ci-local` green.
