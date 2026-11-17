@@ -1251,6 +1251,7 @@ func TestAPlaceholderNameIsNoOtherMac(t *testing.T) {
 // as a restart does, but the Mac is heard again on the boot it had: that
 // ends the Sighting. Until the lab knows, no Hard reset goes out.
 func TestACablePulledWhileItsMacStaysUpEndsItsSighting(t *testing.T) {
+	wallClock(t)
 	l := sightLab(t, labConfig{})
 	l.baseline()
 	max := l.placeOnMiddle("m2-max")
@@ -1325,6 +1326,7 @@ func TestASightingIsKeptAcrossARestartOfLabd(t *testing.T) {
 // A kept Sighting whose port shows another product id after the restart, or
 // nothing, is not kept, and the log says why.
 func TestASightingIsNotKeptAcrossARestartWhenItsPortChanged(t *testing.T) {
+	wallClock(t)
 	for _, c := range []struct {
 		name   string
 		change func(l *lab)
