@@ -276,3 +276,4 @@ Record mode runs as usual and also saves what the Mac answered at the host bound
     python3 -m unittest discover -s tests -t .
 
 The corpus tests run the whole CLI in record mode against the real evidence and fail if any identifier listed in a corpus machine's `forbidden`, or any MAC, IP, UUID, long hex id or home path, reaches a recording or a report. Reports produced here must equal the golden reports in `../schema/golden/`, which the site's Seam B tests post to the API.
+
