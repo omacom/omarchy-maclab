@@ -41,6 +41,8 @@ import (
 // it is back. A test named hang-* goes silent for HangFor, and then a
 // watchdog resets the Mac, as hang-in-test does.
 type Sim struct {
+	// Clock times the sim's made-up waits: reboots, suspends, hangs, tests.
+	Clock       Clock
 	mesaSpecs   map[string]api.MesaSpec
 	RebootDelay time.Duration
 	OnBoot      func() // called when the machine goes down, like a dropped connection
@@ -165,7 +167,7 @@ type simEntry struct {
 const SimKnownGood = "7.1.12-good"
 
 func NewSim(workDir string) *Sim {
-	s := &Sim{RebootDelay: 100 * time.Millisecond, staged: map[string]simEntry{}, WorkDir: workDir}
+	s := &Sim{Clock: WallClock, RebootDelay: 100 * time.Millisecond, staged: map[string]simEntry{}, WorkDir: workDir}
 	s.bootID = newID()
 	s.kernel = SimKnownGood
 	s.cmdline = "root=UUID=sim rw"
@@ -560,7 +562,7 @@ func (s *Sim) boot(last string) {
 		s.say(last)
 	}
 	go func() {
-		time.Sleep(s.RebootDelay)
+		s.Clock.Sleep(s.RebootDelay)
 		s.mu.Lock()
 		if gen != s.gen {
 			s.mu.Unlock()
@@ -599,7 +601,7 @@ func (s *Sim) up(gen int, e simEntry) {
 	case "panic":
 		s.say("Kernel panic - not syncing: VFS: Unable to mount root fs")
 		s.say("Rebooting in 10 seconds..")
-		time.Sleep(s.RebootDelay)
+		s.Clock.Sleep(s.RebootDelay)
 		s.boot("")
 		return
 	case "hang":
@@ -720,7 +722,7 @@ func (s *Sim) WatchSleep(ctx context.Context, fn func(bool)) {
 // suspend sleeps the machine for d: no heartbeats, no reports, nothing lost.
 func (s *Sim) suspend(d time.Duration, announce bool) {
 	s.sleep(announce)
-	time.Sleep(d)
+	s.Clock.Sleep(d)
 	s.wake(announce)
 }
 
@@ -839,10 +841,10 @@ func (s *Sim) RunTest(ctx context.Context, job string, t api.TestSpec, fetch Fet
 		}
 	}
 	if length > 0 {
-		wait := time.NewTimer(length)
+		wait := s.Clock.NewTicker(length)
 		defer wait.Stop()
 		select {
-		case <-wait.C:
+		case <-wait.C():
 		case <-ctx.Done():
 			return api.TestResult{Name: t.Name, ExitCode: -1, Error: "stopped: " + context.Cause(ctx).Error()}
 		case <-down:
@@ -886,7 +888,7 @@ func (s *Sim) RunTest(ctx context.Context, job string, t api.TestSpec, fetch Fet
 			s.mu.Lock()
 			s.alive = false
 			s.mu.Unlock()
-			time.Sleep(s.HangFor)
+			s.Clock.Sleep(s.HangFor)
 		}
 		s.boot("")
 		<-ctx.Done()
@@ -1029,12 +1031,12 @@ func (s *Sim) Exec(ctx context.Context, a api.ExecArgs) api.ExecResult {
 	took := 0.01
 	var sec float64
 	if _, err := fmt.Sscanf(a.Command, "sleep %f", &sec); err == nil && sec > 0 {
-		start := time.Now()
+		start := s.Clock.Now()
 		select {
-		case <-time.After(time.Duration(sec * float64(time.Second))):
+		case <-s.Clock.After(time.Duration(sec * float64(time.Second))):
 		case <-ctx.Done():
 		}
-		took = time.Since(start).Seconds()
+		took = s.Clock.Now().Sub(start).Seconds()
 	}
 	return api.ExecResult{Stdout: "sim ran: " + a.Command + "\n", Seconds: took, Via: "agent"}
 }
