@@ -3,7 +3,10 @@
 #
 #   scripts/ci-local [--race] [--serial] [step ...]
 #
-# Steps: go tools cli installer catalogue schema spec gpu site (default: all).
+# Steps: go scripts tools cli installer catalogue schema spec gpu site
+# (default: all). go is the Linux lane's packages; scripts is the script
+# suites, which a pull request runs only when scripts/, deploy/, tools/ or
+# release/ change.
 # A step this machine cannot run is skipped with its reason; the workflow
 # still runs it. Exit status 1 when anything failed.
 #
@@ -12,7 +15,7 @@
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 2
-ALL=(go tools cli installer catalogue schema spec gpu site)
+ALL=(go scripts tools cli installer catalogue schema spec gpu site)
 RACE=""
 SERIAL=0
 STEPS=()
@@ -69,12 +72,17 @@ linux() { [[ "$OS" == Linux ]]; }
 step_go() {
   run "go vet" go vet ./...
   run "go vet for linux/arm64" env GOOS=linux GOARCH=arm64 go vet ./...
-  # shellcheck disable=SC2086
-  run "go test${RACE:+ -race}" away go test $RACE -timeout 40m ./...
+  # shellcheck disable=SC2086,SC2046
+  run "go test${RACE:+ -race}" away go test $RACE -timeout 30m $(.github/scripts/go-packages unit)
   run "make all" make all
   run "omarchy-m-test against labd" in_dir cli away env OMARCHY_M_TEST_LABD="$PWD/bin/labd" OMARCHY_M_TEST_FAKE_GITHUB="$PWD/bin/fake-github" python3 -m unittest tests.test_lab_wire
   run "labd smoke on its own host" away bash .github/scripts/labd-smoke.sh bin
   run "labd smoke under a prefix" away bash .github/scripts/labd-smoke.sh bin https://example.org/lab
+}
+
+step_scripts() {
+  # shellcheck disable=SC2086,SC2046
+  run "go test${RACE:+ -race} script suites" away go test $RACE -timeout 30m $(.github/scripts/go-packages scripts)
 }
 
 step_tools() {

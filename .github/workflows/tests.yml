@@ -1,23 +1,121 @@
 name: tests
 
-# Everything that is tested, on every push and pull request. scripts/ci-local
-# runs the same commands on a developer's machine.
+# A pull request runs what its files can break; a push to main, a v* tag, the
+# nightly run and a manual run test everything. CI result is the one required
+# check. scripts/ci-local runs the same commands on a developer's machine.
 
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  schedule:
+    - cron: "17 16 * * *"   # 02:17 Brisbane
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  go:
-    name: Go
+  changes:
+    name: What the change needs
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.changes.outputs.go }}
+      scripts: ${{ steps.changes.outputs.scripts }}
+      site: ${{ steps.changes.outputs.site }}
+      cli: ${{ steps.changes.outputs.cli }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: changes
+        run: .github/scripts/changes "${{ github.event.pull_request.base.sha }}" | tee -a "$GITHUB_OUTPUT"
+
+  go-linux:
+    # labd, oobd and lab-builder run on macOS; lab-agent runs on Linux.
+    name: Go (ubuntu-latest)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: GOOS=linux GOARCH=arm64 go vet ./...
+      - run: go test -race -timeout 30m $(.github/scripts/go-packages unit)
+      - run: make all
+      - name: labd on its own host and under a prefix
+        run: |
+          bash .github/scripts/labd-smoke.sh bin
+          bash .github/scripts/labd-smoke.sh bin https://example.org/lab
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labd-smoke-log-ubuntu-latest
+          path: ${{ runner.temp }}/labd-smoke.log
+          if-no-files-found: ignore
+
+  go-macos:
+    # A pull request tests what runs on the mini; everything else tests all
+    # but the script suites. No -race: the Linux lane has it.
+    name: Go (macos-latest)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go vet $(.github/scripts/go-packages mini)
+      - run: go test -timeout 30m $(.github/scripts/go-packages ${{ github.event_name == 'pull_request' && 'mini' || 'unit' }})
+      - run: make all
+      - name: labd on its own host and under a prefix
+        run: |
+          bash .github/scripts/labd-smoke.sh bin
+          bash .github/scripts/labd-smoke.sh bin https://example.org/lab
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labd-smoke-log-macos-latest
+          path: ${{ runner.temp }}/labd-smoke.log
+          if-no-files-found: ignore
+
+  lab-wire:
+    # Upload, the same report again and Preview's refusals; sign-in through the stand-in for GitHub, status, a Verified upload and sign-out.
+    name: omarchy-m-test against labd
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: |
+          mkdir -p bin
+          CGO_ENABLED=0 go build -o bin/labd ./cmd/labd
+          CGO_ENABLED=0 go build -o bin/fake-github ./tools/fake-github
+      - working-directory: cli
+        run: OMARCHY_M_TEST_LABD="$PWD/../bin/labd" OMARCHY_M_TEST_FAKE_GITHUB="$PWD/../bin/fake-github" python3 -m unittest -v tests.test_lab_wire
+
+  go-scripts:
+    # The mini's, deploy and cutover scripts against a made-up machine.
+    name: Go script suites (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
     strategy:
       fail-fast: false
       matrix:
-        # labd, oobd and lab-builder run on macOS; lab-agent runs on Linux.
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -38,25 +136,8 @@ jobs:
           echo "$sum  $f" | shasum -a 256 -c -
           tar -xJf "$f" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"
-      - run: go vet ./...
-      - run: GOOS=linux GOARCH=arm64 go vet ./...
       - run: shellcheck --version
-      - run: go test -race -timeout 40m ./...
-      - run: make all
-      - name: omarchy-m-test against this labd
-        # Upload, the same report again and Preview's refusals; sign-in through the stand-in for GitHub, status, a Verified upload and sign-out.
-        working-directory: cli
-        run: OMARCHY_M_TEST_LABD="$PWD/../bin/labd" OMARCHY_M_TEST_FAKE_GITHUB="$PWD/../bin/fake-github" python3 -m unittest -v tests.test_lab_wire
-      - name: labd on its own host and under a prefix
-        run: |
-          bash .github/scripts/labd-smoke.sh bin
-          bash .github/scripts/labd-smoke.sh bin https://example.org/lab
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: labd-smoke-log-${{ matrix.os }}
-          path: ${{ runner.temp }}/labd-smoke.log
-          if-no-files-found: ignore
+      - run: go test ${{ runner.os == 'Linux' && '-race' || '' }} -timeout 30m $(.github/scripts/go-packages scripts)
 
   tools:
     name: Builder, boot-test and workflow tools
@@ -169,6 +250,8 @@ jobs:
     name: Rails reference
     # Runs until the Go port passes its acceptance corpus and site/ is deleted.
     # Newer images only get the latest Ruby patch from setup-ruby, not site/.ruby-version's.
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -246,3 +329,19 @@ jobs:
         env:
           LAB_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/omarchy_m_testing_test?sslmode=disable
         run: scripts/parity-gate
+
+  result:
+    # The one required check: green when every job that ran passed. A job a
+    # pull request did not need is skipped, and a skip passes.
+    name: CI result
+    if: always()
+    needs: [changes, go-linux, go-macos, lab-wire, go-scripts, tools, spec, cli, gpu-native, installer, catalogue, schema, site]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) exit 1 ;; esac
+          done

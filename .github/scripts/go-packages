@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Prints the Go packages one lane of the tests runs, one per line.
+#
+#   go-packages unit     every package but the script suites
+#   go-packages scripts  the script suites: the mini's, deploy and cutover
+#                        scripts run against a made-up machine
+#   go-packages mini     what runs on the mini (labd, oobd, lab-builder and
+#                        what they import) and the commands
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+module=$(go list -m)
+scripts='^'"$module"'/internal/(minitest|cutovertest(/.*)?|carrytest|cloudtest)$'
+case "${1:-}" in
+  unit) go list ./... | grep -Ev "$scripts" ;;
+  scripts) go list ./... | grep -E "$scripts" ;;
+  mini) { go list -deps ./cmd/labd ./cmd/oobd ./cmd/lab-builder | grep "^$module/"; go list ./cmd/...; } | sort -u ;;
+  *) echo "usage: go-packages unit|scripts|mini" >&2; exit 2 ;;
+esac
