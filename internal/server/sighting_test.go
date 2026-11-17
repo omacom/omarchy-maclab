@@ -285,7 +285,7 @@ func TestAVolunteersMacNeverGetsAHardReset(t *testing.T) {
 	// The recovery ladder, for a Volunteer's Mac that went silent: network
 	// means, then its Volunteer is asked.
 	go l.sim.Quiet(time.Minute)
-	l.waitDevice(func(d api.Device) bool { return time.Since(d.LastSeen) > 2*aliveWindow })
+	l.waitDevice(func(d api.Device) bool { return l.s.since(d.LastSeen) > 2*aliveWindow })
 	steps, ok := v.ladder(context.Background(), "lost during a test", time.Second, true)
 	if ok || strings.Contains(strings.ToLower(strings.Join(steps, "|")), "hard reset") {
 		t.Fatalf("the ladder on a Volunteer's Mac: %v %v", ok, steps)
@@ -640,7 +640,7 @@ func TestAControllerNamedInAMacsRecordIsNeverAsked(t *testing.T) {
 		t.Fatalf("a Hard reset: %s %s", r.Status, body)
 	}
 	go l.sim.Quiet(time.Minute)
-	l.waitDevice(func(d api.Device) bool { return time.Since(d.LastSeen) > 2*aliveWindow })
+	l.waitDevice(func(d api.Device) bool { return l.s.since(d.LastSeen) > 2*aliveWindow })
 	if steps, ok := v.ladder(context.Background(), "lost during a test", time.Second, false); ok || !has(steps, "no Hard reset: labd was given no Out-of-band controller") {
 		t.Fatalf("the ladder: %v %v", ok, steps)
 	}

@@ -313,7 +313,7 @@ func TestTheMacsOwnWatchdogGetsItsTimeWhereNoHardResetReaches(t *testing.T) {
 	l := sightLab(t, labConfig{})
 	l.baseline()
 	go l.sim.Quiet(time.Minute)
-	l.waitDevice(func(d api.Device) bool { return time.Since(d.LastSeen) > 2*aliveWindow })
+	l.waitDevice(func(d api.Device) bool { return l.s.since(d.LastSeen) > 2*aliveWindow })
 	r := &jobRun{s: l.s, v: l.s.dev(l.name), boot: 4 * time.Second}
 	const watchdog = 2*time.Second + 4*time.Second // lab-agent's idle reset here, and a boot
 	check := func(when string, waits bool) {
@@ -372,7 +372,7 @@ func TestAfterLabdStartsAgainItRunsRecoveryOnWhateverDidNotReturn(t *testing.T) 
 	// Two Macs hang while the lab is Dark; the third stays up.
 	go l.sim.Quiet(time.Hour)
 	go uncabled.Quiet(time.Hour)
-	l.waitDevice(func(d api.Device) bool { return time.Since(d.LastSeen) > 2*aliveWindow })
+	l.waitDevice(func(d api.Device) bool { return l.s.since(d.LastSeen) > 2*aliveWindow })
 
 	logs := &logBuf{}
 	fresh, err := New(l.ctx, l.s.cfg, log.New(logs, "", 0))

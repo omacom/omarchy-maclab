@@ -186,7 +186,7 @@ func TestResetLeftMac(t *testing.T) {
 	l.leaveAgent(false)
 	// It wedges: no check-ins.
 	go l.sim.Quiet(time.Minute)
-	l.waitDevice(func(d api.Device) bool { return time.Since(d.LastSeen) > 2*aliveWindow })
+	l.waitDevice(func(d api.Device) bool { return l.s.since(d.LastSeen) > 2*aliveWindow })
 	boot := l.s.dev(l.name).snapshot().BootID
 
 	resp, body := l.get("POST", "/api/devices/"+l.name+"/reset?by=alice")
