@@ -155,13 +155,7 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	if name == "" {
 		name = "sim-mac"
 	}
-	// With the controller a Mac has to come back over real HTTP within
-	// BootTimeout, which a scaled clock makes too short: such a lab keeps the
-	// wall clock.
-	var clock agent.Clock = agent.WallClock
-	if !withOOB {
-		clock = labClock()
-	}
+	var clock agent.Clock = labClock()
 	if c.clock != nil {
 		clock = c.clock
 	}
