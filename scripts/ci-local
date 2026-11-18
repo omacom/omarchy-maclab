@@ -5,8 +5,8 @@
 #
 # Steps: go scripts tools cli installer catalogue schema spec gpu site
 # (default: all). go is the Linux lane's packages; scripts is the script
-# suites, which a pull request runs only when scripts/, deploy/, tools/ or
-# release/ change.
+# suites, which a pull request runs only when scripts/, deploy/, tools/,
+# release/, cmd/ or the suites change.
 # A step this machine cannot run is skipped with its reason; the workflow
 # still runs it. Exit status 1 when anything failed.
 #

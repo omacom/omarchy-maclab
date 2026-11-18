@@ -4,7 +4,8 @@
 # main, a tag, the nightly run) everything runs.
 #
 #   go       anything but cli/, site/, docs/ and Markdown
-#   scripts  scripts/, deploy/, tools/, release/, go.mod or this workflow
+#   scripts  scripts/, deploy/, tools/, release/, cmd/ (the suites build their
+#            binaries), the suites themselves, go.mod or this workflow
 #   cli      cli/, for omarchy-m-test against labd
 #   site     site/, the port's packages it is compared with, the parity gate
 set -euo pipefail
@@ -16,6 +17,6 @@ fi
 files=$(git diff --name-only "$base"...HEAD)
 any() { grep -Eq "$1" <<<"$files" && echo true || echo false; }
 echo "go=$(grep -Evq '^(cli/|site/|docs/)|\.md$' <<<"$files" && echo true || echo false)"
-echo "scripts=$(any '^(scripts/|deploy/|tools/|release/|go\.(mod|sum)$|\.github/)')"
+echo "scripts=$(any '^(scripts/|deploy/|tools/|release/|cmd/|internal/(minitest|cutovertest|carrytest|cloudtest)/|go\.(mod|sum)$|\.github/)')"
 echo "site=$(any '^(site/|internal/(reports|oldsite|server)/|scripts/parity-gate$|go\.(mod|sum)$|\.github/)')"
 echo "cli=$(any '^cli/')"
