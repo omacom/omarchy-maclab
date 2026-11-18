@@ -227,7 +227,6 @@ func TestRecoveryNetworkMaskPersistsAcrossRestartAndNoSerialJobLiftsIt(t *testin
 }
 
 func TestRecoveryTransactionIsolatesExecBeforeAnyJob(t *testing.T) {
-	wallClock(t)
 	l, c := countedModeLab(t, "pre-job-network")
 	v := l.s.dev(l.name)
 	v.mu.Lock()
