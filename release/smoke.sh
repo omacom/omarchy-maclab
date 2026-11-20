@@ -84,7 +84,8 @@ curl -fsS -o /dev/null "$report_url" || fail "opening the deletion link deleted 
 confirm "$t/deleted.html"
 grep -q "Report deleted" "$t/deleted.html" || fail "deletion didn't confirm"
 deletion_url=""
-code="$(curl -sS -o /dev/null -w '%{http_code}' "$report_url")"
+# The edge keeps a public page fresh for 60 s and purges nothing on a delete, so ask past it.
+code="$(curl -sS -o /dev/null -w '%{http_code}' "$report_url?after-delete=$RANDOM$RANDOM")"
 [[ $code == 404 ]] || fail "deleted report still answers $code"
 
 echo "smoke ok: installed $("$cli" --version), dry run as expected, a saved report uploaded, refused the second time and deleted"
