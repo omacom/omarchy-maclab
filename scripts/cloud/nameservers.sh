@@ -36,8 +36,10 @@ want="$(printf '%s' "$ZONE" | jq -c '.name_servers | map(ascii_downcase) | sort'
 
 held="$(pb_domain)"
 [[ -n $held ]] || die "$DOMAIN is not in the Porkbun account"
+# apiAccess reads 0 when the account opts every domain in at once: the
+# lookups below fail by themselves when access is really off.
 [[ "$(printf '%s' "$held" | jq -r '.apiAccess')" == 1 ]] ||
-  die "API access is off for $DOMAIN: the owner turns it on in the domain's details at https://porkbun.com/account/domainsSpeedy"
+  say "$DOMAIN is not opted in to API access by itself; going on in case the account opts in every domain"
 
 # Cloudflare needs DNSSEC off at the registrar before the nameservers change.
 ds="$(pb -X POST -d '{}' "$PORKBUN_API/dns/getDnssecRecords/$DOMAIN")"
