@@ -67,12 +67,15 @@ func (v *dev) configurationLocked() (c api.Configuration, look bool) {
 }
 
 // kernelLogsRead is how many of a Mac's kernel logs labd reads, newest
-// first, for a count the newer ones lack.
+// first, in each pass for a count the newer ones lack.
 const kernelLogsRead = 10
 
 // coreCountsFromJobs reads each core count from the kernel log of v's
 // latest job that booted its Known-good kernel, in this enrollment, and
-// carries it: a count that log lacks comes from an older one.
+// carries it: a count that log lacks comes from an older one. A GPU count
+// none of those logs has comes from a log of any kernel the Mac booted:
+// the GPU's active cores are the chip's, where a test kernel's command
+// line can bring up fewer CPUs.
 func (s *Server) coreCountsFromJobs(v *dev) (cpu, gpu int) {
 	d := v.snapshot()
 	jobs, err := s.store.jobs(d.Name, 200, false)
@@ -80,32 +83,37 @@ func (s *Server) coreCountsFromJobs(v *dev) (cpu, gpu int) {
 		s.log.Printf("%s: its Configuration: %v", d.Name, err)
 		return 0, 0
 	}
-	read := 0
-	for _, j := range jobs {
-		if (cpu > 0 && gpu > 0) || read == kernelLogsRead {
-			break
+	read := func(knownGood bool, done func() bool, take func(c, g int)) {
+		n := 0
+		for _, j := range jobs {
+			if done() || n == kernelLogsRead {
+				return
+			}
+			if j.DeviceID != d.ID || !j.Result.Booted || (j.Result.BootKernel == d.KnownGood) != knownGood {
+				continue
+			}
+			f, err := os.Open(filepath.Join(s.jobDir(j.ID), "boot0", "kernel.txt"))
+			if err != nil {
+				continue
+			}
+			b, err := io.ReadAll(io.LimitReader(f, kernelLogRead))
+			f.Close()
+			if err != nil {
+				continue
+			}
+			n++
+			take(detect.CoreCounts(string(b)))
 		}
-		if j.DeviceID != d.ID || !j.Result.Booted || j.Result.BootKernel != d.KnownGood {
-			continue
-		}
-		f, err := os.Open(filepath.Join(s.jobDir(j.ID), "boot0", "kernel.txt"))
-		if err != nil {
-			continue
-		}
-		b, err := io.ReadAll(io.LimitReader(f, kernelLogRead))
-		f.Close()
-		if err != nil {
-			continue
-		}
-		read++
-		c, g := detect.CoreCounts(string(b))
+	}
+	read(true, func() bool { return cpu > 0 && gpu > 0 }, func(c, g int) {
 		if cpu == 0 {
 			cpu = c
 		}
 		if gpu == 0 {
 			gpu = g
 		}
-	}
+	})
+	read(false, func() bool { return gpu > 0 }, func(_, g int) { gpu = g })
 	return cpu, gpu
 }
 
