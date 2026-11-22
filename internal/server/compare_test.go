@@ -403,6 +403,7 @@ func TestCompareWaitsForHandsUntilDone(t *testing.T) {
 // it: its values sit beside A's, compared where the API is the same.
 func TestCompareWithMacOS(t *testing.T) {
 	l, _ := compareLab(t, nil)
+	macosBench(t, l)
 	if _, err := l.s.macOS().enrolSecret(l.name, "mos_test-secret"); err != nil {
 		t.Fatal(err)
 	}

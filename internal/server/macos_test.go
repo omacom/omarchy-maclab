@@ -2,24 +2,39 @@ package server
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
-// macosBench writes the lab's macOS benchmark manifest with one artifact.
+// macosBench makes the macOS runs' Benchmark set one with a single macOS
+// file, in the artifact store, and a placeholder beside it.
 func macosBench(t *testing.T, l *lab) string {
 	t.Helper()
 	sha := l.artifact("web benchmarks bundle")
-	b, _ := json.Marshal(map[string]any{"artifacts": []api.MacOSArtifact{{Name: "web-benchmarks", SHA256: sha}}})
-	if err := os.WriteFile(filepath.Join(l.s.cfg.DataDir, "macos-bench.json"), b, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	set := &sets.Set{Name: "bench-9", N: 9,
+		Metrics: []sets.Metric{
+			{ID: "web", List: sets.Quick, MacOS: &sets.Side{Files: []string{"web-benchmarks"}}},
+			{ID: "later", List: sets.Full, MacOS: &sets.Side{Files: []string{"web-benchmarks", "not-built"}}},
+		},
+		Files: map[string][]sets.File{sets.MacOS: {
+			{ID: "web-benchmarks", Version: "1", Kind: "tarball", SHA256: sha},
+			{ID: "not-built", Version: "1", Kind: "tarball", SHA256: sets.Placeholder},
+		}}}
+	old := macOSBenchSet
+	macOSBenchSet = func() (*sets.Set, error) { return set, nil }
+	t.Cleanup(func() { macOSBenchSet = old })
 	return sha
+}
+
+func TestAMacOSRunIsRefusedWhenItsSetsFilesAreNotMirrored(t *testing.T) {
+	l := newLab(t, false)
+	if _, err := l.s.queueMacOSRun(l.name, api.TierDefault); err == nil || !strings.Contains(err.Error(), "lab bench mirror") {
+		t.Fatalf("err %v", err)
+	}
 }
 
 func decodeInto[T any](t *testing.T, body string) T {
@@ -130,6 +145,7 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 
 func TestAMacOSRunIsQueuedByAMaintainerOnly(t *testing.T) {
 	l := newLab(t, false)
+	macosBench(t, l)
 	if resp, body := l.as("", "POST", "/api/devices/"+l.name+"/macos-runs", api.MacOSRunRequest{Tier: "default"}); resp.StatusCode == 200 {
 		t.Fatalf("queued with no credential: %s", body)
 	}
@@ -155,6 +171,7 @@ func TestAMacOSRunPastItsDeadlineNeedsHands(t *testing.T) {
 	macosDeadline = func(string) time.Duration { return 300 * time.Millisecond }
 	t.Cleanup(func() { macosDeadline = was })
 	l := newLab(t, false)
+	macosBench(t, l)
 	if _, err := l.s.queueMacOSRun(l.name, api.TierDefault); err != nil {
 		t.Fatal(err)
 	}
