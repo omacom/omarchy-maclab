@@ -63,8 +63,9 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab set list | lab set show <name>  the Package sets, and one set's packages with each file's sha256
   lab compare <mac> --before <set|current> --after <set> [--macos] [--tier default|extended] [--hands] [--no-wait]
                                       a Compare (Maintainers): A (the known-good system or a set) and B (a set, as a
-                                      Candidate boot) run the same benchmarks and omarchy-m-test; per benchmark
-                                      better, worse or no change against the Mac's noise. Private until published
+                                      Candidate boot) run the current Benchmark set's Quick (default) or Full
+                                      (extended) list and omarchy-m-test; per metric better, worse or no change by
+                                      its tolerance in the set. Private until published
   lab compare done|publish|show <job> a person is done at the Mac; publish the report; print it
   lab exec <device> <command...>      run a command on a Mac as root, through lab-agent. It needs your own Lease on
                                       the Mac, a Maintainer's too. The command's text is kept in the Exec record

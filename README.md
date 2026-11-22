@@ -1288,11 +1288,12 @@ lab set list
 lab set show 7.2
 ```
 
-A Compare (Maintainers) runs the same pinned benchmarks and omarchy-m-test
-on one Mac on two sides, A (its known-good system, or a set) and B (a set,
-booted once as a Candidate boot without changing the Mac's own system), and
-says per benchmark better, worse or no change against the Mac's noise. The
-report is private to Maintainers until published:
+A Compare (Maintainers) runs the current Benchmark set's Quick list (Full
+with `--tier extended`) and omarchy-m-test on one Mac on two sides, A (its
+known-good system, or a set) and B (a set, booted once as a Candidate boot
+without changing the Mac's own system), and says per metric better, worse or
+no change by the metric's tolerance in the set. The report is private to
+Maintainers until published:
 
 ```
 lab compare m2-max --before current --after 7.3-try               # waits, then prints the report

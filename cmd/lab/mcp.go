@@ -764,7 +764,7 @@ func newMCP(c *client.Client) *mcp.Server {
 		Tier   string `json:"tier,omitempty" jsonschema:"default or extended"`
 		Hands  bool   `json:"hands,omitempty" jsonschema:"pause on B for a person until lab_compare_done"`
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "lab_compare", Description: "Queue a Compare (Maintainers): on one Mac, A (the known-good system or a set) and B (a set, as a Candidate boot) run the same pinned benchmarks and omarchy-m-test unattended; the report says per benchmark better, worse or no change against the Mac's noise. Answers the job; follow it with lab_wait, read it with lab_compare_show."},
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_compare", Description: "Queue a Compare (Maintainers): on one Mac, A (the known-good system or a set) and B (a set, as a Candidate boot) run the current Benchmark set's Quick (default tier) or Full (extended) list and omarchy-m-test unattended; the report says per metric better, worse or no change by its tolerance in the set. Answers the job; follow it with lab_wait, read it with lab_compare_show."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a compareArg) (*mcp.CallToolResult, any, error) {
 			j, err := c.Compare(ctx, api.CompareRequest{Mac: a.Mac, Before: a.Before, After: a.After, MacOS: a.MacOS, Tier: a.Tier, Hands: a.Hands})
 			return text(j), nil, err
