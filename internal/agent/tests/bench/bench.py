@@ -490,11 +490,11 @@ def conditions(host, profile=POWER_PROFILE, level=BRIGHTNESS, busy_fn=None, busy
     not on AC or not idle."""
     ac, battery = on_ac(host)
     c = {} if c is None else c
-    c.update({"on_ac": ac, "battery": battery, "busy_percent": None, "power_profile": None, "backlight": None})
+    c.update({"on_ac": ac, "battery": battery, "cpu_busy_percent": None, "power_profile": None, "backlight_percent": None})
     if not ac:
         raise Refused("not_on_ac")
     load = (busy_fn or busy)(host)
-    c["busy_percent"] = round(load, 1)
+    c["cpu_busy_percent"] = round(load, 1)
     if load > busy_limit:
         raise Refused("not_idle", f"{load:.0f}% CPU")
     saved = {"power_profile": None, "brightness": {}}
@@ -512,7 +512,7 @@ def conditions(host, profile=POWER_PROFILE, level=BRIGHTNESS, busy_fn=None, busy
         except (TypeError, ValueError, OSError):
             continue
         saved["brightness"][d] = cur
-        c["backlight"] = level
+        c["backlight_percent"] = round(level * 100)
     host.run(["hyprctl", "dispatch", "dpms", "on"], timeout=10, gui=True)
     return c, saved
 
@@ -1362,8 +1362,19 @@ def clean(e):
     return e
 
 
-def selected(bset, lst):
-    return [m for m in bset["metrics"] if m.get(SYSTEM) is not None and (lst == "full" or m["list"] == lst)]
+def selected(bset, lst, only=None):
+    """The list's metrics on this system, in the set's order; with only, just
+    those metric ids, each of which must be in the list."""
+    ms = [m for m in bset["metrics"] if m.get(SYSTEM) is not None and (lst == "full" or m["list"] == lst)]
+    if only is None:
+        return ms
+    have = {m["id"] for m in ms}
+    unknown = [i for i in only if i not in have]
+    if unknown:
+        raise ValueError(f"not in {bset['set']}'s {lst} list on {SYSTEM}: {', '.join(unknown)}")
+    if not only or len(set(only)) != len(only):
+        raise ValueError("no metric, or one given twice")
+    return [m for m in ms if m["id"] in only]
 
 
 def placeholder(ctx, m):
@@ -1420,6 +1431,7 @@ def main(argv=None, host=None, stderr=sys.stderr, impl=None):
     ap.add_argument("--reasons", action="store_true", help="print the reason codes and stop")
     ap.add_argument("--set")
     ap.add_argument("--list", choices=LISTS, default="quick")
+    ap.add_argument("--only", help="a Performance run's metric ids, comma-separated: only those of the list run")
     ap.add_argument("--cache")
     ap.add_argument("--work")
     ap.add_argument("--out")
@@ -1438,6 +1450,11 @@ def main(argv=None, host=None, stderr=sys.stderr, impl=None):
             env = [l for l in pathlib.Path(a.gui_env_file).read_text().split("\n") if "=" in l]
         host = Host("/", a.gui_user, env)
     bset = json.loads(pathlib.Path(a.set).read_text())
+    try:
+        metrics = selected(bset, a.list, None if a.only is None else a.only.split(","))
+    except ValueError as e:
+        print(f"bench.py: --only: {e}", file=stderr)
+        return 2
     out = pathlib.Path(a.out)
     cond_path = out.parent / "bench-conditions.json"
     cond = {"set": bset["set"], "list": a.list, "refused": None}
@@ -1448,7 +1465,7 @@ def main(argv=None, host=None, stderr=sys.stderr, impl=None):
         _, saved = conditions(host, c=cond)
         print(f"conditions: {json.dumps(cond)}", file=stderr, flush=True)
         ctx = Ctx(host, bset, a.cache, a.work, log=stderr)
-        run_list(selected(bset, a.list), ctx, cool=cool_down, impl=impl, out=results)
+        run_list(metrics, ctx, cool=cool_down, impl=impl, out=results)
         code = exit_code(results)
     except Refused as e:
         cond["refused"] = e.code
