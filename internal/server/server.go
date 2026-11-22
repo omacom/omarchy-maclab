@@ -722,7 +722,7 @@ func hashSecret(s string) string {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	for _, rt := range append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...) {
+	for _, rt := range append(append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...), s.perfRoutes()...) {
 		s.register(m, rt)
 	}
 	// The interface's own files and pages: each page says who may open it.
