@@ -26,7 +26,7 @@
 <section class="card">
 <h2 class="card-title">biggest gaps</h2>
 <p class="dim">Worst first, {{.Release.Kernel}} against {{.MacOS}}, beyond each benchmark's tolerance.{{with .TrendFrom}} The trend runs from {{.}}, for the same Macs.{{end}}</p>
-{{if .Gaps}}{{template "perf_gaps" .Gaps}}{{else}}<p class="dim">No row is beyond its tolerance under {{.MacOS}}.</p>
+{{if .Gaps}}{{template "perf_gaps" .Gaps}}{{if .MoreGaps}}<p class="dim">and {{.MoreGaps}} more in the sections below.</p>{{end}}{{else}}<p class="dim">No row is beyond its tolerance under {{.MacOS}}.</p>
 {{end}}</section>
 {{else if .Release}}<div class="empty"><p>Not measured on {{.Release.Kernel}} yet.</p></div>
 {{end}}

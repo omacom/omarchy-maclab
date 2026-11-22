@@ -353,7 +353,11 @@ type perfPage struct {
 }
 
 // perfGapsShown is how many of the lab's biggest gaps the overview lists.
-const perfGapsShown = 8
+const perfGapsShown = 5
+
+// perfConfigGapsShown is how many measured gaps a Configuration's page lists
+// before its rows with no value.
+const perfConfigGapsShown = 7
 
 // pPerformance is the lab's overview: every Configuration against macOS on
 // one Release, chip family by chip family.
@@ -540,6 +544,7 @@ type perfConfigPage struct {
 	Overall                  perfFigureView
 	Tiles                    []perfTileView
 	Gaps                     []perfGapView
+	MoreGaps                 int
 	TrendFrom                string
 	Columns                  []perfColumnHead
 	Span                     int
@@ -671,8 +676,16 @@ func (s *Server) pPerformanceConfiguration(w http.ResponseWriter, r *http.Reques
 		if trendFrom != nil {
 			page.TrendFrom = trendFrom.Release.Kernel
 		}
+		measured := 0
 		for _, g := range c.Gaps(key) {
 			v := perfGap(g, trendFrom)
+			if v.Reason == "" {
+				if measured == perfConfigGapsShown {
+					page.MoreGaps++
+					continue
+				}
+				measured++
+			}
 			v.Of = "of macOS " + cohort.MacOSVersion
 			page.Gaps = append(page.Gaps, v)
 		}
