@@ -95,23 +95,34 @@ func printCompare(out io.Writer, j *api.Job) error {
 	if j.Spec.Compare == nil || res == nil {
 		return fmt.Errorf("job %s is no Compare", j.ID)
 	}
-	fmt.Fprintf(out, "Compare %s on %s: %s (A) and %s (B), %s tier: %s\n", j.ID, j.Spec.Device, res.Before, res.After, res.Tier, orDash(j.Outcome, string(j.State)))
+	tier := res.Tier + " tier"
+	if res.Bench != "" {
+		tier += " of " + res.Bench
+	}
+	fmt.Fprintf(out, "Compare %s on %s: %s (A) and %s (B), %s: %s\n", j.ID, j.Spec.Device, res.Before, res.After, tier, orDash(j.Outcome, string(j.State)))
 	if j.Summary != "" {
 		fmt.Fprintln(out, j.Summary)
 	}
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	mac := res.Side(api.SideMacOS) != nil
-	head := "BENCHMARK\tA\tB\tCHANGE\tVERDICT\tNOISE"
+	head := "METRIC\tA\tB\tCHANGE\tVERDICT\tTOLERANCE"
 	if mac {
 		head += "\tMACOS\tMACOS VS A"
 	}
-	fmt.Fprintln(w, head)
+	fmt.Fprintln(w, head+"\tNOTE")
 	for _, r := range res.Rows {
-		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%.1f%% (%s)", r.Name, fmtVal(r.A), fmtVal(r.B), fmtPct(r.Delta), r.Verdict, r.Noise, r.NoiseFrom)
-		if mac {
-			line += fmt.Sprintf("\t%s\t%s %s", fmtVal(r.MacOS), fmtPct(r.MacOSDelta), orDash(r.MacOSVerdict, r.MacOSNote))
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t±%g%%", r.Name, fmtVal(r.A), fmtVal(r.B), fmtPct(r.Delta), r.Verdict, r.Tolerance)
+		notes := []string{}
+		if r.Note != "" {
+			notes = append(notes, r.Note)
 		}
-		fmt.Fprintln(w, line)
+		if mac {
+			line += fmt.Sprintf("\t%s\t%s %s", fmtVal(r.MacOS), fmtPct(r.MacOSDelta), orDash(r.MacOSVerdict, "-"))
+			if r.MacOSNote != "" {
+				notes = append(notes, "macOS: "+r.MacOSNote)
+			}
+		}
+		fmt.Fprintln(w, line+"\t"+orDash(strings.Join(notes, "; "), "-"))
 	}
 	w.Flush()
 	fmt.Fprintf(out, "omarchy-m-test: %d regressed, %d fixed\n", res.Regressed, res.Fixed)

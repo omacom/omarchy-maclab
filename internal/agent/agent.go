@@ -1026,7 +1026,7 @@ func (a *Agent) exec(ctx context.Context, c api.Command) (any, *afterAck, error)
 		}
 		res := a.sys.RunTest(ctx, c.JobID, t, budgetFetch(fetch, 1+len(t.Payload), func() { a.startBudget(tr) }), a.quiet, dir)
 		a.endTest(tr)
-		if t.Bench != nil && isBench(t.Builtin) {
+		if t.Bench != nil && t.Bench.Run > 0 && isBench(t.Builtin) {
 			benchUploaded(&res, a.benchUpload(ctx, t.Bench, dir))
 		}
 		res.Files = a.uploadDir(ctx, c.JobID, "test-"+t.Name, dir)

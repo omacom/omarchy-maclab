@@ -31,8 +31,9 @@ type CompareSpec struct {
 	Hands     bool        `json:"hands,omitempty"`
 	BeforeSet *PackageSet `json:"before_set,omitempty"` // nil for CompareCurrent
 	AfterSet  *PackageSet `json:"after_set"`
-	// Bench is the Benchmark set current when the Compare was asked: with
-	// MacOS, its macOS side is the Mac's macOS result of this set.
+	// Bench is the Benchmark set current when the Compare was asked: both
+	// sides run its Quick list (TierDefault) or Full list (TierExtended),
+	// and with MacOS its macOS side is the Mac's macOS result of this set.
 	Bench string `json:"bench,omitempty"`
 	// LeaseTaken is a Lease labd took for the job, since its person held
 	// none on the Mac: it ends with the job.
@@ -86,10 +87,11 @@ type CompareOMT struct {
 	Status map[string]string `json:"status,omitempty"` // check id -> pass, fail or skip
 }
 
-// CompareRow is one benchmark across the sides. Delta is B against A in
-// percent; Noise is the Mac's, in percent, from NoiseFrom.
+// CompareRow is one metric of the job's Benchmark set across the sides.
+// Delta is B against A in percent, judged by the metric's Tolerance in the
+// set, in percent.
 type CompareRow struct {
-	Name           string   `json:"name"`
+	Name           string   `json:"name"` // the metric id
 	Unit           string   `json:"unit,omitempty"`
 	HigherIsBetter bool     `json:"higher_is_better"`
 	A              *float64 `json:"a"`
@@ -97,8 +99,7 @@ type CompareRow struct {
 	VersionA       string   `json:"version_a,omitempty"`
 	VersionB       string   `json:"version_b,omitempty"`
 	Delta          *float64 `json:"delta_pct"`
-	Noise          float64  `json:"noise_pct"`
-	NoiseFrom      string   `json:"noise_from"`
+	Tolerance      float64  `json:"tolerance_pct"`
 	Verdict        string   `json:"verdict"`
 	Note           string   `json:"note,omitempty"`
 	MacOS          *float64 `json:"macos,omitempty"`
@@ -140,6 +141,7 @@ type CompareResult struct {
 	Before      string         `json:"before"`
 	After       string         `json:"after"`
 	Tier        string         `json:"tier"`
+	Bench       string         `json:"bench,omitempty"` // the Benchmark set both sides ran
 	Sides       []CompareSide  `json:"sides"`
 	Rows        []CompareRow   `json:"rows,omitempty"`
 	Checks      []CompareCheck `json:"checks,omitempty"`
