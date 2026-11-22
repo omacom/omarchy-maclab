@@ -502,7 +502,8 @@ func readFacts(path string, side *api.CompareSide) {
 }
 
 // readBench reads bench.json: a benchmark skipped or in error has no value
-// and says why in its note.
+// and says why in its note. A Benchmark set's entry names its metric and a
+// reason code.
 func readBench(path string) []api.BenchResult {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -510,10 +511,12 @@ func readBench(path string) []api.BenchResult {
 	}
 	var rs []struct {
 		api.BenchResult
+		Metric         string   `json:"metric"`
 		Unit           *string  `json:"unit"`
 		HigherIsBetter *bool    `json:"higher_is_better"`
 		Spread         *float64 `json:"spread"`
 		Version        *string  `json:"version"`
+		Reason         *string  `json:"reason"`
 		Skipped        string   `json:"skipped"`
 		Error          string   `json:"error"`
 	}
@@ -523,6 +526,9 @@ func readBench(path string) []api.BenchResult {
 	out := make([]api.BenchResult, 0, len(rs))
 	for _, r := range rs {
 		res := r.BenchResult
+		if res.Name == "" {
+			res.Name = r.Metric
+		}
 		if r.Unit != nil {
 			res.Unit = *r.Unit
 		}
@@ -536,6 +542,8 @@ func readBench(path string) []api.BenchResult {
 			res.Version = *r.Version
 		}
 		switch {
+		case r.Reason != nil && *r.Reason != "":
+			res.Note = *r.Reason
 		case r.Skipped != "":
 			res.Note = "skipped: " + r.Skipped
 		case r.Error != "":
