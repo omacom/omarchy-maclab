@@ -13,11 +13,11 @@ The build of section 22 of `spec.md` ("Performance"), one ticket per slice. A ti
 | P7 | Performance run job and scheduling | P6 | done |
 | P8 | The macOS side in labd | P5, P6 | doing |
 | P9 | Publishing and Counted | P6 | done |
-| P10 | The figures | P9 | doing |
+| P10 | The figures | P9 | done |
 | P11 | Compare on Benchmark sets | P4, P8 | todo |
-| P12 | Performance pages | P10 | todo |
+| P12 | Performance pages | P10 | doing |
 | P13 | Time bench-1 on the slowest Lab-owned Mac | P2, P4, P5, P14 | human |
-| P14 | lab-agent runs a Performance run's metrics | P4, P7 | doing |
+| P14 | lab-agent runs a Performance run's metrics | P4, P7 | done |
 
 ## P1. Benchmark set format and bench-1
 
