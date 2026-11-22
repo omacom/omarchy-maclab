@@ -7,6 +7,8 @@ package bench
 import (
 	_ "embed"
 	"errors"
+	"fmt"
+	"slices"
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
@@ -38,6 +40,34 @@ func Files(s *sets.Set, list string) []sets.File {
 		}
 	}
 	return out
+}
+
+// FilesOf is the pinned Omarchy files a Performance run's metrics need, each
+// once: what lab-agent fetches before it runs them. Each id must be a metric
+// of the list that runs on Omarchy.
+func FilesOf(s *sets.Set, list string, ids []string) ([]sets.File, error) {
+	if list != sets.Quick && list != sets.Full {
+		return nil, fmt.Errorf("list %q: want quick or full", list)
+	}
+	if len(ids) == 0 {
+		return nil, errors.New("a Performance run with no metric")
+	}
+	in := s.List(list)
+	var ms []sets.Metric
+	for _, id := range ids {
+		i := slices.IndexFunc(in, func(m sets.Metric) bool { return m.ID == id })
+		if i < 0 || in[i].Omarchy == nil {
+			return nil, fmt.Errorf("metric %q is not in %s's %s list on Omarchy", id, s.Name, list)
+		}
+		ms = append(ms, in[i])
+	}
+	var out []sets.File
+	for _, f := range s.FilesFor(sets.Omarchy, ms) {
+		if f.Pinned() {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // Pinned is the sha256 of every set's pinned file on either system, each

@@ -29,6 +29,7 @@ var (
 	benchCache      = "/var/cache/lab-bench"
 	benchWorkParent = "/var/tmp"
 	benchSet        = bench.Set
+	benchSetNamed   = sets.Load
 	benchGUIEnv     = guiEnv
 )
 
@@ -53,7 +54,18 @@ func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch 
 		return fail(errors.New("invalid job"))
 	}
 	list := bench.Builtins[t.Builtin]
-	s, err := benchSet()
+	var s *sets.Set
+	var err error
+	var files []sets.File
+	var only []string
+	if b := t.Bench; b != nil {
+		list, only = b.List, b.Metrics
+		if s, err = benchSetNamed(b.Set); err == nil {
+			files, err = bench.FilesOf(s, list, only)
+		}
+	} else if s, err = benchSet(); err == nil {
+		files = bench.Files(s, list)
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -78,7 +90,7 @@ func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch 
 		return fail(err)
 	}
 	os.Chmod(benchCache, 0o755)
-	for _, f := range bench.Files(s, list) {
+	for _, f := range files {
 		if err := benchFetch(ctx, fetch, f); err != nil {
 			return fail(fmt.Errorf("%s %s: %w", f.ID, f.Version, err))
 		}
@@ -112,9 +124,12 @@ func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch 
 	if err != nil {
 		return fail(err)
 	}
-	cmd := exec.CommandContext(tctx, benchPython, "-I", runner, "--set", setFile, "--list", list,
-		"--cache", benchCache, "--work", work, "--out", filepath.Join(outDir, "bench.json"),
-		"--gui-user", u.Username, "--gui-env-file", envFile)
+	args := []string{"-I", runner, "--set", setFile, "--list", list}
+	if only != nil {
+		args = append(args, "--only", strings.Join(only, ","))
+	}
+	cmd := exec.CommandContext(tctx, benchPython, append(args, "--cache", benchCache, "--work", work,
+		"--out", filepath.Join(outDir, "bench.json"), "--gui-user", u.Username, "--gui-env-file", envFile)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.WaitDelay = 5 * time.Second
 	start := time.Now()
