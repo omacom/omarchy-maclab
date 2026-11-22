@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,52 @@ func pollAs(t *testing.T, l *lab, secret, boot string, at time.Time, build strin
 }
 
 func bootHash(n int) string { return fmt.Sprintf("%032x", n) }
+
+// macOSJobs are the Mac's macOS runs' jobs, oldest first.
+func (l *lab) macOSJobs() []*api.Job {
+	l.t.Helper()
+	all, err := l.s.store.jobs(l.name, 100, false)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	var out []*api.Job
+	for _, j := range all {
+		if j.Spec.MacOS != nil {
+			out = append(out, j)
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// nthMacOSJob waits for the job of the Mac's nth macOS run to end.
+func (l *lab) nthMacOSJob(n int) *api.Job {
+	l.t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if js := l.macOSJobs(); len(js) >= n {
+			return l.wait(js[n-1].ID, time.Until(deadline))
+		}
+		l.s.perfKick()
+		time.Sleep(100 * time.Millisecond)
+	}
+	l.t.Fatalf("no macOS run job %d; the Mac has %d", n, len(l.macOSJobs()))
+	return nil
+}
+
+// holdFromScheduler keeps the Performance scheduler off the Mac, as a
+// Lease does, until the func it answers is called.
+func (l *lab) holdFromScheduler() func() {
+	v := l.s.dev(l.name)
+	v.mu.Lock()
+	v.d.Lease = &api.Lease{Holder: "tester", Expires: time.Now().Add(time.Hour)}
+	v.mu.Unlock()
+	return func() {
+		v.mu.Lock()
+		v.d.Lease = nil
+		v.mu.Unlock()
+	}
+}
 
 // macOSUpload is what the runner sends for its performance run: bench-1
 // results, and the state that ends the attempt.
@@ -425,16 +472,12 @@ func TestAFailedMacOSStartIsCancelled(t *testing.T) {
 	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
 		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
 	}
-	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	l.sim.BlessFails = errors.New("asahi-bless --next --set-boot 1: NVRAM write failed")
 	l.sim.InMacOS = func() { t.Error("booted macOS") }
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	v := l.s.dev(l.name)
-	spec := l.s.macOSWanted(v)
-	if spec == nil || spec.MacOS == nil {
-		t.Fatal("an Unattended Mac's run is not wanted")
-	}
 	run := l.s.macOS().run(l.name)
-	j := l.run(*spec)
+	j := l.nthMacOSJob(1)
 	l.expect(j, api.OutcomeInfra)
 	if !strings.Contains(j.Summary, "NVRAM write failed") {
 		t.Errorf("summary: %s", j.Summary)
@@ -456,6 +499,7 @@ func TestAFailedMacOSStartIsCancelled(t *testing.T) {
 func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 	l, _ := compareLab(t, nil)
 	macOSResultSet(t, l)
+	free := l.holdFromScheduler() // the result is kept before the scheduler would take the run
 	secret := enrollRunner(t, l)
 	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
 		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
@@ -469,8 +513,13 @@ func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 	if _, err := l.s.store.takePerf(run.PerfRun, c, l.s.now()); err != nil {
 		t.Fatal(err)
 	}
-	l.s.macOSPerfEnded(l.name, run.PerfRun, perf.Succeeded)
+	now := l.s.now()
+	l.s.macOS().change(l.name, func(m *api.MacOSRun) error {
+		m.State, m.Done = api.MacOSDone, &now
+		return nil
+	})
 	l.sim.InMacOS = func() { t.Error("booted macOS for a kept result") }
+	free()
 
 	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
 	l.expect(j, api.OutcomePass)

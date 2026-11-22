@@ -615,6 +615,7 @@ func (s *Server) macOSBuildSaid(mac, enrollment string, r *http.Request) {
 	}
 	if run, err := s.queueMacOSSide(mac); err == nil && run != nil {
 		s.log.Printf("%s: no macOS result of %s at macOS %s (%s): macOS run %s queued", mac, run.Set, version, build, run.ID)
+		s.perfKick()
 	}
 }
 

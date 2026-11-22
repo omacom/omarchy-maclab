@@ -287,8 +287,9 @@ func (s *Server) atTheMac(v *dev, p Person) (*api.MacOSRun, error) {
 	}
 	s.macOS().stopTimer(d.Name)
 	s.log.Printf("%s: %s is at the Mac for macOS run %s", d.Name, run.AtMacBy, run.ID)
-	if _, err := s.submitMacOSRun(v, run); err != nil {
-		s.log.Printf("%s: the job of macOS run %s waits for the Mac's next slot: %v", d.Name, run.ID, err)
+	if !s.macOSJobOpen(run) && s.claimForPerf(v, *macOSJobSpec(d.Name, run.ID)) == nil {
+		s.log.Printf("%s: the job of macOS run %s waits for the Mac's next slot", d.Name, run.ID)
+		s.perfKick()
 	}
 	return s.macOS().run(d.Name), nil
 }

@@ -75,31 +75,45 @@ func (pr *perfRelease) packages(s *Server) (*api.PackageSet, error) {
 }
 
 // reconcilePerf claims each idle Mac for the newest Release it misses a
-// measurement of.
+// measurement of, and a Mac that misses nothing on Omarchy for its macOS
+// run.
 func (s *Server) reconcilePerf() {
-	bench, err := perfCurrentSet()
-	if err != nil {
-		return
-	}
-	rels, err := s.store.releases("") // newest first
-	if err != nil || len(rels) == 0 {
-		return
-	}
 	var weigh []*perfRelease
-	for _, rel := range rels {
-		state, err := s.releaseState(rel.Name)
-		if err != nil {
-			continue
-		}
-		if list := perfList(state); list != "" {
-			weigh = append(weigh, &perfRelease{rel: rel, list: list})
+	bench, err := perfCurrentSet()
+	if err == nil {
+		rels, _ := s.store.releases("") // newest first
+		for _, rel := range rels {
+			state, err := s.releaseState(rel.Name)
+			if err != nil {
+				continue
+			}
+			if list := perfList(state); list != "" {
+				weigh = append(weigh, &perfRelease{rel: rel, list: list})
+			}
 		}
 	}
 	for _, v := range s.allDevs() {
-		if spec := s.perfWanted(v, bench, weigh); spec != nil {
+		spec := s.perfWanted(v, bench, weigh)
+		if spec == nil && s.macOSSlot(v) {
+			spec = s.macOSWanted(v)
+		}
+		if spec != nil {
 			s.claimForPerf(v, *spec)
 		}
 	}
+}
+
+// macOSSlot is whether the Mac could take its macOS run now: the lab
+// measures on it and it is idle, so that an Attended Mac's person is told
+// only when the Mac would boot macOS for them.
+func (s *Server) macOSSlot(v *dev) bool {
+	if s.drained() {
+		return false
+	}
+	length := (&jobRun{s: s, v: v, j: &api.Job{Spec: *macOSJobSpec(v.snapshot().Name, "")}, boot: s.cfg.BootTimeout}).expectedLength()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.perfIdleLocked(length) == ""
 }
 
 // perfMacWanted is whether the lab measures on the Mac at all: a Lab-owned
@@ -228,8 +242,9 @@ func (v *dev) perfIdleLocked(length time.Duration) string {
 	return v.windowHoldLocked(length)
 }
 
-// claimForPerf claims the Mac for spec and queues it, if the Mac is idle:
-// no Lease, no job, and as perfIdleLocked has it. It reports the job.
+// claimForPerf claims the Mac for spec, a Performance run or its macOS
+// run, and queues it, if the Mac is idle: no Lease, no job, and as
+// perfIdleLocked has it. It reports the job.
 func (s *Server) claimForPerf(v *dev, spec api.JobSpec) *api.Job {
 	if s.drained() {
 		return nil
@@ -256,9 +271,7 @@ func (s *Server) claimForPerf(v *dev, spec api.JobSpec) *api.Job {
 		unclaim()
 		return nil
 	}
-	ps := spec.Performance
-	j, _, err := s.submit(Person{}, spec, "", fmt.Sprintf("scheduled: Release %s with %s's %s list, %d %s missing on this Mac",
-		ps.Release, ps.Bench, ps.List, len(ps.Metrics), plural(len(ps.Metrics), "benchmark", "benchmarks")))
+	j, what, err := s.submitScheduled(v, spec)
 	if err != nil {
 		unclaim()
 		s.perfNote(spec.Device, err)
@@ -269,8 +282,25 @@ func (s *Server) claimForPerf(v *dev, spec api.JobSpec) *api.Job {
 		v.perfClaim = j.ID
 	}
 	v.mu.Unlock()
-	s.log.Printf("%s: claimed for a Performance run of Release %s (%s list): job %s", spec.Device, ps.Release, ps.List, j.ID)
+	s.log.Printf("%s: claimed for %s: job %s", spec.Device, what, j.ID)
 	return j
+}
+
+// submitScheduled queues the job of a Mac just claimed: a Performance run,
+// or its macOS run. what names it in the log.
+func (s *Server) submitScheduled(v *dev, spec api.JobSpec) (j *api.Job, what string, err error) {
+	if m := spec.MacOS; m != nil {
+		run := s.macOS().run(spec.Device)
+		if run == nil || run.ID != m.Run || run.State != api.MacOSQueued {
+			return nil, "", fmt.Errorf("macOS run %s is not queued", m.Run)
+		}
+		j, err := s.submitMacOSRun(v, run)
+		return j, "its macOS run " + run.ID, err
+	}
+	ps := spec.Performance
+	j, _, err = s.submit(Person{}, spec, "", fmt.Sprintf("scheduled: Release %s with %s's %s list, %d %s missing on this Mac",
+		ps.Release, ps.Bench, ps.List, len(ps.Metrics), plural(len(ps.Metrics), "benchmark", "benchmarks")))
+	return j, fmt.Sprintf("a Performance run of Release %s (%s list)", ps.Release, ps.List), err
 }
 
 // perfClaimHolds is the run that claims v now, "" when none; a claim whose
