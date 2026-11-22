@@ -1598,8 +1598,8 @@ Its tools follow the commands one for one, each named after its command:
 `lab_installed_verdict`, `lab_installed_promote`, `lab_agent_update`,
 `lab_macos_enroll`, `lab_builder_add`, `lab_builder_remove`, `lab_builder_list`,
 `lab_set_create`, `lab_set_capture`, `lab_set_list`, `lab_set_show`,
-`lab_compare`, `lab_compare_done`, `lab_compare_publish`, `lab_compare_show` and
-`lab_version`. Four commands have no tool: `login` (the Lab token is typed by
+`lab_compare`, `lab_compare_done`, `lab_compare_publish`, `lab_compare_show`,
+`lab_perf_rerun` and `lab_version`. Four commands have no tool: `login` (the Lab token is typed by
 its person and never handed to an agent), `mcp` itself, and `pack` and
 `boot-test`, which work on files of your own machine and ask the lab nothing.
 

@@ -31,3 +31,11 @@ var Reasons = []string{
 
 // KnownReason is whether r is one of the fixed reason codes.
 func KnownReason(r string) bool { return slices.Contains(Reasons, r) }
+
+// passing are the reasons a benchmark did not run that may not hold at the
+// Mac's next slot: what the Stack or the hardware lacks does not pass.
+var passing = []string{NotRun, Skipped, DiskTooFull, NotOnAC, NotIdle}
+
+// RunAgain is whether a benchmark with reason r failed or was skipped for a
+// passing reason, and so is run once more, alone, at the Mac's next slot.
+func RunAgain(r string) bool { return r == Error || slices.Contains(passing, r) }

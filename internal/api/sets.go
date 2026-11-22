@@ -16,8 +16,12 @@ type PackageSet struct {
 	CreatedBy string    `json:"created_by"`
 	Created   time.Time `json:"created"`
 	// CapturedFrom is the Mac a set captured with lab set capture came from.
-	CapturedFrom string    `json:"captured_from,omitempty"`
-	Items        []SetItem `json:"items"`
+	CapturedFrom string `json:"captured_from,omitempty"`
+	// Release and ManifestSHA256 are a Release's set, release-<version>:
+	// its frozen manifest's packages, made from that manifest by its digest.
+	Release        string    `json:"release,omitempty"`
+	ManifestSHA256 string    `json:"manifest_sha256,omitempty"`
+	Items          []SetItem `json:"items"`
 }
 
 // Where a Package set's package comes from.
@@ -108,10 +112,13 @@ func (it SetItem) Check() error {
 
 // stackExact and stackPrefix name the packages of the Omarchy Mac stack that
 // lab-agent reports and lab set capture records: the kernel and its headers,
-// m1n1, U-Boot, Mesa and Vulkan, the AVD video decoder, libfprint, and the
-// Asahi firmware.
+// m1n1, U-Boot, Mesa and Vulkan, the AVD video decoder, libfprint, the
+// Asahi firmware, and what a Performance run records it booted besides: the
+// Neural engine's driver and libane, MLX and llama.cpp. Those last are named
+// one by one: a name holding "ane" or "mlx" is no sign of either.
 var (
-	stackExact  = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract"}
+	stackExact = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract",
+		"ane-dkms", "libane", "python-libane", "mlx", "python-mlx", "llama.cpp", "llama.cpp-vulkan"}
 	stackPrefix = []string{"linux-aurora", "m1n1-", "uboot-", "mesa-", "vulkan-", "libfprint-"}
 )
 

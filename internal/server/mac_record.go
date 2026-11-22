@@ -32,6 +32,7 @@ const (
 	macLimitRemoved  = "limit-removed"
 	macPublishing    = "publishing"
 	macCounted       = "counted"
+	macPerformance   = "performance"
 	macLeft          = "left"
 )
 

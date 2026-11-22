@@ -19,17 +19,18 @@ type volunteerCommand func(ctx context.Context, cfg *Config, sys System, args []
 // volunteerCommands are `sudo lab-agent status`, `window`, `pause` and the
 // rest, by name. The Volunteer tickets add them here.
 var volunteerCommands = map[string]volunteerCommand{
-	"status":  showStatus,
-	"window":  windowCmd,
-	"pause":   pause,
-	"open":    open,
-	"notify":  notifyCmd,
-	"access":  accessCmd,
-	"publish": publishCmd,
-	"log":     logCmd,
-	"jobs":    jobsCmd,
-	"leave":   leaveCmd,
-	"update":  updateCmd,
+	"status":      showStatus,
+	"window":      windowCmd,
+	"pause":       pause,
+	"open":        open,
+	"notify":      notifyCmd,
+	"access":      accessCmd,
+	"publish":     publishCmd,
+	"performance": performanceCmd,
+	"log":         logCmd,
+	"jobs":        jobsCmd,
+	"leave":       leaveCmd,
+	"update":      updateCmd,
 }
 
 // IsVolunteerCommand is whether lab-agent's command line routes name here.
@@ -94,6 +95,7 @@ func showStatus(ctx context.Context, cfg *Config, sys System, args []string, out
 				pub = "on (publish on lists the deletion links)"
 			}
 			fmt.Fprintf(out, "  Publishing:     %s\n", pub)
+			fmt.Fprintf(out, "  Performance:    %s (performance on|off)\n", map[bool]string{true: "on", false: "off"}[ac.Performance])
 		}
 	}
 	if err := sys.SnapshotEligible(); err != nil {

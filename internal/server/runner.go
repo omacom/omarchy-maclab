@@ -445,6 +445,11 @@ func (s *Server) runJobAsked(ctx context.Context, v *dev, j *api.Job, c *jobCanc
 				s.log.Printf("job %s: the Lease it took: %v", j.ID, err)
 			}
 		}
+		if p := j.Spec.Performance; p != nil && p.LeaseTaken {
+			if err := s.releaseLease(v, s.submitter(j), perfHolder, false, ""); err != nil {
+				s.log.Printf("job %s: the Lease it took: %v", j.ID, err)
+			}
+		}
 		// The job stops counting for a drain in the step that frees the
 		// Mac, as it started counting in the one that gave it the Mac.
 		v.mu.Lock()
@@ -461,6 +466,7 @@ func (s *Server) runJobAsked(ctx context.Context, v *dev, j *api.Job, c *jobCanc
 			freed()
 		}
 		s.lapse(v) // a Lease extended for this job ends with it
+		s.perfKick()
 	}()
 
 	// A Mac still on a lab entry (an earlier job's restore failed or was cut
@@ -581,6 +587,12 @@ func (r *jobRun) retry() {
 	if r.j.Spec.Holder == omtHolder {
 		return
 	}
+	if r.j.Spec.Performance != nil && !r.j.UnderLease {
+		// what it did not measure is still missing, and queued again at the
+		// Mac's next slot
+		r.ev("not retried: the lab queues what is missing at the Mac's next slot")
+		return
+	}
 	if r.j.UnderLease {
 		// Its holder decides what runs under a Lease, and without one the
 		// job could not run again anyway.
@@ -665,6 +677,9 @@ func (r *jobRun) execute(ctx context.Context) (string, string) {
 	v, j := r.v, r.j
 	if j.Spec.Compare != nil {
 		return r.compare(ctx)
+	}
+	if j.Spec.Performance != nil {
+		return r.performance(ctx)
 	}
 
 	if j.Spec.InstalledManifest != "" {
@@ -1064,6 +1079,9 @@ func errText(msg string) string {
 func (r *jobRun) tests() []api.TestSpec {
 	if c := r.j.Spec.Compare; c != nil {
 		return compareTests(api.SideB, c.Tier, false)
+	}
+	if p := r.j.Spec.Performance; p != nil {
+		return perfTests(p, 0)
 	}
 	tests := testsFor(r.j.Spec)
 	if r.ir != nil {

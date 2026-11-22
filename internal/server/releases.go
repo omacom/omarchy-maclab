@@ -239,7 +239,11 @@ func (s *Server) listRelease(m *installed.Manifest, manifestSHA string, by Perso
 	for _, a := range m.ApprovedBy {
 		ids = append(ids, a.AccountID)
 	}
-	return s.store.addRelease(r, ids...)
+	if err := s.store.addRelease(r, ids...); err != nil {
+		return err
+	}
+	s.perfKick()
+	return nil
 }
 
 // approversOf is why the manifest's approved_by is refused, or nil: from
@@ -535,6 +539,7 @@ func (s *Server) verdict(by Person, release string, req api.VerdictRequest) (api
 	}
 	s.log.Printf("Release %s: %s recorded by %s", r.Name, stateWords(req.State), accountOr(by.AccountID, "someone"))
 	s.publishPerf()
+	s.perfKick()
 	if a.Release, err = s.releaseNow(r.Name); err != nil {
 		return a, err
 	}

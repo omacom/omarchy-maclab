@@ -10,13 +10,14 @@ The build of section 22 of `spec.md` ("Performance"), one ticket per slice. A ti
 | P4 | Omarchy runs a Benchmark set | P1 | done |
 | P5 | macOS runs a Benchmark set | P1, P3 | done |
 | P6 | Performance results in labd | P1 | done |
-| P7 | Performance run job and scheduling | P6 | doing |
+| P7 | Performance run job and scheduling | P6 | done |
 | P8 | The macOS side in labd | P5, P6 | doing |
 | P9 | Publishing and Counted | P6 | done |
 | P10 | The figures | P9 | doing |
 | P11 | Compare on Benchmark sets | P4, P8 | todo |
 | P12 | Performance pages | P10 | todo |
-| P13 | Time bench-1 on the slowest Lab-owned Mac | P2, P4, P5 | human |
+| P13 | Time bench-1 on the slowest Lab-owned Mac | P2, P4, P5, P14 | human |
+| P14 | lab-agent runs a Performance run's metrics | P4, P7 | doing |
 
 ## P1. Benchmark set format and bench-1
 
@@ -126,3 +127,11 @@ Section 22, "Pages", and the design canvas "Performance pages".
 ## P13. Time bench-1 on the slowest Lab-owned Mac
 
 Section 22, "Two lists". The owner's part: on real hardware, time the Quick and Full lists on both systems, record the timings and the built files' digests in bench-1's pull request, and refuse a list over 45 minutes.
+
+## P14. lab-agent runs a Performance run's metrics
+
+Found when P7 merged: labd sends a Performance run as `TestSpec{Name: "perf-bench", Builtin: "bench", Bench: &api.BenchRun{Set, List, Metrics, Run}}` (`internal/api/performance.go`), and nothing on the Mac acts on `Bench` yet.
+
+- lab-agent runs the `bench` builtin on exactly `Bench.Metrics` of `Bench.Set` (passing them to `bench.py`), fetches the set's pinned Omarchy files the job grants, and posts the entries, conditions and state to `POST /api/agent/performance/{Run}/results`: `succeeded`, or `failed` when a result is `error` or `software_renderer`.
+- The builtin without `Bench` keeps working for Compare until P11.
+- Acceptance: an agent test with the sim Mac that a perf-bench job runs only the named metrics and its upload is taken by labd; the Python runner's metric selection tested.

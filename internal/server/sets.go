@@ -134,6 +134,9 @@ func (s *Server) makeSet(r *http.Request, set *api.PackageSet) error {
 	if err := api.CheckSetName(set.Name); err != nil {
 		return refuse(400, "%v", err)
 	}
+	if strings.HasPrefix(set.Name, api.PerfPackageSet("")) {
+		return refuse(400, "%s: a name release-<version> is a Release's own set, which the lab makes from its frozen manifest", set.Name)
+	}
 	if len(set.Items) == 0 {
 		return refuse(400, "a package set needs at least one package")
 	}

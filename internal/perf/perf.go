@@ -110,22 +110,25 @@ func Ended(state string) bool {
 // Run is one attempt at a Performance run (Side omarchy, of a Release) or a
 // macOS run (Side macos, at a macOS build) of one set on one Mac.
 type Run struct {
-	ID           int64             `json:"id"`
-	Mac          string            `json:"mac"`
-	Enrollment   string            `json:"enrollment"`
-	Set          string            `json:"set"`
-	Side         string            `json:"side"`
-	Release      string            `json:"release,omitempty"`
-	MacOSVersion string            `json:"macos_version,omitempty"`
-	MacOSBuild   string            `json:"macos_build,omitempty"`
-	List         string            `json:"list"`
-	Attempt      int               `json:"attempt"`
-	State        string            `json:"state"`
-	Booted       map[string]string `json:"booted,omitempty"`
-	BootSeconds  *float64          `json:"boot_seconds,omitempty"`
-	Conditions   json.RawMessage   `json:"conditions,omitempty"`
-	Started      time.Time         `json:"started"`
-	Ended        *time.Time        `json:"ended,omitempty"`
+	ID           int64  `json:"id"`
+	Mac          string `json:"mac"`
+	Enrollment   string `json:"enrollment"`
+	Set          string `json:"set"`
+	Side         string `json:"side"`
+	Release      string `json:"release,omitempty"`
+	MacOSVersion string `json:"macos_version,omitempty"`
+	MacOSBuild   string `json:"macos_build,omitempty"`
+	List         string `json:"list"`
+	// Metrics are the metric ids of the list the attempt was asked to
+	// measure: all of it, what is missing of it, or a failed one again.
+	Metrics     []string          `json:"metrics,omitempty"`
+	Attempt     int               `json:"attempt"`
+	State       string            `json:"state"`
+	Booted      map[string]string `json:"booted,omitempty"`
+	BootSeconds *float64          `json:"boot_seconds,omitempty"`
+	Conditions  json.RawMessage   `json:"conditions,omitempty"`
+	Started     time.Time         `json:"started"`
+	Ended       *time.Time        `json:"ended,omitempty"`
 }
 
 // Target is what a run measures against: its Release, or its macOS build.

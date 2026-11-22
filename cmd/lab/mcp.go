@@ -796,6 +796,15 @@ func newMCP(c *client.Client) *mcp.Server {
 			}
 			return text(b.String()), nil, nil
 		})
+	type perfRerunArg struct {
+		Mac     string `json:"mac"`
+		Release string `json:"release" jsonschema:"the Release's name, as lab_installed_list shows it"`
+	}
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_perf_rerun", Description: "Run a Mac's Performance run of a Release again (a Maintainer, or the Mac's Lease holder), under your Lease, taken for you when you hold none: its values replace the last only if it succeeds. Answers the job; follow it with lab_wait."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, a perfRerunArg) (*mcp.CallToolResult, any, error) {
+			j, err := c.PerfRerun(ctx, api.PerfRerunRequest{Mac: a.Mac, Release: a.Release})
+			return text(j), nil, err
+		})
 
 	return s
 }

@@ -19,6 +19,7 @@ import (
 var specTable = map[string]string{
 	"update":             "added",
 	"boot-macos-once":    "added",
+	"performance":        "added",
 	"setup":              "changed",
 	"move":               "changed",
 	"leave":              "changed",
