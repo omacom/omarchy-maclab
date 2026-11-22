@@ -15,6 +15,10 @@
 #                                  a Mac lab controller; unpacks to
 #                                  lab-controller/ (bin/oobd, bin/macvdmtool,
 #                                  install, VERSION)
+#   OUTDIR/bench-PROGRAM-darwin-arm64.tar.gz, bench-PROGRAM-linux-arm64.tar.gz
+#                                  a benchmark program for macOS or for
+#                                  Omarchy; unpacks to bench-PROGRAM/ (bin/,
+#                                  BUILD.json, the licence, VERSION)
 #   OUTDIR/.stage/                 the bundle unpacked, for release/sign.sh
 #
 # LAB_RELEASE is the tag being built, vX.Y.Z or vX.Y.Z-rc.N. It is the one
@@ -30,6 +34,13 @@
 # it goes into the bundle as bin/macvdmtool. Without it the bundle has none
 # and its Out-of-band controller refuses every reset: the release workflow
 # always gives one.
+#
+# BENCH_PROGRAMS is the folder of benchmark programs release/bench.sh built:
+# darwin-arm64/PROGRAM/ from the macOS runner and linux-arm64/PROGRAM/ from
+# the arm64 Linux one. Every program of the release must be there, built for
+# its system, with its BUILD.json and licence, or nothing is built. Without
+# it the build has no benchmark archives, and release/sign.sh refuses it
+# unless LAB_RELEASE_WITHOUT leaves them out (release/lib.sh).
 #
 # The tarball unpacks with bin/, the omarchy_m_test package (the feature
 # catalogue bundled as omarchy_m_test/catalogue.json, Asahi's reference kernel
@@ -59,6 +70,25 @@ fi
 tool="${RESET_TOOL:-}"
 if [[ -n $tool ]]; then
   macho_arm64 "$tool" || die "RESET_TOOL ($tool) is not a program for macOS on arm64"
+fi
+bench="${BENCH_PROGRAMS:-}"
+if [[ -n $bench ]]; then
+  [[ -d $bench ]] || die "BENCH_PROGRAMS ($bench) is not a folder"
+  bench="$(cd "$bench" && pwd)"
+  for a in "${RELEASE_FILES[@]}"; do
+    [[ $a =~ ^bench-(.+)-(darwin|linux)-arm64\.tar\.gz$ ]] || continue
+    p="${BASH_REMATCH[1]}" sys="${BASH_REMATCH[2]}"
+    d="$bench/$sys-arm64/$p"
+    [[ -x $d/bin/$p && ! -L $d/bin/$p ]] || die "BENCH_PROGRAMS has no $sys-arm64/$p/bin/$p"
+    if [[ $sys == darwin ]]; then
+      macho_arm64 "$d/bin/$p" || die "BENCH_PROGRAMS: $sys-arm64/$p/bin/$p is not a program for macOS on arm64"
+    else
+      elf_arm64 "$d/bin/$p" || die "BENCH_PROGRAMS: $sys-arm64/$p/bin/$p is not a program for Linux on arm64"
+    fi
+    [[ -s $d/BUILD.json ]] || die "BENCH_PROGRAMS: $sys-arm64/$p has no BUILD.json"
+    [[ -n "$(find "$d" -maxdepth 1 -type f \( -name 'LICENSE*' -o -name 'COPYING*' \))" ]] || die "BENCH_PROGRAMS: $sys-arm64/$p has no licence"
+    [[ -z "$(find "$d" ! -type f ! -type d)" ]] || die "BENCH_PROGRAMS: $sys-arm64/$p holds something that is not a file or a folder"
+  done
 fi
 signers="${RELEASE_ALLOWED_SIGNERS:-$repo/release/allowed_signers}"
 key="$(release_key "$signers")"
@@ -143,5 +173,23 @@ install -m 0755 "$repo/scripts/controller/install" "$ctl/install"
 install -m 0644 "$repo/LICENSE" "$repo/THIRD_PARTY_NOTICES.md" "$ctl/"
 printf '%s\n' "${tag:-dev}" > "$ctl/VERSION"
 pack "$stage" lab-controller "$epoch" > "$out/$RELEASE_CONTROLLER"
+
+# The benchmark programs, each in its own archive with the tag beside it.
+if [[ -n $bench ]]; then
+  for a in "${RELEASE_FILES[@]}"; do
+    [[ $a =~ ^bench-(.+)-(darwin|linux)-arm64\.tar\.gz$ ]] || continue
+    p="${BASH_REMATCH[1]}" sys="${BASH_REMATCH[2]}"
+    b="$stage/bench-$sys/bench-$p"
+    mkdir -p "$b"
+    cp -R "$bench/$sys-arm64/$p/." "$b/"
+    find "$b" -type d -exec chmod 0755 {} +
+    find "$b" -type f -exec chmod 0644 {} +
+    chmod 0755 "$b/bin/$p"
+    printf '%s\n' "${tag:-dev}" > "$b/VERSION"
+    pack "$stage/bench-$sys" "bench-$p" "$epoch" > "$out/$a"
+  done
+elif [[ " ${RELEASE_FILES[*]} " == *" bench-"* ]]; then
+  echo "release/build.sh: no BENCH_PROGRAMS: this build has no benchmark programs" >&2
+fi
 
 echo "built ${tag:-omarchy-m-test $version and a dev Lab release}, unsigned: $out"

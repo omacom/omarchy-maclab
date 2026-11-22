@@ -1,0 +1,32 @@
+# The sources of the benchmark programs a Lab release carries
+# (release/bench.sh), pinned.
+#
+#   name  version  sha256  url
+#
+# A version that is a whole commit id names a git repository: the checksum
+# is the sha256 of `git archive --format=tar <commit>`, and the program is
+# built from that archive. Any other version is a label, and the url is one
+# file whose sha256 is the checksum.
+#
+# CoreMark at its newest commit (2025-05-01), after v1.01.
+coremark 1f483d5b8316753a742cbf5590caf5bd0a4e4777 b0d0a51768399ebaa98e206becaee16ac19f3c93833c57f7ee31b21f41283b24 https://github.com/eembc/coremark
+#
+# STREAM 5.10, John McCalpin's own copy, and its licence.
+stream 5.10 a52bae5e175bea3f7832112af9c085adab47117f7d2ce219165379849231692b https://www.cs.virginia.edu/stream/FTP/Code/stream.c
+stream-licence 5.10 8649dd650343de1426d8d134f139734a9b70ee7bdc347c626b8c6d9029301287 https://www.cs.virginia.edu/stream/FTP/Code/LICENSE.txt
+#
+# clpeak 3.0.5, its OpenCL backend alone, with Khronos's headers and C++
+# bindings of 2026-05-29 (clpeak would otherwise fetch the OpenCL SDK's main).
+clpeak feff1674f336028efb4c4d7d27808c7dbd961fbe 8aa175755bbecbc86b2a1fc8c75327615004427ee18f29609e58f4835cdae360 https://github.com/krrishnarraj/clpeak
+opencl-headers 6fe718c31a45fe25151362a72ef041c3a1047cbd f4d3c8308b86fa9aeebbef1dfe553b08351aabc3976e9aa7383d68ee4f1b701b https://github.com/KhronosGroup/OpenCL-Headers
+opencl-clhpp 5661a0efc215b1e05d3b90315c64f670101fdbde 13747b4836b6a8220edde2ee89e28969cdcb79346d3cc10a32b6b7be8f97aca7 https://github.com/KhronosGroup/OpenCL-CLHPP
+#
+# fio 3.43.
+fio d2dcd7e053d1902d2420f151c83990e6acdd9f8c 3ae27008b9f934e32615cafe9812756a81b28bdbc360b071dbab2bd099592c41 https://github.com/axboe/fio
+#
+# MLX 0.32.4 for mlx-bench, and what its CMake would otherwise fetch at
+# build time: metal-cpp, nlohmann/json 3.11.3 and fmt 12.1.0.
+mlx 36969c094354086e15d2a327a9c50feb20b9cf11 1319e193d45981aaa8d00e0ba0209b2a1b75e81734859e3ba9f247e3b0c93478 https://github.com/ml-explore/mlx
+metal-cpp 26 4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4 https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip
+nlohmann-json 3.11.3 d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+fmt 407c905e45ad75fc29bf0f9bb7c5c2fd3475976f e15e95cc21dba4d62489a959b459c1aa51c483c2cf94d2810a3a1555b43e30ea https://github.com/fmtlib/fmt
