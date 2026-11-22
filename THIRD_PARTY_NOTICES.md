@@ -22,6 +22,20 @@ The interface under `internal/web/static` bundles these third-party files, which
 | `cli/omarchy_m_test/gl_spec/glprobe.py`, the tables in `cli/omarchy_m_test/gpu_spec.py`, the Neural Engine probe in `engines.py`, the discovery in `hwread.py`, `catalogue/macos-reference/j616s.json` | From [aurora-diag](https://github.com/aurora-silicon/aurora-diag): its probe, tables and macOS baseline | MIT, Copyright (c) 2026 Aurora Silicon, see `cli/omarchy_m_test/gl_spec/LICENSE-aurora-diag` |
 | `site/app/assets/fonts/JetBrainsMono-*.woff2` | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | SIL OFL 1.1, see `JetBrainsMono-OFL.txt` beside them |
 
+## The benchmark programs
+
+A Lab release carries benchmark programs built from the sources `release/bench-pins` pins, unmodified (`release/bench.sh`). Each archive, `bench-PROGRAM-SYSTEM-arm64.tar.gz`, holds its source's licence beside the program, and its `BUILD.json` names the source's commit or file and checksum.
+
+| Program | Source | License |
+|---|---|---|
+| `coremark` | [CoreMark](https://github.com/eembc/coremark) by EEMBC | Apache 2.0, and EEMBC's acceptable use agreement for the CoreMark name, see `LICENSE.md` beside it |
+| `stream` | [STREAM](https://www.cs.virginia.edu/stream/) 5.10 by John D. McCalpin | STREAM's own licence, see `LICENSE.txt` beside it |
+| `clpeak` | [clpeak](https://github.com/krrishnarraj/clpeak), with Khronos's [OpenCL headers](https://github.com/KhronosGroup/OpenCL-Headers) and [C++ bindings](https://github.com/KhronosGroup/OpenCL-CLHPP) | GPL 3.0, see `LICENSE` beside it; the source is the pinned commit |
+| `fio` | [fio](https://github.com/axboe/fio) by Jens Axboe | GPL 2.0, see `COPYING` and `MORAL-LICENSE` beside it; the source is the pinned commit |
+| `mlx-bench` | the lab's own, linked with [MLX](https://github.com/ml-explore/mlx) and its metal-cpp, nlohmann/json and fmt | MIT (the lab's and MLX's, beside it) |
+
+`ane-bench` and `smc-power` are the lab's own (`tools/bench-macos/`), MIT.
+
 Omarchy Mac Lab isn't an official Omarchy project. The Omarchy name and logo belong to
 their owners and are used here to match the desktop the lab's Macs run.
 
