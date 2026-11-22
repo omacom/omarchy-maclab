@@ -1,23 +1,40 @@
+import copy
+import hashlib
 import io
 import json
 import os
 import pathlib
+import re
 import socket
 import sys
 import tarfile
 import tempfile
 import threading
+import time
+import types
 import unittest
-from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import bench  # noqa: E402
 
-COREMARK = """[3]crcfinal      : 0xa14c
-Correct operation validated. See readme.txt for run and reporting rules.
-CoreMark 1.0 : 177922.751872 / GCC14.2.1 20250207 -O2 / Heap / 4:PThreads
+SET = json.loads((HERE / "sets" / "bench-1.json").read_text())
+CPUS = 8
+
+COREMARK = """2K performance run parameters for coremark.
+CoreMark Size    : 666
+Total ticks      : 12345
+Iterations/Sec   : 177922.751872
+[0]crcfinal      : 0xa14c
+Correct operation validated. See README.md for run and reporting rules.
+CoreMark 1.0 : 177922.751872 / Clang 20.1.8 -O2 / Heap / 8:PThreads
+"""
+
+COREMARK_SHORT = """Iterations/Sec   : 90000.0
+ERROR! Must execute for at least 10 secs for a valid result!
+[0]crcfinal      : 0xa14c
+Correct operation validated. See README.md for run and reporting rules.
 """
 
 SEVEN_ZIP = """
@@ -33,39 +50,18 @@ Avr:     55000   1036   5250  54300  |     545000   1180   3950  46600
 Tot:             1108   4600  50450
 """
 
-GLMARK2 = """=======================================================
-    glmark2 2023.01
-=======================================================
-[build] use-vbo=true: FPS: 4500 FrameTime: 0.222 ms
-=======================================================
-                                  glmark2 Score: 4096
-=======================================================
-"""
-
-VKMARK = """[vertex] device-local=true: FPS: 9000 FrameTime: 0.111 ms
-=======================================================
-                                   vkmark Score: 5127
-=======================================================
-"""
-
 BOOT = """Startup finished in 4.611s (firmware) + 1.284s (loader) + 2.040s (kernel) + 3.501s (initrd) + 1min 2.103s (userspace) = 1min 13.539s
 graphical.target reached after 1min 2.000s in userspace.
 """
 
-GEEKBENCH = """Benchmark Summary
------------------
-  Single-Core Score            2690
-    File Compression           2311
-  Multi-Core Score            14740
-    File Compression          11201
-"""
-
-CLPEAK = """Platform: rusticl
+CLPEAK_1 = """Platform: rusticl
   Device: Apple M2 Max (G14C B1)
     Driver version  : 25.0.0 (Linux ARM64)
 
     Global memory bandwidth (GBPS)
       float   : 300.12
+      float2  : 310.5
+      float4  : 305.0
 
     Single-precision compute (GFLOPS)
       float   : 1234.56
@@ -81,6 +77,10 @@ CLPEAK_3 = """Backend: OpenCL
   Device 0: Apple M2 Max (G14C B1)
     Driver version   : 26.2.99
 
+    Global memory bandwidth
+      float    : 312.4 GB/s
+      float16  : 330.1 GB/s
+
     Single-precision compute
       float    : 9.45 TFLOPS
       float2   : 10.2 TFLOPS
@@ -88,83 +88,155 @@ CLPEAK_3 = """Backend: OpenCL
 
 """
 
-VKPEAK = """device       = Apple M2 Max (G14C B1)
-
-fp32-scalar  = 3456.78 GFLOPS
-fp32-vec4    = 3567.89 GFLOPS
-
-fp16-scalar  = 7000.00 GFLOPS
+CLPEAK_LLVMPIPE = """Backend: OpenCL
+  Device 0: llvmpipe (LLVM 19.1.7, 128 bits)
+    Single-precision compute
+      float    : 90.1 GFLOPS
 """
+
+STREAM = """-------------------------------------------------------------
+STREAM version $Revision: 5.10 $
+-------------------------------------------------------------
+Array size = 50331648 (elements), Offset = 0 (elements)
+Memory per array = 384.0 MiB (= 0.4 GiB).
+-------------------------------------------------------------
+Function    Best Rate MB/s  Avg time     Min time     Max time
+Copy:          101234.5     0.008012     0.007955     0.008101
+Scale:          98765.4     0.008201     0.008154     0.008299
+Add:           104567.8     0.011623     0.011552     0.011701
+Triad:         105678.9     0.011501     0.011431     0.011600
+-------------------------------------------------------------
+Solution Validates: avg error less than 1.000000e-13 on all three arrays
+-------------------------------------------------------------
+"""
+
+
+def fio_json(rw, bw_bytes, iops, bw_dev=1000, iops_stddev=500):
+    side = {"io_bytes": 8 << 30, "bw_bytes": bw_bytes, "bw": bw_bytes // 1024, "iops": iops,
+            "bw_dev": bw_dev, "iops_stddev": iops_stddev}
+    zero = {"io_bytes": 0, "bw_bytes": 0, "bw": 0, "iops": 0.0}
+    job = {"jobname": rw, "groupid": 0, "error": 0,
+           "read": side if "read" in rw else zero, "write": side if "write" in rw else zero}
+    return json.dumps({"fio version": "fio-3.41", "jobs": [job]})
+
 
 FFMPEG = ("frame=  120 fps=0.0 q=-0.0 size=N/A time=00:00:04.00\r"
           "frame=  300 fps=180 q=-0.0 Lsize=N/A time=00:00:10.00 bitrate=N/A speed=6.01x\n"
-          "bench: utime=0.501s stime=0.320s rtime=1.500s\n")
+          "bench: utime=0.101s stime=0.120s rtime=1.500s\n")
 
-DMESG = """[   90.0] PM: suspend entry (s2idle)
-[   90.1] PM: suspend of devices complete after 999.000 msecs
-[   95.0] PM: suspend exit
-[  100.0] PM: suspend entry (s2idle)
-[  100.2] PM: suspend of devices complete after 123.500 msecs
-[  100.3] PM: late suspend of devices complete after 1.500 msecs
-[  115.0] PM: early resume of devices complete after 5.000 msecs
-[  115.4] PM: resume of devices complete after 345.000 msecs
-[  115.5] PM: suspend exit
+LLAMA_LOG = """ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = Apple M2 Max (G14C B1) (Honeykrisp) | uma: 1 | fp16: 1 | warp size: 32
+load_tensors: offloading 28 repeating layers to GPU
+load_tensors: offloading output layer to GPU
+load_tensors: offloaded 29/29 layers to GPU
 """
 
 
+def llama_row(p, n, ts, sd, ngl=999):
+    return json.dumps({"build_commit": "abc1234", "backends": "Vulkan", "gpu_info": "Apple M2 Max",
+                       "model_type": "llama 3B Q4_K - Medium", "n_gpu_layers": ngl, "n_prompt": p, "n_gen": n,
+                       "avg_ts": ts, "stddev_ts": sd})
+
+
 class Parsers(unittest.TestCase):
-    def test_7z_total_rating(self):
-        self.assertEqual(bench.parse_7z(SEVEN_ZIP), 50450)
-
-    def test_scores(self):
-        self.assertEqual(bench.parse_score(GLMARK2, "glmark2"), 4096)
-        self.assertEqual(bench.parse_score(VKMARK, "vkmark"), 5127)
-
     def test_boot_total(self):
         self.assertAlmostEqual(bench.parse_boot(BOOT), 73.539)
         self.assertAlmostEqual(bench.parse_boot("Startup finished in 2.5s (kernel) + 820ms (userspace) = 3.320s\n"), 3.32)
 
+    def test_7z_total_rating(self):
+        self.assertEqual(bench.parse_7z(SEVEN_ZIP), 50450)
+
     def test_coremark(self):
         self.assertEqual(bench.parse_coremark(COREMARK), 177922.751872)
         with self.assertRaisesRegex(bench.ParseError, "at least 10 secs"):
-            bench.parse_coremark("Iterations/Sec   : 900.0\nERROR! Must execute for at least 10 secs for a valid result!\n")
+            bench.parse_coremark(COREMARK_SHORT)
+        bench.coremark_valid(COREMARK_SHORT)
+        with self.assertRaises(bench.ParseError):
+            bench.coremark_valid("ERROR! list crc 0x0000 - should be 0xe714\n")
 
-    def test_geekbench(self):
-        self.assertEqual(bench.parse_geekbench(GEEKBENCH), {"single": 2690, "multi": 14740})
+    def test_clpeak_fp32_and_bandwidth(self):
+        self.assertAlmostEqual(bench.parse_clpeak_fp32(CLPEAK_1), 3456.78)
+        self.assertAlmostEqual(bench.parse_clpeak_fp32(CLPEAK_3), 10200.0)
+        self.assertAlmostEqual(bench.parse_clpeak_bandwidth(CLPEAK_1), 310.5)
+        self.assertAlmostEqual(bench.parse_clpeak_bandwidth(CLPEAK_3), 330.1)
 
-    def test_clpeak_best_single_precision(self):
-        self.assertAlmostEqual(bench.parse_clpeak(CLPEAK), 3456.78)
+    def test_stream_triad_and_copy_in_gb_s(self):
+        self.assertAlmostEqual(bench.parse_stream(STREAM, "Triad"), 105.679)
+        self.assertAlmostEqual(bench.parse_stream(STREAM, "Copy"), 101.234)
+        with self.assertRaises(bench.ParseError):
+            bench.parse_stream(STREAM.replace("Solution Validates", "Failed Validation"), "Triad")
 
-    def test_clpeak_3_best_single_precision_in_gflops(self):
-        self.assertAlmostEqual(bench.parse_clpeak(CLPEAK_3), 10200.0)
+    def test_fio_group(self):
+        got = bench.parse_fio("fio: some warning\n" + fio_json("randread", 400_000_000, 97656.25), "randread")
+        self.assertEqual(got["mbs"], 400.0)
+        self.assertEqual(got["kiops"], 97.656)
+        self.assertEqual(got["kiops_spread"], 0.5)
 
-    def test_vkpeak_fp32_vec4(self):
-        self.assertAlmostEqual(bench.parse_vkpeak(VKPEAK), 3567.89)
+    def test_ffmpeg_frames_and_rate(self):
+        self.assertEqual(bench.parse_ffmpeg(FFMPEG), (300, 200.0))
 
-    def test_ffmpeg_fps_from_frames_and_real_time(self):
-        self.assertAlmostEqual(bench.parse_ffmpeg(FFMPEG), 200.0)
+    def test_llama_rows(self):
+        rows = bench.parse_llama(LLAMA_LOG + llama_row(512, 0, 812.5, 3.1) + "\n")
+        self.assertEqual(bench.llama_row(rows, 512, 0)["avg_ts"], 812.5)
+        with self.assertRaises(bench.ParseError):
+            bench.llama_row(rows, 0, 128)
 
-    def test_suspend_last_cycle_only(self):
-        self.assertEqual(bench.parse_suspend(DMESG), (125.0, 350.0))
+    def test_sizes(self):
+        self.assertEqual(bench.size_bytes("8G"), 8 << 30)
+        self.assertEqual(bench.size_bytes("256M"), 256 << 20)
+        self.assertEqual(bench.size_bytes("12288K"), 12 << 20)
 
     def test_garbage_is_an_error(self):
-        for fn in (bench.parse_7z, bench.parse_boot, bench.parse_clpeak, bench.parse_vkpeak, bench.parse_ffmpeg):
+        for fn in (bench.parse_7z, bench.parse_boot, bench.parse_clpeak_fp32, bench.parse_clpeak_bandwidth,
+                   bench.parse_ffmpeg, bench.parse_llama, bench.parse_ane, bench.parse_mlx):
             with self.assertRaises(bench.ParseError):
                 fn("nothing here")
-        with self.assertRaises(bench.ParseError):
-            bench.parse_score("", "glmark2")
-        with self.assertRaises(bench.ParseError):
-            bench.parse_suspend("")
+
+
+class Proof(unittest.TestCase):
+    """A row counts only when the run shows the work ran where it says."""
+
+    def test_clpeak_on_the_physical_gpu(self):
+        self.assertIsNone(bench.clpeak_verdict(0, CLPEAK_3))
+        self.assertEqual(bench.clpeak_verdict(0, CLPEAK_LLVMPIPE), "fell_back")
+        self.assertEqual(bench.clpeak_verdict(1, "Backend: OpenCL\nclGetPlatformIDs (-1001)\nno platforms found"), "no_driver")
+        self.assertEqual(bench.clpeak_verdict(139, "Segmentation fault"), "error")
+
+    def test_decode_in_hardware(self):
+        self.assertIsNone(bench.decode_verdict(0, FFMPEG))
+        self.assertEqual(bench.decode_verdict(0, "[h264 @ 0x1] Failed setup for format drm_prime: hwaccel initialisation returned error.\n" + FFMPEG), "fell_back")
+        self.assertEqual(bench.decode_verdict(1, "Device creation failed: -19.\n"), "no_driver")
+        self.assertEqual(bench.decode_verdict(1, "Invalid data found when processing input"), "error")
+
+    def test_llama_offloads_every_layer_to_a_real_gpu(self):
+        rows = [json.loads(llama_row(512, 0, 1, 0))]
+        self.assertIsNone(bench.llama_gpu_verdict(LLAMA_LOG, rows))
+        self.assertEqual(bench.llama_gpu_verdict(LLAMA_LOG.replace("29/29", "20/29"), rows), "fell_back")
+        self.assertEqual(bench.llama_gpu_verdict(LLAMA_LOG.replace("Apple M2 Max (G14C B1) (Honeykrisp)", "llvmpipe (LLVM 19.1.7)"), rows), "fell_back")
+        self.assertEqual(bench.llama_gpu_verdict("load_tensors: offloaded 0/29 layers to GPU", rows), "fell_back")
+
+    def test_pages_drawn_by_the_gpu_at_60_hz(self):
+        gpu = {"renderer": "ANGLE (Mesa, AGX G13/G14, OpenGL ES 3.2)", "dpr": 2}
+        self.assertIsNone(bench.browser_verdict(gpu, 59.9))
+        self.assertEqual(bench.browser_verdict(gpu, 30.0), "fell_back")
+        self.assertEqual(bench.browser_verdict(gpu, 120.0), "fell_back")
+        self.assertEqual(bench.browser_verdict(dict(gpu, dpr=1), 60.0), "error")
+        for r in ("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)",
+                  "ANGLE (Mesa, llvmpipe (LLVM 19.1.7, 128 bits), OpenGL ES 3.2)", None):
+            self.assertEqual(bench.browser_verdict({"renderer": r, "dpr": 2}, 60.0), "software_renderer")
 
 
 class FakeHost(bench.Host):
-    """A sysfs tree in a temp dir and a clock that moves only when slept."""
+    """A sysfs tree in a temp dir, a clock that moves only when slept, and
+    tools by name that answer without running anything."""
 
     def __init__(self, root):
         super().__init__(root=root)
         self.t = 0.0
         self.temps = []
         self.ran = []
+        self.tools = {}
+        self.vfs = types.SimpleNamespace(f_frsize=1, f_blocks=500 * 10**9, f_bavail=300 * 10**9)
 
     def now(self):
         return self.t
@@ -179,311 +251,390 @@ class FakeHost(bench.Host):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
 
-    def run(self, cmd, **kw):
-        self.ran.append(cmd)
-        if cmd[:2] == ["powerprofilesctl", "get"]:
-            return bench.Ran(0, "balanced\n", 0.0)
-        return bench.Ran(0, "", 0.0)
+    def which(self, name):
+        return f"/usr/bin/{name}" if name in self.tools else None
+
+    def cpus(self):
+        return CPUS
+
+    def statvfs(self, path):
+        return self.vfs
+
+    def run(self, cmd, timeout=None, env=None, gui=False, cwd=None):
+        cmd = [str(c) for c in cmd]
+        self.ran.append((cmd, env or {}, gui))
+        tool = self.tools.get(os.path.basename(cmd[0]))
+        if tool is None:
+            return bench.Ran(127, f"{cmd[0]}: not found", 0.0)
+        r = tool(cmd)
+        return r if isinstance(r, bench.Ran) else bench.Ran(0, r, 1.0)
+
+    def argv(self, name):
+        return [c for c, _, _ in self.ran if os.path.basename(c[0]) == name]
 
 
-class Conditions(unittest.TestCase):
+def opt(cmd, name):
+    for c in cmd:
+        if c.startswith(name + "="):
+            return c.split("=", 1)[1]
+    return None
+
+
+class Case(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()
-        self.h = FakeHost(self.d.name)
-
-    def tearDown(self):
-        self.d.cleanup()
-
-    def supply(self, name, typ, online=None):
-        self.h.write(f"sys/class/power_supply/{name}/type", typ + "\n")
-        if online is not None:
-            self.h.write(f"sys/class/power_supply/{name}/online", f"{online}\n")
-
-    def test_ac_online_is_on_ac(self):
-        self.supply("macsmc-battery", "Battery")
-        self.supply("macsmc-ac", "Mains", 1)
-        self.assertTrue(bench.on_ac(self.h)[0])
-
-    def test_battery_with_ac_offline_is_refused(self):
-        self.supply("macsmc-battery", "Battery")
-        self.supply("macsmc-ac", "Mains", 0)
-        ok, why = bench.on_ac(self.h)
-        self.assertFalse(ok)
-        self.assertIn("battery", why)
-
-    def test_a_desktop_mac_has_no_battery_and_is_on_ac(self):
-        self.assertTrue(bench.on_ac(self.h)[0])
-
-    def test_cool_down_stops_under_threshold(self):
-        self.h.write("sys/class/thermal/thermal_zone0/temp", "80000")
-        self.h.temps = [70000, 60000, 49000, 40000]
-        waited, temp = bench.cool_down(self.h, limit=60, threshold=50, step=5)
-        self.assertEqual(waited, 15)
-        self.assertEqual(temp, 49.0)
-
-    def test_cool_down_gives_up_at_the_limit(self):
-        self.h.write("sys/class/thermal/thermal_zone0/temp", "90000")
-        waited, temp = bench.cool_down(self.h, limit=60, threshold=50, step=5)
-        self.assertEqual(waited, 60)
-        self.assertEqual(temp, 90.0)
-
-    def test_hwmon_cpu_sensor_wins_over_nothing(self):
-        self.h.write("sys/class/hwmon/hwmon3/temp1_input", "45000")
-        self.assertEqual(bench.cpu_temp(self.h), 45.0)
-
-    def test_busy_from_proc_stat(self):
-        stats = iter([
-            "cpu  100 0 100 800 0 0 0 0 0 0\n",
-            "cpu  150 0 150 900 0 0 0 0 0 0\n",
-        ])
-        orig = self.h.read
-        self.h.read = lambda rel: next(stats) if rel == "proc/stat" else orig(rel)
-        self.assertAlmostEqual(bench.busy(self.h, 1), 50.0)
-
-    def test_conditions_refuse_on_battery(self):
-        self.supply("macsmc-battery", "Battery")
-        self.supply("macsmc-ac", "Mains", 0)
-        with self.assertRaises(bench.Refused):
-            bench.conditions(self.h)
-
-    def test_conditions_refuse_when_busy(self):
-        self.h.busy_override = 80.0
-        with self.assertRaises(bench.Refused) as e:
-            bench.conditions(self.h, busy_fn=lambda h: 80.0)
-        self.assertIn("busy", str(e.exception))
-
-    def test_conditions_fix_profile_and_brightness(self):
-        self.h.write("sys/class/backlight/apple-panel-bl/max_brightness", "500")
-        self.h.write("sys/class/backlight/apple-panel-bl/brightness", "120")
-        c = bench.conditions(self.h, busy_fn=lambda h: 1.0)
-        self.assertEqual(c["power_profile"], "balanced")
-        self.assertIn(["powerprofilesctl", "set", "balanced"], self.h.ran)
-        self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "250")
-        self.assertEqual(c["brightness"], {"apple-panel-bl": {"was": 120, "set": 250, "max": 500}})
-        bench.restore(self.h, c)
-        self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "120")
-
-
-class Runner(unittest.TestCase):
-    KEYS = {"name", "version", "value", "unit", "higher_is_better", "spread", "seconds"}
-
-    def setUp(self):
-        self.d = tempfile.TemporaryDirectory()
-        self.h = FakeHost(self.d.name)
-
-    def tearDown(self):
-        self.d.cleanup()
-
-    def test_tiers(self):
-        self.assertEqual(bench.TIERS["default"], ["speedometer-chrome", "motionmark-chrome", "7zip", "glmark2", "vkmark", "boot"])
-        ext = bench.TIERS["extended"]
-        self.assertEqual(ext[:6], bench.TIERS["default"])
-        for b in ("speedometer-chromium", "jetstream-chrome", "geekbench", "coremark", "kernel-compile", "vkpeak", "clpeak", "ffmpeg-vaapi", "suspend"):
-            self.assertIn(b, ext)
-        for name in ext:
-            self.assertIn(name, bench.BENCHES)
-
-    def test_every_needed_item_is_pinned(self):
-        m = bench.load_manifest(HERE / "testdata" / "manifest.json")
-        for name, b in bench.BENCHES.items():
-            for item in b.needs:
-                self.assertIn(item, m, f"{name} needs {item}")
-                self.assertRegex(m[item]["sha256"], r"^[0-9a-f]{64}$")
-                self.assertTrue(m[item]["url"].startswith(("https://", "http://")))
-                self.assertTrue(m[item]["version"])
-
-    def test_json_shape_with_fakes(self):
-        benches = {
-            "a": bench.Bench(lambda ctx: [bench.Measure("a", "1.0", 10.0, "score", True, 0.5)]),
-            "b": bench.Bench(lambda ctx: (_ for _ in ()).throw(bench.Skip("no vkpeak on this Mac"))),
-            "c": bench.Bench(lambda ctx: (_ for _ in ()).throw(RuntimeError("crashed"))),
-            "d": bench.Bench(lambda ctx: [bench.Measure("d-single", "6", 1, "score", True, None),
-                                          bench.Measure("d-multi", "6", 2, "score", True, None)]),
-        }
-        out = bench.run_tier(["a", "b", "c", "d"], benches, self.h, ctx=None, cool=lambda h: (0, None))
-        json.dumps(out)
-        self.assertEqual([r["name"] for r in out], ["a", "b", "c", "d-single", "d-multi"])
-        for r in out:
-            self.assertTrue(self.KEYS <= set(r), r)
-        self.assertEqual(out[0]["value"], 10.0)
-        self.assertEqual(out[0]["spread"], 0.5)
-        self.assertIsNone(out[1]["value"])
-        self.assertEqual(out[1]["skipped"], "no vkpeak on this Mac")
-        self.assertIn("crashed", out[2]["error"])
-        self.assertEqual(bench.exit_code(out), 1)
-        self.assertEqual(bench.exit_code(out[:2]), 0)
-
-    def test_cool_down_is_recorded_per_benchmark(self):
-        benches = {"a": bench.Bench(lambda ctx: [bench.Measure("a", "1", 1, "s", False, None)])}
-        out = bench.run_tier(["a"], benches, self.h, ctx=None, cool=lambda h: (12, 48.5))
-        self.assertEqual(out[0]["cool_down"], {"seconds": 12, "temp_c": 48.5})
-
-
-def pacman_pkg(cache, sha, files):
-    """A pacman package in the cache under sha: {path: (text, mode) or ('->', target)}."""
-    with tempfile.TemporaryDirectory() as d:
-        for rel, (a, b) in files.items():
-            p = pathlib.Path(d, rel)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            if a == "->":
-                os.symlink(b, p)
-            else:
-                p.write_text(a)
-                os.chmod(p, b)
-        with tarfile.open(pathlib.Path(cache, sha), "w:xz") as t:
-            for rel in files:
-                t.add(pathlib.Path(d, rel), arcname=rel, recursive=False)
-
-
-class Packages(unittest.TestCase):
-    """Programs run from their pinned package unpacked in a temp dir, never installed."""
-
-    def setUp(self):
-        self.d = tempfile.TemporaryDirectory()
-        self.cache = pathlib.Path(self.d.name, "cache")
-        self.work = pathlib.Path(self.d.name, "work")
+        root = pathlib.Path(self.d.name)
+        self.cache, self.work = root / "cache", root / "work"
         self.cache.mkdir()
         self.work.mkdir()
-        self.m = bench.load_manifest(HERE / "testdata" / "manifest.json")
-        self.ctx = bench.Ctx(bench.Host(), self.m, self.cache, self.work)
+        self.h = FakeHost(str(root / "sys-root"))
+        self.set = copy.deepcopy(SET)
+        self.log = io.StringIO()
+        self.ctx = bench.Ctx(self.h, self.set, self.cache, self.work, log=self.log)
 
     def tearDown(self):
         self.d.cleanup()
 
-    def test_7zip_runs_the_program_not_the_wrapper_that_names_usr_lib(self):
-        out = "\n".join("echo '" + l + "'" for l in SEVEN_ZIP.strip().split("\n"))
-        pacman_pkg(self.cache, self.m["7zip"]["sha256"], {
-            "usr/bin/7z": ('#!/bin/sh\nexec /usr/lib/7zip/7z "$@"\n', 0o755),
-            "usr/lib/7zip/7z": ("#!/bin/sh\n" + out + "\n", 0o755),
-            "usr/lib/7zip/7z.so": ("", 0o644),
-        })
-        ms = bench.seven_zip(self.ctx)
-        self.assertEqual(ms[0].value, 50450)
+    def pin(self, fid, files=None, data=None):
+        """The set's file pinned at bytes put in the cache: a tar of files
+        ({path: (text, mode)}) or the data itself."""
+        if files is not None:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as t:
+                for rel, (text, mode) in files.items():
+                    b = text.encode()
+                    info = tarfile.TarInfo(rel)
+                    info.size, info.mode = len(b), mode
+                    t.addfile(info, io.BytesIO(b))
+            data = buf.getvalue()
+        data = data if data is not None else b"pinned " + fid.encode()
+        sha = hashlib.sha256(data).hexdigest()
+        (self.cache / sha).write_bytes(data)
+        self.ctx.files[fid]["sha256"] = sha
+        return sha
 
-    def test_vkmark_finds_the_pinned_assimp(self):
-        self.assertIn("assimp", bench.BENCHES["vkmark"].needs)
-        self.assertIn("assimp", bench.needs("default"))
-        score = "\n".join("echo '" + l + "'" for l in VKMARK.strip().split("\n"))
-        pacman_pkg(self.cache, self.m["vkmark"]["sha256"], {
-            "usr/bin/vkmark": ("#!/bin/sh\nfor d in $(echo \"$LD_LIBRARY_PATH\" | tr : ' '); do\n"
-                               "  [ -e \"$d/libassimp.so.6\" ] && { " + score.replace("\n", "; ") + "; exit 0; }\ndone\n"
-                               "echo 'error while loading shared libraries: libassimp.so.6'; exit 127\n", 0o755),
-            "usr/lib/vkmark/wayland.so": ("", 0o644),
-            "usr/share/vkmark/models/cube.ply": ("", 0o644),
-        })
-        pacman_pkg(self.cache, self.m["assimp"]["sha256"], {
-            "usr/lib/libassimp.so.6.0.6": ("", 0o755),
-            "usr/lib/libassimp.so.6": ("->", "libassimp.so.6.0.6"),
-        })
-        ms = bench.vkmark(self.ctx)
-        self.assertEqual(ms[0].value, 5127)
+    def metric(self, mid):
+        return next(m for m in self.set["metrics"] if m["id"] == mid)
 
-    def clpeak_pkg(self, out):
-        lines = "\n".join("echo '" + l + "'" for l in out.strip().split("\n"))
-        pacman_pkg(self.cache, self.m["clpeak"]["sha256"], {
-            "usr/bin/clpeak": ('#!/bin/sh\n[ "$*" = "--opencl --single-precision-compute" ] || '
-                               '{ echo "clpeak: unknown option $1"; exit 1; }\n' + lines + "\n", 0o755),
-        })
-
-    def test_clpeak_3_runs_opencl_single_precision(self):
-        self.clpeak_pkg(CLPEAK_3)
-        self.assertAlmostEqual(bench.clpeak(self.ctx)[0].value, 10200.0)
-
-    def test_clpeak_with_no_opencl_platform_is_skipped(self):
-        self.clpeak_pkg("Backend: OpenCL\nclGetPlatformIDs (-1001)\nno platforms found")
-        with self.assertRaises(bench.Skip):
-            bench.clpeak(self.ctx)
+    def run1(self, mid, cool=None):
+        [e] = bench.run_list([self.metric(mid)], self.ctx, cool=cool)
+        self.assertEqual(tuple(e), bench.FIELDS)
+        return e
 
 
-class Builds(unittest.TestCase):
-    """Benchmarks built on the Mac from pinned source, with gcc."""
+class CPU(Case):
+    def coremarks(self):
+        self.pin("coremark", {"coremark-1.01/coremark-1": ("", 0o755), f"coremark-1.01/coremark-{CPUS}": ("", 0o755),
+                              "coremark-1.01/LICENSE.md": ("", 0o644)})
+        self.h.tools["coremark-1"] = lambda c: COREMARK
+        self.h.tools[f"coremark-{CPUS}"] = lambda c: COREMARK
 
-    class Host(bench.Host):
-        def __init__(self):
-            super().__init__()
-            self.ran = []
+    def test_coremark_one_core(self):
+        self.coremarks()
+        e = self.run1("coremark-single")
+        self.assertEqual((e["value"], e["unit"], e["reason"], e["version"]), (177922.751872, "iterations/s", None, "1.01"))
+        self.assertEqual(self.h.argv("coremark-1")[0][1:], ["0x0", "0x0", "0x66", "0", "7", "1", "2000"])
 
-        def which(self, name):
-            return "/usr/bin/" + name
+    def test_coremark_all_cores_takes_a_thread_per_core(self):
+        self.coremarks()
+        e = self.run1("coremark-all")
+        self.assertIsNone(e["reason"])
+        self.assertTrue(self.h.argv(f"coremark-{CPUS}"))
 
-        def run(self, cmd, timeout=None, env=None, gui=False, cwd=None):
-            self.ran.append((cmd, env, cwd))
-            if cmd[0].endswith(("coremark-1", "coremark-%d" % os.cpu_count())):
-                return bench.Ran(0, COREMARK, 20.0)
-            return bench.Ran(0, "", 30.0)
+    def test_coremark_with_no_build_for_the_core_count(self):
+        self.pin("coremark", {"coremark-1.01/coremark-1": ("", 0o755)})
+        self.assertEqual(self.run1("coremark-all")["reason"], "no_build")
 
+    def test_7zip(self):
+        self.pin("7zip", {"usr/bin/7z": ("", 0o755), "usr/lib/7zip/7z": ("", 0o755), "usr/lib/7zip/7z.so": ("", 0o644)})
+        self.h.tools["7z"] = lambda c: SEVEN_ZIP if c[0].endswith("usr/lib/7zip/7z") and c[1:] == ["b"] else bench.Ran(1, "", 0)
+        e = self.run1("7zip")
+        self.assertEqual((e["value"], e["unit"], e["reason"]), (50450, "MIPS", None))
+
+    def test_a_crash_is_an_error_and_its_text_stays_in_the_log(self):
+        self.pin("7zip", {"usr/lib/7zip/7z": ("", 0o755)})
+        self.h.tools["7z"] = lambda c: bench.Ran(2, "cannot open /home/alice/.cache/x", 0)
+        e = self.run1("7zip")
+        self.assertEqual(e["reason"], "error")
+        self.assertIsNone(e["value"])
+        self.assertNotIn("alice", json.dumps(e))
+        self.assertIn("alice", self.log.getvalue())
+
+
+class GPU(Case):
     def setUp(self):
-        self.d = tempfile.TemporaryDirectory()
-        self.cache = pathlib.Path(self.d.name, "cache")
-        self.work = pathlib.Path(self.d.name, "work")
-        self.cache.mkdir()
-        self.work.mkdir()
-        self.m = bench.load_manifest(HERE / "testdata" / "manifest.json")
-        self.h = self.Host()
-        self.ctx = bench.Ctx(self.h, self.m, self.cache, self.work)
+        super().setUp()
+        self.pin("clpeak", {"clpeak/bin/clpeak": ("", 0o755), "clpeak/lib/libOpenCL.so.1": ("", 0o644)})
 
-    def tearDown(self):
-        self.d.cleanup()
+    def test_clpeak_bandwidth_and_fp32_on_rusticl(self):
+        self.h.tools["clpeak"] = lambda c: CLPEAK_3
+        bw, fp = self.run1("clpeak-global-bandwidth"), self.run1("clpeak-fp32")
+        self.assertEqual((bw["value"], bw["unit"], bw["api"]), (330.1, "GB/s", "Rusticl"))
+        self.assertEqual((fp["value"], fp["unit"]), (10200.0, "GFLOPS"))
+        (a, env, gui), (b, _, _) = [r for r in self.h.ran if r[0][0].endswith("clpeak")]
+        self.assertEqual(a[1:], ["--opencl", "--global-bandwidth"])
+        self.assertEqual(b[1:], ["--opencl", "--single-precision-compute"])
+        self.assertEqual(env["RUSTICL_ENABLE"], "asahi")
+        self.assertIn("clpeak/lib", env["LD_LIBRARY_PATH"])
 
-    def source(self, item, files):
-        pacman_pkg(self.cache, self.m[item]["sha256"], {self.m[item]["root"] + "/" + f: ("", 0o644) for f in files})
-
-    def test_coremark_builds_once_single_and_once_a_thread_per_core(self):
-        self.source("coremark", ["core_main.c", "linux64/core_portme.c"])
-        ms = bench.coremark(self.ctx)
-        self.assertEqual([m.name for m in ms], ["coremark-single", "coremark-multi"])
-        self.assertTrue(all(m.higher_is_better and m.unit == "iterations/s" for m in ms))
-        builds = [c for c, _, _ in self.h.ran if c[0] == "gcc"]
-        self.assertEqual(len(builds), 2)
-        self.assertNotIn("-DUSE_PTHREAD", builds[0])
-        self.assertIn(f"-DMULTITHREAD={os.cpu_count()}", builds[1])
-        self.assertIn("-DPERFORMANCE_RUN=1", builds[1])
-        self.assertIn(f"{os.cpu_count()} threads", ms[1].version)
-
-    def test_kernel_compile_finds_the_pinned_bc(self):
-        self.assertIn("bc", bench.BENCHES["kernel-compile"].needs)
-        self.source("kernel", ["Makefile"])
-        pacman_pkg(self.cache, self.m["bc"]["sha256"], {"usr/bin/bc": ("#!/bin/sh\n", 0o755)})
-        bench.kernel_compile(self.ctx)
-        makes = [(c, e) for c, e, _ in self.h.ran if c[0] == "make"]
-        self.assertEqual(len(makes), 2)
-        for _, env in makes:
-            self.assertTrue(env["PATH"].startswith(str(self.work / "bc" / "usr/bin") + ":"), env)
+    def test_clpeak_on_a_software_device_fell_back(self):
+        self.h.tools["clpeak"] = lambda c: CLPEAK_LLVMPIPE
+        e = self.run1("clpeak-fp32")
+        self.assertEqual((e["reason"], e["value"]), ("fell_back", None))
 
 
-class Suspend(unittest.TestCase):
-    class Host(FakeHost):
-        def which(self, name):
-            return "/usr/bin/" + name
-
+class Storage(Case):
     def setUp(self):
-        self.d = tempfile.TemporaryDirectory()
-        self.h = self.Host(self.d.name)
-        self.ctx = bench.Ctx(self.h, {}, self.d.name, self.d.name)
+        super().setUp()
+        self.pin("fio", {"usr/bin/fio": ("", 0o755)})
+        self.set["metrics"] = [dict(m, version="3.41") for m in self.set["metrics"]]
+        self.h.write("sys/block/nvme0n1/size", str(976773168))
+        self.h.tools["fio"] = self.fio
+        self.seen = []
+        self.fail = None
 
-    def tearDown(self):
-        self.d.cleanup()
+    def fio(self, cmd):
+        path = pathlib.Path(opt(cmd, "--filename"))
+        self.seen.append((cmd, path.exists()))
+        if opt(cmd, "--name") == "fill":
+            path.write_bytes(b"\0" * 4096)
+        elif self.fail:
+            return self.fail()
+        rw = opt(cmd, "--rw")
+        pathlib.Path(opt(cmd, "--output")).write_text(fio_json(rw, 3_000_000_000 if "rand" not in rw else 400_000_000, 2861.0 if "rand" not in rw else 97656.25))
+        return ""
 
-    def test_no_rtc_that_can_wake_the_mac_is_a_skip_not_an_error(self):
-        # Apple Silicon's macsmc RTC: no wakealarm, no power/wakeup.
-        self.h.write("sys/class/rtc/rtc0/name", "macsmc-rtc")
-        with mock.patch.object(bench.os, "geteuid", return_value=0):
-            with self.assertRaisesRegex(bench.Skip, "wake source"):
-                bench.suspend(self.ctx)
-            out = bench.run_tier(["suspend"], bench.BENCHES, self.h, self.ctx)
-        self.assertIn("wake source", out[0]["skipped"])
-        self.assertEqual(bench.exit_code(out), 0)
-        self.assertFalse([c for c in self.h.ran if c[0] == "rtcwake"])
+    def test_sequential_read_on_a_filled_file(self):
+        e = self.run1("fio-seq-read")
+        self.assertEqual((e["value"], e["unit"], e["reason"]), (3000.0, "MB/s", None))
+        self.assertEqual(e["capacity"], {"bytes": 976773168 * 512, "fill_percent": 41.7})
+        (fill, _), (run, existed) = self.seen
+        self.assertEqual(opt(fill, "--name"), "fill")
+        self.assertEqual(opt(fill, "--size"), "8G")
+        self.assertEqual(opt(fill, "--direct"), "1")
+        self.assertTrue(existed)
+        for k, v in {"--rw": "read", "--bs": "1M", "--size": "8G", "--direct": "1", "--numjobs": "1"}.items():
+            self.assertEqual(opt(run, k), v, k)
+        self.assertNotIn("--time_based", run)
+        self.assertFalse(list(self.work.rglob("scratch")))
 
-    def test_an_rtc_with_an_alarm_wakes_it(self):
-        self.h.write("sys/class/rtc/rtc0/name", "macsmc-rtc")
-        self.h.write("sys/class/rtc/rtc1/wakealarm", "")
-        self.h.write("sys/class/rtc/rtc1/device/power/wakeup", "disabled")
-        self.assertEqual(bench.wake_rtc(self.h), "rtc1")
-        self.assertEqual(self.h.read("sys/class/rtc/rtc1/device/power/wakeup"), "enabled")
+    def test_random_writes_by_32_psync_workers_in_their_own_ranges(self):
+        e = self.run1("fio-rand-write-4k")
+        self.assertEqual((e["value"], e["unit"], e["reason"]), (97.656, "kIOPS", None))
+        run = self.seen[1][0]
+        want = {"--rw": "randwrite", "--bs": "4k", "--numjobs": "32", "--iodepth": "1", "--ioengine": "psync",
+                "--size": "256M", "--offset_increment": "256M", "--offset": "0", "--runtime": "30", "--direct": "1"}
+        for k, v in want.items():
+            self.assertEqual(opt(run, k), v, k)
+        self.assertIn("--time_based", run)
+        self.assertIn("--group_reporting", run)
+        self.assertEqual(32 * bench.size_bytes("256M"), bench.size_bytes("8G"))
+
+    def test_too_full_a_disk_is_not_run(self):
+        self.h.vfs.f_bavail = 90 * 10**9 + (8 << 30)
+        e = self.run1("fio-seq-read")
+        self.assertEqual(e["reason"], "disk_too_full")
+        self.assertEqual(e["capacity"]["bytes"], 976773168 * 512)
+        self.assertEqual(e["capacity"]["fill_percent"], 82.0)
+        self.assertFalse(self.seen)
+
+    def test_the_file_goes_when_fio_fails(self):
+        self.fail = lambda: bench.Ran(1, "fio: io_u error on file /var/tmp/x", 0)
+        e = self.run1("fio-seq-write")
+        self.assertEqual(e["reason"], "error")
+        self.assertIsNotNone(e["capacity"])
+        self.assertFalse((self.work / "fio").exists())
+
+    def test_the_file_goes_when_the_run_is_cancelled(self):
+        def cancel():
+            raise bench.Cancelled()
+        self.fail = cancel
+        with self.assertRaises(bench.Cancelled):
+            self.run1("fio-rand-read-4k")
+        self.assertTrue(self.seen)
+        self.assertFalse((self.work / "fio").exists())
+
+    def test_direct_io_through_the_page_cache_fell_back(self):
+        self.h.tools["fincore"] = lambda c: str(8 << 30)
+        self.assertEqual(self.run1("fio-seq-read")["reason"], "fell_back")
+        self.h.tools["fincore"] = lambda c: "0"
+        self.assertIsNone(self.run1("fio-seq-read")["reason"])
 
 
-class Browser(unittest.TestCase):
+class Memory(Case):
+    def test_stream_arrays_four_times_the_largest_cache(self):
+        self.pin("stream", {"stream/stream": ("", 0o755)})
+        self.h.write("sys/devices/system/cpu/cpu0/cache/index2/size", "12288K")
+        self.h.tools["stream"] = lambda c: STREAM
+        t, c = self.run1("stream-triad"), self.run1("stream-copy")
+        self.assertEqual((t["value"], t["unit"]), (105.679, "GB/s"))
+        self.assertEqual(c["value"], 101.234)
+        n = int(self.h.argv("stream")[0][1])
+        self.assertGreaterEqual(n * 8, 4 * 96 << 20)
+        self.h.write("sys/devices/system/cpu/cpu0/cache/index3/size", "262144K")
+        self.assertEqual(bench.stream_elements(self.h) * 8, 4 * (256 << 20))
+
+
+class Video(Case):
+    def setUp(self):
+        super().setUp()
+        self.out = FFMPEG
+        self.h.tools["ffmpeg"] = lambda c: " v4l2request\n vulkan\n" if "-hwaccels" in c else self.out
+        self.h.tools["ffprobe"] = lambda c: "300\n"
+        self.h.write("dev/media0", "")
+        self.pin("clip-h264-1080p")
+
+    def test_h264_decoded_in_hardware(self):
+        e = self.run1("decode-h264-1080p")
+        self.assertEqual((e["value"], e["unit"], e["api"], e["reason"]), (200.0, "frames/s", "V4L2 request", None))
+        run = [c for c in self.h.argv("ffmpeg") if "-hwaccels" not in c][0]
+        self.assertEqual(run[run.index("-hwaccel") + 1], "v4l2request")
+        self.assertIn("-benchmark", run)
+        self.assertNotIn("-re", run)
+
+    def test_hevc_clip_still_a_placeholder(self):
+        self.assertEqual(self.run1("decode-hevc-4k")["reason"], "placeholder_file")
+
+    def test_software_decode_fell_back(self):
+        self.out = "[h264 @ 0x1] Failed setup for format drm_prime: hwaccel initialisation returned error.\n" + FFMPEG
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "fell_back")
+
+    def test_not_every_frame_decoded_is_an_error(self):
+        self.h.tools["ffprobe"] = lambda c: "301\n"
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "error")
+
+    def test_no_hwaccel_is_no_build_and_no_device_no_driver(self):
+        self.h.tools["ffmpeg"] = lambda c: " vulkan\n" if "-hwaccels" in c else FFMPEG
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_build")
+        self.h.tools["ffmpeg"] = lambda c: " v4l2request\n" if "-hwaccels" in c else FFMPEG
+        os.unlink(pathlib.Path(self.h.root, "dev/media0"))
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_driver")
+        del self.h.tools["ffmpeg"]
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_build")
+
+
+class AI(Case):
+    def test_neural_engine(self):
+        self.pin("mobilenet-v1")
+        self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "no_driver")
+        self.h.write("sys/class/accel/accel0/device/uevent", "DRIVER=apple-ane\nOF_NAME=ane\n")
+        self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "no_build")
+        self.h.tools["ane-bench"] = lambda c: "device: ane\ninferences/s: 1234.5\n"
+        e = self.run1("neural-engine-mobilenet-v1")
+        self.assertEqual((e["value"], e["api"], e["reason"]), (1234.5, "libane", None))
+        self.h.tools["ane-bench"] = lambda c: "device: cpu\ninferences/s: 80.0\n"
+        self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "fell_back")
+
+    def llama(self, out):
+        self.pin("llama.cpp", {"llama/bin/llama-bench": ("", 0o755), "llama/lib/libggml-vulkan.so": ("", 0o644)})
+        self.pin("llama-model")
+        self.h.tools["llama-bench"] = out
+
+    def test_llama_prompt_on_the_gpu_offloads_every_layer(self):
+        self.llama(lambda c: LLAMA_LOG + llama_row(512, 0, 812.5, 3.1) + "\n")
+        e = self.run1("llama-prompt-gpu")
+        self.assertEqual((e["value"], e["spread"], e["api"], e["reason"]), (812.5, 3.1, "Vulkan", None))
+        c = self.h.argv("llama-bench")[0]
+        self.assertEqual(c[c.index("-p") + 1], "512")
+        self.assertEqual(c[c.index("-n") + 1], "0")
+        self.assertEqual(c[c.index("-ngl") + 1], str(bench.LLAMA_ALL_LAYERS))
+
+    def test_llama_with_layers_left_on_the_cpu_fell_back(self):
+        self.llama(lambda c: LLAMA_LOG.replace("29/29", "12/29") + llama_row(0, 128, 40.0, 0.2) + "\n")
+        self.assertEqual(self.run1("llama-gen-gpu")["reason"], "fell_back")
+
+    def test_llama_generation_on_the_cpu(self):
+        self.llama(lambda c: llama_row(0, 128, 25.25, 0.1, ngl=0) + "\n")
+        e = self.run1("llama-gen-cpu")
+        self.assertEqual((e["value"], e["api"], e["reason"]), (25.25, None, None))
+        c = self.h.argv("llama-bench")[0]
+        self.assertEqual((c[c.index("-ngl") + 1], c[c.index("-p") + 1], c[c.index("-n") + 1], c[c.index("-t") + 1]),
+                         ("0", "0", "128", str(CPUS)))
+
+    def test_mlx_only_with_a_gpu_build_in_the_stack(self):
+        self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], "no_build")
+        self.h.tools["python3"] = lambda c: '{"status": "no_build"}\n'
+        self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], "no_build")
+        self.h.tools["python3"] = lambda c: '{"status": "ok", "tflops": 3.21}\n'
+        e = self.run1("mlx-matmul-fp16")
+        self.assertEqual((e["value"], e["unit"], e["reason"]), (3.21, "TFLOPS", None))
+        self.h.tools["python3"] = lambda c: '{"status": "fell_back", "tflops": 0.1}\n'
+        self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], "fell_back")
+
+
+class Power(Case):
+    def sensor(self, microwatts="7250000"):
+        self.h.write("sys/class/hwmon/hwmon2/name", "macsmc_hwmon")
+        self.h.write("sys/class/hwmon/hwmon2/power1_label", "Total System Power")
+        self.h.write("sys/class/hwmon/hwmon2/power1_input", microwatts)
+        self.h.write("sys/class/hwmon/hwmon2/power2_label", "Heatpipe Power")
+        self.h.write("sys/class/hwmon/hwmon2/power2_input", "99000000")
+
+    def test_no_pstr_is_no_comparable_sensor(self):
+        self.h.write("sys/class/hwmon/hwmon0/name", "macsmc_hwmon")
+        self.h.write("sys/class/hwmon/hwmon0/power1_label", "Heatpipe Power")
+        self.h.write("sys/class/hwmon/hwmon0/power1_input", "1000000")
+        self.assertEqual(self.run1("power-idle")["reason"], "no_comparable_sensor")
+        self.sensor("0")
+        self.assertEqual(self.run1("power-idle")["reason"], "no_comparable_sensor")
+
+    def test_a_charging_battery_is_no_comparison(self):
+        self.sensor()
+        self.h.write("sys/class/power_supply/macsmc-battery/type", "Battery")
+        self.h.write("sys/class/power_supply/macsmc-battery/status", "Charging")
+        self.assertEqual(self.run1("power-idle")["reason"], "battery_charging")
+        self.h.write("sys/class/power_supply/macsmc-battery/status", "Not charging")
+        self.assertIsNone(self.run1("power-idle")["reason"])
+
+    def test_idle_is_the_mean_over_60_s_of_pstr(self):
+        self.sensor()
+        t0 = self.h.t
+        e = self.run1("power-idle")
+        self.assertEqual((e["value"], e["spread"], e["unit"], e["api"]), (7.25, 0.0, "W", "macsmc-hwmon"))
+        self.assertGreaterEqual(self.h.t - t0, 60)
+
+    def test_all_core_load_is_the_energy_of_a_fixed_count_of_iterations(self):
+        self.sensor("20000000")
+        self.pin("coremark", {f"coremark/coremark-{CPUS}": ("", 0o755)})
+        self.ctx.power_interval = 0.01
+
+        def work(c):
+            time.sleep(0.2)
+            return COREMARK_SHORT
+        self.h.tools[f"coremark-{CPUS}"] = work
+        e = self.run1("power-all-core")
+        self.assertIsNone(e["reason"])
+        self.assertEqual(e["unit"], "J")
+        self.assertAlmostEqual(e["value"], 4.0, delta=1.5)
+        c = self.h.argv(f"coremark-{CPUS}")[0]
+        self.assertEqual(int(c[4]) * CPUS, bench.POWER_COREMARK_ITERATIONS)
+
+    def test_playback_is_the_energy_of_every_frame_in_hardware_at_its_own_pace(self):
+        self.sensor("10000000")
+        self.ctx.power_interval = 0.01
+
+        def ff(c):
+            if "-hwaccels" in c:
+                return " v4l2request\n"
+            time.sleep(0.1)
+            return FFMPEG
+        self.h.tools["ffmpeg"], self.h.tools["ffprobe"] = ff, (lambda c: "300\n")
+        self.h.write("dev/media0", "")
+        self.pin("clip-h264-1080p")
+        e = self.run1("power-playback-1080p")
+        self.assertIsNone(e["reason"])
+        self.assertAlmostEqual(e["value"], 1.0, delta=0.6)
+        self.assertIn("-re", [c for c in self.h.argv("ffmpeg") if "-hwaccels" not in c][0])
+
+
+class OmarchyOnly(Case):
+    def test_boot_time(self):
+        self.h.tools["systemd-analyze"] = lambda c: BOOT
+        e = self.run1("boot-time")
+        self.assertEqual((e["value"], e["unit"], e["higher_is_better"], e["category"]), (73.539, "s", False, "Omarchy only"))
+
+
+class Browser(Case):
     def test_websocket_round_trip(self):
         a, b = socket.socketpair()
         try:
@@ -498,12 +649,11 @@ class Browser(unittest.TestCase):
             a.close()
             b.close()
 
-    def test_apps_read_their_own_results(self):
-        for app in ("speedometer", "motionmark", "jetstream"):
-            js = bench.APPS[app]
-            self.assertIn("url", js)
-            self.assertIn("done", js)
-            self.assertIn("result", js)
+    def test_every_web_metric_has_its_page(self):
+        for mid in ("motionmark", "speedometer", "jetstream"):
+            self.assertIn(mid, bench.METRICS)
+            for k in ("url", "done", "result"):
+                self.assertIn(k, bench.APPS[mid])
         self.assertIn("startAutomatically", bench.APPS["speedometer"]["url"])
 
     def test_result_from_page(self):
@@ -511,20 +661,17 @@ class Browser(unittest.TestCase):
         with self.assertRaises(bench.ParseError):
             bench.page_result({"value": None})
 
-    def test_browsers_run_headless_on_the_gpu_so_a_locked_session_still_draws(self):
-        # A Lab boot locks the session at once and idle locks it later; a
-        # headed window then gets no frames and the pages never finish.
+    def test_chrome_runs_headless_on_the_gpu_at_1920_by_1080_and_dpr_2(self):
         f = bench.BROWSER_FLAGS
         self.assertIn("--headless", f)
         self.assertIn("--enable-gpu", f)
-        self.assertFalse([x for x in f if x.startswith("--ozone-platform")])
+        self.assertIn("--window-size=1920,1080", f)
         self.assertIn("--screen-info={0,0 3840x2160 devicePixelRatio=2}", f)
-
-    def test_software_rendering_is_refused(self):
-        self.assertIsNone(bench.software_gl("ANGLE (Mesa, AGX G13/G14, OpenGL ES 3.2)"))
-        for r in ("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)",
-                  "ANGLE (Mesa, llvmpipe (LLVM 19.1.7, 128 bits), OpenGL ES 3.2)", None):
-            self.assertTrue(bench.software_gl(r))
+        self.assertFalse([x for x in f if x.startswith("--ozone-platform")])
+        for mid in ("motionmark", "speedometer", "jetstream"):
+            s = self.metric(mid)["settings"]
+            self.assertEqual((s["width"], s["height"], s["device_pixel_ratio"]), (1920, 1080, bench.DEVICE_PIXEL_RATIO))
+        self.assertEqual(self.metric("motionmark")["settings"]["refresh_hz"], bench.REFRESH_HZ)
 
     def test_devtools_port_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -532,20 +679,193 @@ class Browser(unittest.TestCase):
             self.assertEqual(bench.devtools_port(d), 41234)
 
 
-class Output(unittest.TestCase):
-    def test_main_writes_one_json_and_refuses_with_exit_3(self):
-        with tempfile.TemporaryDirectory() as d:
-            h = FakeHost(d)
-            h.write("sys/class/power_supply/bat/type", "Battery")
-            h.write("sys/class/power_supply/ac/type", "Mains")
-            h.write("sys/class/power_supply/ac/online", "0")
-            out = pathlib.Path(d, "bench.json")
-            code = bench.main(["--tier", "default", "--manifest", str(HERE / "testdata" / "manifest.json"),
-                               "--cache", d, "--work", d, "--out", str(out)], host=h, stderr=io.StringIO())
-            self.assertEqual(code, 3)
-            self.assertEqual(json.loads(out.read_text()), [])
-            cond = json.loads(pathlib.Path(d, "bench-conditions.json").read_text())
-            self.assertIn("battery", cond["refused"])
+class Conditions(Case):
+    def supply(self, name, typ, online=None):
+        self.h.write(f"sys/class/power_supply/{name}/type", typ + "\n")
+        if online is not None:
+            self.h.write(f"sys/class/power_supply/{name}/online", f"{online}\n")
+
+    def test_on_ac(self):
+        self.assertEqual(bench.on_ac(self.h), (True, False))
+        self.supply("macsmc-battery", "Battery")
+        self.supply("macsmc-ac", "Mains", 0)
+        self.assertEqual(bench.on_ac(self.h), (False, True))
+        self.supply("macsmc-ac", "Mains", 1)
+        self.assertEqual(bench.on_ac(self.h), (True, True))
+
+    def test_refused_on_battery_and_when_busy(self):
+        self.supply("macsmc-battery", "Battery")
+        self.supply("macsmc-ac", "Mains", 0)
+        with self.assertRaises(bench.Refused) as e:
+            bench.conditions(self.h)
+        self.assertEqual(e.exception.code, "not_on_ac")
+        self.supply("macsmc-ac", "Mains", 1)
+        with self.assertRaises(bench.Refused) as e:
+            bench.conditions(self.h, busy_fn=lambda h: 80.0)
+        self.assertEqual(e.exception.code, "not_idle")
+
+    def test_profile_and_backlight_set_then_put_back(self):
+        profile = ["power-saver"]
+
+        def ppc(c):
+            if c[1] == "set":
+                profile[0] = c[2]
+                return ""
+            return profile[0] + "\n"
+        self.h.tools["powerprofilesctl"] = ppc
+        self.h.write("sys/class/backlight/apple-panel-bl/max_brightness", "500")
+        self.h.write("sys/class/backlight/apple-panel-bl/brightness", "120")
+        c, saved = bench.conditions(self.h, busy_fn=lambda h: 1.0)
+        self.assertEqual((c["power_profile"], c["backlight"], c["on_ac"]), ("balanced", 0.5, True))
+        self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "250")
+        bench.restore(self.h, saved)
+        self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "120")
+        self.assertEqual(profile[0], "power-saver")
+
+    def test_cool_down_stops_under_threshold_or_at_the_limit(self):
+        self.h.write("sys/class/thermal/thermal_zone0/temp", "80000")
+        self.h.temps = [70000, 60000, 49000, 40000]
+        self.assertEqual(bench.cool_down(self.h, limit=60, threshold=50, step=5), (15, 49.0))
+        self.h.temps = []
+        self.h.write("sys/class/thermal/thermal_zone0/temp", "90000")
+        self.assertEqual(bench.cool_down(self.h, limit=60, threshold=50, step=5), (60, 90.0))
+
+    def test_cool_down_with_no_sensor_waits_30_s(self):
+        self.assertEqual(bench.cool_down(self.h), (30, None))
+
+    def test_busy_from_proc_stat(self):
+        stats = iter(["cpu  100 0 100 800 0 0 0 0 0 0\n", "cpu  150 0 150 900 0 0 0 0 0 0\n"])
+        orig = self.h.read
+        self.h.read = lambda rel: next(stats) if rel == "proc/stat" else orig(rel)
+        self.assertAlmostEqual(bench.busy(self.h, 1), 50.0)
+
+
+class Output(Case):
+    def allowed(self):
+        """Every string bench.json may hold: the set's own words and the reason codes."""
+        words = set(bench.REASONS) | {self.set["set"]}
+        for m in self.set["metrics"]:
+            words |= {m["id"], m["category"], m["version"], m["unit"], (m.get("omarchy") or {}).get("api")}
+        return words - {None}
+
+    def strings(self, x):
+        if isinstance(x, str):
+            yield x
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                yield from self.strings(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from self.strings(v)
+
+    def main(self, *extra, impl=None):
+        out = pathlib.Path(self.d.name, "out", "bench.json")
+        out.parent.mkdir(exist_ok=True)
+        setf = pathlib.Path(self.d.name, "set.json")
+        setf.write_text(json.dumps(self.set))
+        code = bench.main(["--set", str(setf), "--cache", str(self.cache), "--work", str(self.work),
+                           "--out", str(out), *extra], host=self.h, stderr=self.log, impl=impl)
+        return code, json.loads(out.read_text()), json.loads((out.parent / "bench-conditions.json").read_text())
+
+    def test_the_full_list_on_a_mac_with_nothing_carries_no_free_text(self):
+        def noisy(c):
+            return bench.Ran(1, "Error: /home/alice/.config is not writable by alice on alice-macbook", 0)
+        for t in ("systemd-analyze", "ffmpeg", "ffprobe", "python3", "fincore", "powerprofilesctl", "hyprctl"):
+            self.h.tools[t] = noisy
+        code, rows, cond = self.main("--list", "full")
+        self.assertEqual([r["metric"] for r in rows], [m["id"] for m in SET["metrics"]])
+        allowed = self.allowed()
+        for r in rows:
+            self.assertEqual(tuple(r), bench.FIELDS)
+            self.assertIn(r["reason"], bench.REASONS)
+            self.assertIsNone(r["value"])
+            self.assertEqual(r["set"], "bench-1")
+            for s in self.strings(r):
+                self.assertIn(s, allowed, r)
+        for s in self.strings(cond):
+            self.assertIn(s, allowed | {"quick", "full", "balanced"}, cond)
+        self.assertNotIn("alice", json.dumps(rows) + json.dumps(cond))
+        self.assertIn("alice", self.log.getvalue())
+        self.assertEqual(code, 1)
+        by = {r["metric"]: r["reason"] for r in rows}
+        self.assertEqual(by["fio-seq-read"], "placeholder_file")
+        self.assertEqual(by["boot-time"], "error")
+        self.assertEqual(by["mlx-matmul-fp16"], "error")
+        self.assertEqual(by["power-idle"], "no_comparable_sensor")
+
+    def test_quick_list_is_one_metric_per_category(self):
+        code, rows, cond = self.main("--list", "quick", impl={})
+        self.assertEqual([r["metric"] for r in rows], [m["id"] for m in SET["metrics"] if m["list"] == "quick"])
+        self.assertEqual({r["reason"] for r in rows}, {"not_run"})
+        self.assertEqual((cond["set"], cond["list"], cond["refused"]), ("bench-1", "quick", None))
+        self.assertEqual(code, 0)
+
+    def test_values_and_spreads_with_a_cool_down_before_each(self):
+        impl = {"boot-time": lambda ctx, m: bench.Value(9.5), "power-idle": lambda ctx, m: bench.Value(6.0, 0.25)}
+        self.set["metrics"] = [m for m in self.set["metrics"] if m["id"] in impl]
+        code, rows, _ = self.main("--list", "full", impl=impl)
+        self.assertEqual(code, 0)
+        self.assertEqual([(r["metric"], r["value"], r["spread"], r["reason"]) for r in rows],
+                         [("power-idle", 6.0, 0.25, None), ("boot-time", 9.5, None, None)])
+        self.assertEqual(rows[0]["cool_down"], {"seconds": 30, "temp_c": None})
+        self.assertEqual(rows[0]["api"], "macsmc-hwmon")
+
+    def test_a_row_that_fell_back_does_not_fail_the_run_and_an_error_does(self):
+        def fell(ctx, m):
+            raise bench.Reason("fell_back")
+
+        def boom(ctx, m):
+            raise RuntimeError("crashed reading /home/alice")
+        self.set["metrics"] = [m for m in self.set["metrics"] if m["id"] in ("boot-time", "power-idle")]
+        self.assertEqual(self.main("--list", "full", impl={"boot-time": fell, "power-idle": fell})[0], 0)
+        code, rows, _ = self.main("--list", "full", impl={"boot-time": boom, "power-idle": fell})
+        self.assertEqual(code, 1)
+        self.assertNotIn("alice", json.dumps(rows))
+
+    def test_refused_off_ac_measures_nothing(self):
+        self.h.write("sys/class/power_supply/bat/type", "Battery")
+        self.h.write("sys/class/power_supply/ac/type", "Mains")
+        self.h.write("sys/class/power_supply/ac/online", "0")
+        code, rows, cond = self.main("--list", "quick")
+        self.assertEqual((code, rows, cond["refused"], cond["on_ac"]), (3, [], "not_on_ac", False))
+
+    def test_a_cancelled_run_keeps_what_it_measured(self):
+        def cancel(ctx, m):
+            raise bench.Cancelled()
+        self.set["metrics"] = [m for m in self.set["metrics"] if m["id"] in ("boot-time", "power-idle")]
+        code, rows, _ = self.main("--list", "full", impl={"power-idle": lambda ctx, m: bench.Value(6.0), "boot-time": cancel})
+        self.assertEqual(code, 143)
+        self.assertEqual([r["metric"] for r in rows], ["power-idle"])
+
+    def test_clean_keeps_the_allowlist_and_the_codes(self):
+        m = self.metric("7zip")
+        e = dict(bench.entry(self.set, m, 1.0), note="free text", reason="it broke")
+        c = bench.clean(e)
+        self.assertEqual(tuple(c), bench.FIELDS)
+        self.assertEqual((c["reason"], c["value"]), ("error", None))
+        c = bench.clean(bench.entry(self.set, m, float("nan")))
+        self.assertEqual(c["reason"], "error")
+        c = bench.clean(bench.entry(self.set, m, 5.0, cool={"seconds": 3, "temp_c": 40.0, "sensor": "x"}))
+        self.assertEqual((c["value"], c["cool_down"]), (5.0, {"seconds": 3, "temp_c": 40.0}))
+
+    def test_the_reason_codes(self):
+        self.assertEqual(bench.REASONS, (
+            "no_build", "no_driver", "fell_back", "no_comparable_sensor", "not_run", "skipped", "error",
+            "disk_too_full", "not_on_ac", "not_idle", "software_renderer", "placeholder_file", "battery_charging"))
+        for code in bench.FAILING:
+            self.assertIn(code, bench.REASONS)
+        with self.assertRaises(ValueError):
+            bench.Reason("it fell over")
+
+    def test_every_metric_of_the_set_has_a_runner(self):
+        for m in SET["metrics"]:
+            self.assertIn(m["id"], bench.METRICS)
+        self.assertFalse(set(bench.METRICS) - {m["id"] for m in SET["metrics"]})
+
+    def test_no_benchmark_that_left_remains(self):
+        src = (HERE / "bench.py").read_text()
+        for gone in ("glmark2", "vkmark", "vkpeak", "kernel_compile", "rtcwake", "geekbench", "chromium"):
+            self.assertIsNone(re.search(gone, src, re.I), gone)
 
 
 if __name__ == "__main__":

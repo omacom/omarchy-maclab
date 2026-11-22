@@ -12,13 +12,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
 
-func pinned(name, body, url string) bench.Item {
+func pinned(name, body, url string) benchFile {
 	s := sha256.Sum256([]byte(body))
-	return bench.Item{Name: name, Version: "1", URL: url, SHA256: hex.EncodeToString(s[:]), Size: int64(len(body))}
+	return benchFile{Name: name, Version: "1", URL: url, SHA256: hex.EncodeToString(s[:]), Size: int64(len(body))}
 }
 
 type fakeStore struct{ got map[string]string }
@@ -39,7 +38,7 @@ func TestBenchMirrorDownloadsVerifiesAndStoresBySha(t *testing.T) {
 		w.Write([]byte("bytes of " + strings.TrimPrefix(r.URL.Path, "/")))
 	}))
 	defer srv.Close()
-	items := []bench.Item{pinned("a", "bytes of a.tar.gz", srv.URL+"/a.tar.gz"), pinned("b", "bytes of b.pkg", srv.URL+"/b.pkg")}
+	items := []benchFile{pinned("a", "bytes of a.tar.gz", srv.URL+"/a.tar.gz"), pinned("b", "bytes of b.pkg", srv.URL+"/b.pkg")}
 	st := &fakeStore{got: map[string]string{}}
 	var out bytes.Buffer
 	if err := mirrorBench(context.Background(), items, "", srv.Client(), st.upload, &out); err != nil {
@@ -61,7 +60,7 @@ func TestBenchMirrorRefusesBytesThatAreNotPinned(t *testing.T) {
 	}))
 	defer srv.Close()
 	st := &fakeStore{got: map[string]string{}}
-	err := mirrorBench(context.Background(), []bench.Item{pinned("a", "the pinned bytes", srv.URL+"/a")}, "", srv.Client(), st.upload, &bytes.Buffer{})
+	err := mirrorBench(context.Background(), []benchFile{pinned("a", "the pinned bytes", srv.URL+"/a")}, "", srv.Client(), st.upload, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Fatalf("err %v", err)
 	}
@@ -76,21 +75,24 @@ func TestBenchMirrorTakesEverySetsPinnedFilesOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	var said bytes.Buffer
-	items := mirrorItems(all, bench.Legacy(), &said)
+	items := mirrorItems(all, &said)
 	names, shas := map[string]bool{}, map[string]bool{}
 	for _, it := range items {
 		if shas[it.SHA256] {
 			t.Errorf("%s mirrored twice", it.SHA256)
 		}
 		names[it.Name], shas[it.SHA256] = true, true
+		if strings.HasPrefix(it.Name, "runner/") {
+			t.Errorf("%s: the runner has no files of its own beside the sets'", it.Name)
+		}
 	}
-	for _, n := range []string{"bench-1/omarchy/chrome", "bench-1/omarchy/speedometer", "bench-1/omarchy/clip-h264-1080p", "runner/glmark2", "runner/coremark"} {
+	for _, n := range []string{"bench-1/omarchy/chrome", "bench-1/omarchy/speedometer", "bench-1/omarchy/clip-h264-1080p", "bench-1/omarchy/7zip"} {
 		if !names[n] {
 			t.Errorf("no %s in %v", n, names)
 		}
 	}
-	if names["bench-1/macos/speedometer"] || names["runner/clip"] {
-		t.Error("a file both systems share, or the runner's copy of one, was mirrored again")
+	if names["bench-1/macos/speedometer"] {
+		t.Error("a file both systems share was mirrored again")
 	}
 	for _, n := range []string{"bench-1/macos/chrome: a placeholder", "bench-1/omarchy/coremark: a placeholder"} {
 		if !strings.Contains(said.String(), n) {
@@ -104,7 +106,7 @@ func TestBenchMirrorTakesALocalCopyFirst(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.tar.gz"), []byte("local a"), 0o644)
 	st := &fakeStore{got: map[string]string{}}
 	it := pinned("a", "local a", "https://unreachable.invalid/a.tar.gz")
-	if err := mirrorBench(context.Background(), []bench.Item{it}, dir, http.DefaultClient, st.upload, &bytes.Buffer{}); err != nil {
+	if err := mirrorBench(context.Background(), []benchFile{it}, dir, http.DefaultClient, st.upload, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	if st.got[it.SHA256] != "local a" {

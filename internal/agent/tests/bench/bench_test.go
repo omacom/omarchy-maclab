@@ -1,87 +1,99 @@
 package bench
 
 import (
-	"bytes"
-	"flag"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/manifest.json")
-
-func TestTheManifestPinsEveryItem(t *testing.T) {
-	items, err := Manifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"speedometer", "motionmark", "jetstream", "chromium", "chrome", "7zip", "glmark2", "vkmark",
-		"assimp", "clpeak", "vkpeak", "geekbench", "kernel", "clip"}
-	have := map[string]Item{}
-	for _, it := range items {
-		if _, dup := have[it.Name]; dup {
-			t.Errorf("%s given twice", it.Name)
-		}
-		have[it.Name] = it
-	}
-	for _, n := range want {
-		if _, ok := have[n]; !ok {
-			t.Errorf("no %s in the manifest", n)
-		}
-	}
-	if have["speedometer"].Version != "3.1" || have["motionmark"].Version != "1.3" || have["jetstream"].Version != "2.2" {
-		t.Errorf("browser benchmark versions: %+v", have)
-	}
-	if have["coremark"].Kind != "source" || have["clpeak"].Kind != "pacman" {
-		t.Errorf("the set's placeholders took the legacy items' places: %+v %+v", have["coremark"], have["clpeak"])
-	}
-}
-
-func TestEveryItemTheRunnerNeedsIsPinned(t *testing.T) {
+func runner(t *testing.T, arg string) []string {
+	t.Helper()
 	py, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("no python3")
 	}
-	out, err := exec.Command(py, "-I", "bench.py", "--tier", "extended", "--needs").Output()
+	out, err := exec.Command(py, "-I", "bench.py", arg).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := Manifest()
+	return strings.Fields(string(out))
+}
+
+func TestTheRunnerRunsEveryMetricOfEverySetByItsId(t *testing.T) {
+	have := runner(t, "--metrics")
+	all, err := sets.All()
 	if err != nil {
 		t.Fatal(err)
 	}
-	have := map[string]bool{}
-	for _, it := range items {
-		have[it.Name] = true
-	}
-	for _, n := range strings.Fields(string(out)) {
-		if !have[n] {
-			t.Errorf("the runner needs %s, which nothing pins", n)
+	for _, s := range all {
+		for _, m := range s.Metrics {
+			if m.Omarchy != nil && !slices.Contains(have, m.ID) {
+				t.Errorf("%s: the runner has no %s", s.Name, m.ID)
+			}
 		}
 	}
 }
 
-// The runner's own tests read testdata/manifest.json, a copy of Manifest.
-func TestTheRunnersTestsReadTheManifest(t *testing.T) {
-	items, err := Manifest()
+// labd keeps the same list; bench.json carries no other reason.
+func TestTheRunnersReasonCodes(t *testing.T) {
+	want := []string{"no_build", "no_driver", "fell_back", "no_comparable_sensor", "not_run", "skipped", "error",
+		"disk_too_full", "not_on_ac", "not_idle", "software_renderer", "placeholder_file", "battery_charging"}
+	if got := runner(t, "--reasons"); !slices.Equal(got, want) {
+		t.Errorf("reason codes %v, want %v", got, want)
+	}
+}
+
+func TestTheBuiltinsRunTheQuickAndFullLists(t *testing.T) {
+	if Builtins["bench"] != sets.Quick || Builtins["bench-extended"] != sets.Full || len(Builtins) != 2 {
+		t.Errorf("builtins %v", Builtins)
+	}
+	s, err := Set()
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := JSON(items)
-	if err != nil {
-		t.Fatal(err)
+	if cur, err := sets.Current(); err == nil && cur.Name != s.Name {
+		t.Errorf("runs %s, but %s is current", s.Name, cur.Name)
 	}
-	b = append(b, '\n')
-	p := filepath.Join("testdata", "manifest.json")
-	if *update {
-		if err := os.WriteFile(p, b, 0o644); err != nil {
-			t.Fatal(err)
+	quick, full := Files(s, sets.Quick), Files(s, sets.Full)
+	if len(quick) == 0 || len(full) <= len(quick) {
+		t.Fatalf("files: quick %d, full %d", len(quick), len(full))
+	}
+	ids := map[string]bool{}
+	for _, f := range full {
+		if !f.Pinned() || ids[f.ID] {
+			t.Errorf("%s fetched unpinned or twice", f.ID)
+		}
+		ids[f.ID] = true
+		if _, ok := s.File(sets.Omarchy, f.ID); !ok {
+			t.Errorf("%s is not an Omarchy file", f.ID)
 		}
 	}
-	got, err := os.ReadFile(p)
-	if err != nil || !bytes.Equal(got, b) {
-		t.Errorf("%s is not the manifest (%v): go test ./internal/agent/tests/bench -run TheRunnersTests -update", p, err)
+	for _, f := range quick {
+		if !ids[f.ID] {
+			t.Errorf("quick fetches %s, full does not", f.ID)
+		}
+	}
+}
+
+func TestEveryPinnedFileOfEverySetIsKept(t *testing.T) {
+	shas, err := Pinned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, _ := sets.All()
+	for _, s := range all {
+		for _, sys := range sets.Systems {
+			for _, f := range s.Files[sys] {
+				if f.Pinned() != slices.Contains(shas, f.SHA256) {
+					t.Errorf("%s/%s/%s pinned %v, kept %v", s.Name, sys, f.ID, f.Pinned(), !f.Pinned())
+				}
+			}
+		}
+	}
+	if len(slices.Compact(slices.Sorted(slices.Values(shas)))) != len(shas) {
+		t.Error("a sha256 given twice")
 	}
 }
