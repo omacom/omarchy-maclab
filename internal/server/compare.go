@@ -244,7 +244,7 @@ func (r *jobRun) compare(ctx context.Context) (string, string) {
 // or through a Candidate boot of the set. hands, on side B with --hands, is
 // the report the pause for a person is recorded in.
 func (r *jobRun) compareSide(ctx context.Context, label, name string, set *api.PackageSet, hands *api.CompareResult) compareSideRun {
-	v, j := r.v, r.j
+	v := r.v
 	run := compareSideRun{side: api.CompareSide{Side: label, Set: name}}
 	side := &run.side
 	fail := func(outcome, why string) compareSideRun {
@@ -268,7 +268,33 @@ func (r *jobRun) compareSide(ctx context.Context, label, name string, set *api.P
 		}
 		return run
 	}
+	tests := compareTests(label, r.j.Spec.Compare.Tier, v.snapshot().IsVolunteer())
+	return r.candidateSide(ctx, label, name, set, tests, func(side *api.CompareSide) (string, string) {
+		if o, why := r.compareRunTests(ctx, label, side); o != "" {
+			return o, why
+		}
+		if hands != nil && hands.Hands != nil {
+			r.waitHands(ctx, hands)
+		}
+		return "", ""
+	})
+}
 
+// candidateSide runs set as a Candidate boot (spec "Candidate boot"):
+// candidate_stage, boot_once with tests armed for the Lab boot, and
+// candidate_check until the boot is confirmed or its deadline passes. On a
+// confirmed boot onBoot runs, saying how the side ends if it ends there.
+// Then back on the known-good system, candidate_result when the boot was not
+// confirmed, and candidate_cleanup always.
+func (r *jobRun) candidateSide(ctx context.Context, label, name string, set *api.PackageSet, tests []api.TestSpec, onBoot func(side *api.CompareSide) (string, string)) compareSideRun {
+	v, j := r.v, r.j
+	run := compareSideRun{side: api.CompareSide{Side: label, Set: name}}
+	side := &run.side
+	fail := func(outcome, why string) compareSideRun {
+		side.Error = why
+		run.outcome, run.summary = outcome, why
+		return run
+	}
 	r.state(api.JobStaging)
 	pkgs, err := r.resolveSet(ctx, set)
 	if err != nil {
@@ -301,7 +327,6 @@ func (r *jobRun) compareSide(ctx context.Context, label, name string, set *api.P
 	oldBoot := v.snapshot().BootID
 	t0 := r.s.now()
 	r.armedBoot, r.armedAt = oldBoot, t0
-	tests := compareTests(label, r.j.Spec.Compare.Tier, v.snapshot().IsVolunteer())
 	arm := api.BootOnceArgs{Entry: sr.Entry, BootTimeoutSec: int(r.boot / time.Second), JobSec: int(r.labBootJob() / time.Second), Tests: tests}
 	armTimeout := 2 * time.Minute
 	if d := v.snapshot(); d.IsVolunteer() && r.s.cfg.RebootWarning > 0 {
@@ -365,15 +390,12 @@ func (r *jobRun) compareSide(ctx context.Context, label, name string, set *api.P
 	if confirmed {
 		side.Boot = api.CandidateConfirmed
 		r.ev("side %s: %s", label, api.CandidateConfirmed)
-		if o, why := r.compareRunTests(ctx, label, side); o != "" {
+		if o, why := onBoot(side); o != "" {
 			if v.snapshot().State != api.StateNeedsHands {
 				r.restore(context.WithoutCancel(ctx))
 			}
 			cleanup()
 			return fail(o, why)
-		}
-		if hands != nil && hands.Hands != nil {
-			r.waitHands(ctx, hands)
 		}
 	} else {
 		side.Boot = api.CandidateBootFailed
