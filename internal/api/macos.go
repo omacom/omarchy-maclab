@@ -53,6 +53,7 @@ type MacOSRun struct {
 	ID        string          `json:"id"`
 	Mac       string          `json:"mac"`
 	Tier      string          `json:"tier"`
+	Set       string          `json:"set,omitempty"` // the Benchmark set whose list it runs
 	State     string          `json:"state"`
 	Artifacts []MacOSArtifact `json:"artifacts,omitempty"`
 	Queued    time.Time       `json:"queued"`
