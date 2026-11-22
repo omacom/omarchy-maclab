@@ -734,9 +734,9 @@ func (s *Server) handsWaiting(v *dev) string {
 const macOSKept = "kept"
 
 // compareMacOS is the Mac's macOS result of the job's set at its current
-// macOS build when one is kept; else it queues the macOS run, boots macOS
-// once for it and waits for its results, or for its deadline to leave the
-// Mac Needs hands.
+// macOS build when one is kept; else it queues an attempt at that result,
+// boots macOS once for it and waits for its results, or for its deadline to
+// leave the Mac Needs hands. Its values are kept as the Mac's macOS result.
 func (r *jobRun) compareMacOS(ctx context.Context) api.CompareSide {
 	j := r.j
 	side := api.CompareSide{Side: api.SideMacOS, Set: "macOS"}
@@ -747,23 +747,23 @@ func (r *jobRun) compareMacOS(ctx context.Context) api.CompareSide {
 		r.ev("macOS: the Mac's macOS result of %s at macOS %s (%s) is kept: macOS is not booted", bench, b.Version, b.Build)
 		return side
 	}
-	run, err := r.s.compareMacOSRun(name, j.Spec.Compare.Tier, bench)
+	run, err := r.s.compareMacOSRun(name, bench)
 	if err != nil {
 		side.Error = "not queued: " + err.Error()
 		return side
 	}
-	r.ev("macOS: run %s queued", run.ID)
+	r.ev("macOS: run %s queued, attempt %d at the Mac's macOS result of %s", run.ID, run.PerfRun, bench)
 	m, outcome, why := r.bootMacOSFor(ctx, run)
 	if m != nil {
 		side.Boot = m.State
 	}
 	if m != nil && m.State == api.MacOSDone {
-		side.Bench, side.Error = m.Results, m.Error
-		if m.PerfRun > 0 {
-			if res, err := r.s.store.perfAttemptResults(m.PerfRun); err == nil {
-				side.Bench = benchOf(m.Set, res)
-			}
+		side.Error = m.Error
+		res, err := r.s.store.perfAttemptResults(m.PerfRun)
+		if err != nil {
+			side.Error = cmpOr(side.Error, "its results: "+err.Error())
 		}
+		side.Bench = benchOf(m.Set, res)
 	}
 	if outcome != "" {
 		side.Error = why

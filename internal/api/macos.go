@@ -101,11 +101,6 @@ type MacOSJobSpec struct {
 	Run string `json:"run"`
 }
 
-// MacOSRunRequest queues a macOS run (POST /api/devices/{name}/macos-runs).
-type MacOSRunRequest struct {
-	Tier string `json:"tier,omitempty"`
-}
-
 // MacOSEnrollToken is a one-time token for one Mac's runner and the line
 // that enrolls it, to run in macOS (POST /api/macos/enroll-tokens).
 type MacOSEnrollToken struct {
@@ -152,11 +147,4 @@ type MacOSSide struct {
 // MacOSPoll is labd's answer to a runner's poll: the run to do, or none.
 type MacOSPoll struct {
 	Run *MacOSRun `json:"run"`
-}
-
-// MacOSResults is what the runner uploads.
-type MacOSResults struct {
-	RunID   string        `json:"run_id"`
-	Results []BenchResult `json:"results"`
-	Error   string        `json:"error,omitempty"`
 }

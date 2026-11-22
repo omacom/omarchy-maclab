@@ -108,6 +108,23 @@ func TestARunTakenByAnEarlierBootIsNotMeasuredAgain(t *testing.T) {
 	leftAlone(t, lab, h, b, *rebooted)
 }
 
+// A run with no performance run has nowhere to upload: its boot measures
+// nothing and goes back to Omarchy.
+func TestARunWithNoPerformanceRunMeasuresNothingAndReboots(t *testing.T) {
+	b := newBench(t)
+	h := newFakeHost()
+	run := startedRun(h, "mos-1", api.TierDefault)
+	run.PerfRun = 0
+	lab := newFakeLab(t, run, b.files)
+	r, rebooted := newRunner(t, lab, h, b)
+	if err := r.Boot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if *rebooted != 1 || lab.got != nil || len(lab.fetched) != 0 {
+		t.Errorf("rebooted %d, uploaded %v, fetched %v", *rebooted, lab.got, lab.fetched)
+	}
+}
+
 func TestTheRunsOwnBootRunsTheQuickListUploadsAndReboots(t *testing.T) {
 	b := newBench(t)
 	h := newFakeHost()
@@ -120,8 +137,8 @@ func TestTheRunsOwnBootRunsTheQuickListUploadsAndReboots(t *testing.T) {
 		t.Fatalf("rebooted %d, uploaded %v", *rebooted, lab.got)
 	}
 	up := lab.got
-	if lab.upPath != "/api/macos/runner/results" || up.RunID != "mos-1" || up.State != Succeeded {
-		t.Errorf("upload to %s: %s %s", lab.upPath, up.RunID, up.State)
+	if lab.upPath != "/api/macos/runner/performance/1/results" || up.State != Succeeded {
+		t.Errorf("upload to %s: %s", lab.upPath, up.State)
 	}
 	var want []string
 	for _, m := range b.set.List(sets.Quick) {

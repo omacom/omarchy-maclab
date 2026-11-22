@@ -93,7 +93,7 @@ func (f *fakeLab) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write(b)
-	case r.URL.Path == "/api/macos/runner/results" || strings.HasPrefix(r.URL.Path, "/api/macos/runner/performance/"):
+	case strings.HasPrefix(r.URL.Path, "/api/macos/runner/performance/"):
 		f.upPath = r.URL.Path
 		f.raw, _ = io.ReadAll(r.Body)
 		var up Upload
@@ -490,7 +490,7 @@ func (b *bench) ran() string {
 func startedRun(h *fakeHost, id, tier string) *api.MacOSRun {
 	at := h.booted.Add(-40 * time.Second)
 	dl := at.Add(time.Hour)
-	return &api.MacOSRun{ID: id, Mac: "m2-max", Tier: tier, State: api.MacOSRunning, Started: &at, Deadline: &dl}
+	return &api.MacOSRun{ID: id, Mac: "m2-max", Tier: tier, PerfRun: 1, State: api.MacOSRunning, Started: &at, Deadline: &dl}
 }
 
 func newRunner(t *testing.T, lab *fakeLab, h *fakeHost, b *bench) (*Runner, *int) {

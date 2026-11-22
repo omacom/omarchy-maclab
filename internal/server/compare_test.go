@@ -459,9 +459,8 @@ func TestCompareWithMacOS(t *testing.T) {
 	l, _ := compareLab(t, nil)
 	macOSResultSet(t, l)
 	secret := enrollRunner(t, l)
-	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
-		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
-	}
+	// An Attended Mac: the scheduler waits for a person, and the Compare
+	// takes the run it queued.
 	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	l.sim.MacOSFor = 2 * time.Second
 	l.sim.InMacOS = func() {

@@ -148,12 +148,6 @@ func (c *Client) MacOSAtMac(ctx context.Context, mac string) (*api.MacOSRun, err
 	return &out, c.do(ctx, "POST", "/api/devices/"+url.PathEscape(mac)+"/macos/at-mac", nil, &out)
 }
 
-// QueueMacOSRun queues a macOS run of the tier's benchmarks on the Mac.
-func (c *Client) QueueMacOSRun(ctx context.Context, mac, tier string) (*api.MacOSRun, error) {
-	var out api.MacOSRun
-	return &out, c.do(ctx, "POST", "/api/devices/"+url.PathEscape(mac)+"/macos-runs", jsonBody(api.MacOSRunRequest{Tier: tier}), &out)
-}
-
 // MacOSRun is the Mac's latest macOS run.
 func (c *Client) MacOSRun(ctx context.Context, mac string) (*api.MacOSRun, error) {
 	var out api.MacOSRun
