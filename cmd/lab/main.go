@@ -124,6 +124,10 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab oob <device>                    its cable: sighted, not sighted or no cable, and what the ports show
   lab audit <device>                  labd's copy of a Volunteer's Mac's Audit log: every Maintainer action on it
   lab upload <file> [--for <mac>]     to the artifact store, in 32 MiB parts; cut, the same command resumes
+  lab perf rerun <mac> <release> [--no-wait]
+                                      run the Mac's Performance run of a Release again, under your Lease (taken for
+                                      you when you hold none): its values replace the last only if it succeeds.
+                                      A Maintainer, or the Mac's Lease holder
   lab bench mirror [--from <dir>]     every Benchmark set's pinned files, downloaded, checked against their sha256
                                       and put in the artifact store, where the Macs fetch them (Maintainers)
   lab mcp                             MCP server on stdio, for AI agents
@@ -140,7 +144,7 @@ var (
 		"boot-test", "login", "builder", "status", "enroll", "remove", "device", "baseline", "build", "package",
 		"builds", "build-log", "build-get", "exec", "run", "crashtest", "pack", "jobs", "job", "wait", "cancel",
 		"logs", "gate", "exclude", "retry", "publish", "lease", "release", "installed", "reset", "oob", "audit",
-		"upload", "agent-update", "macos", "controller", "mcp", "version", "set", "compare", "bench",
+		"upload", "agent-update", "macos", "controller", "mcp", "version", "set", "compare", "bench", "perf",
 	}
 	atHome = []string{"boot-test", "login", "pack", "mcp", "version"}
 )
@@ -600,6 +604,9 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 
 	case "bench":
 		return benchCmd(ctx, c, args)
+
+	case "perf":
+		return perfCmd(ctx, c, args)
 
 	case "builds":
 		l, err := c.Builds(ctx, 20)

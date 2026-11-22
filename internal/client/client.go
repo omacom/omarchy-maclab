@@ -514,6 +514,12 @@ func (c *Client) Compare(ctx context.Context, req api.CompareRequest) (*api.Job,
 	return &out, c.do(ctx, "POST", "/api/compares", jsonBody(req), &out)
 }
 
+// PerfRerun runs a Mac's Performance run of a Release again: its job.
+func (c *Client) PerfRerun(ctx context.Context, req api.PerfRerunRequest) (*api.Job, error) {
+	var out api.Job
+	return &out, c.do(ctx, "POST", "/api/perf/rerun", jsonBody(req), &out)
+}
+
 // CompareDone presses Done for a Compare waiting for a person.
 func (c *Client) CompareDone(ctx context.Context, id string) error {
 	return c.do(ctx, "POST", "/api/compares/"+url.PathEscape(id)+"/done", nil, nil)

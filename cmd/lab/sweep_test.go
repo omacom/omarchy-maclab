@@ -75,6 +75,7 @@ var specTable = map[string]string{
 	"builder list":              "unchanged",
 	"boot-test":                 "unchanged",
 	"bench mirror":              "added",
+	"perf rerun":                "added",
 }
 
 // The table's retired rows.
