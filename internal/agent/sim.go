@@ -56,7 +56,10 @@ type Sim struct {
 	// simStack.
 	Stack map[string]string
 
-	mu           sync.Mutex
+	mu sync.Mutex
+	// bootStack is what the running boot holds of the stack besides Stack:
+	// a candidate boot's set.
+	bootStack    map[string]string
 	sleepFn      func(bool)
 	bootID       string
 	prevBootID   string
@@ -173,6 +176,7 @@ type simEntry struct {
 	krel, behavior, cmdline string
 	half                    bool // a failed staging's leftovers
 	noAppleWDT              bool
+	stack                   map[string]string // a candidate's set, by package and version
 }
 
 // InstalledObs, when set, answers installed-mode identity tests: it returns
@@ -237,6 +241,7 @@ func (s *Sim) Facts() api.Facts {
 	if f.Stack == nil {
 		f.Stack = maps.Clone(simStack)
 	}
+	maps.Copy(f.Stack, s.bootStack)
 	return f
 }
 
@@ -643,6 +648,7 @@ func (s *Sim) up(gen int, e simEntry) {
 		return
 	}
 	s.kernel, s.cmdline, s.behavior, s.noAppleWDT = e.krel, e.cmdline, e.behavior, e.noAppleWDT
+	s.bootStack = e.stack
 	s.tested = false
 	s.alive = e.behavior != "no-network" // up, but labd never hears from it
 	if unit := s.earlyUnit; unit != nil {
