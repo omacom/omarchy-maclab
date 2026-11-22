@@ -55,6 +55,13 @@ func (s *Store) addReport(t *testing.T, publicID, body string, at time.Time) int
 	return id
 }
 
+// perfRow is what a Performance table's row holds that its checks take,
+// beside its times.
+var perfRow = map[string]any{
+	"mac_key": strings.Repeat("a", 32), "release_key": strings.Repeat("b", 32), "kind": "lab_owned", "board": "j314s",
+	"verdict": "qualified", "side": "macos", "macos_build": "27C101", "booted": "{}",
+}
+
 func TestTimesAreIntegerMicroseconds(t *testing.T) {
 	s, _ := openStore(t)
 	at := time.Date(2026, 9, 26, 3, 4, 5, 123456789, time.UTC)
@@ -107,6 +114,12 @@ func TestTimesAreIntegerMicroseconds(t *testing.T) {
 						vals[i] = `{}`
 					case c == "public_id" || c == "machine_id":
 						vals[i] = "x"
+					case c == "release_key" && table == "perf_values":
+						vals[i] = ""
+					case c == "reason":
+						vals[i] = nil
+					case perfRow[c] != nil:
+						vals[i] = perfRow[c]
 					default:
 						vals[i] = 1
 					}
@@ -119,7 +132,7 @@ func TestTimesAreIntegerMicroseconds(t *testing.T) {
 				if _, err := s.db.Exec(q, vals...); err != nil {
 					t.Fatalf("%s.%s refused microseconds: %v", table, col, err)
 				}
-				if _, err := s.db.Exec(`DELETE FROM `+table+` WHERE created_at = ?`, at.UnixMicro()); err != nil {
+				if _, err := s.db.Exec(`DELETE FROM `+table+` WHERE `+col+` = ?`, at.UnixMicro()); err != nil {
 					t.Fatal(err)
 				}
 				checked++
@@ -284,8 +297,19 @@ func TestASecondStartChangesNothing(t *testing.T) {
 // digest row is a fingerprint of a file: it names no Mac and no person.
 func TestWhatReportsDBHolds(t *testing.T) {
 	s, _ := openStore(t)
-	if got := strings.Join(s.tables(t), " "); got != "mac_sign_ins report_digests reports" {
+	if got := strings.Join(s.tables(t), " "); got != "mac_sign_ins perf_macs perf_releases perf_values report_digests reports" {
 		t.Errorf("tables: %s", got)
+	}
+	// Performance names a Mac by an opaque key and a Release by its kernel
+	// and verdict state: no name, no person, no machine id.
+	for table, want := range map[string]string{
+		"perf_macs":     "id mac_key kind board cpu_cores gpu_cores created_at",
+		"perf_releases": "id release_key kernel verdict position created_at",
+		"perf_values":   "id mac_key set_name side release_key macos_version macos_build metric value spread unit api capacity reason booted measured_at",
+	} {
+		if got := strings.Join(s.list(t, `SELECT name FROM pragma_table_info(?)`, table), " "); got != want {
+			t.Errorf("%s holds: %s", table, got)
+		}
 	}
 	for _, table := range []string{"mac_sign_ins", "reports"} {
 		cols := " " + strings.Join(s.list(t, `SELECT name FROM pragma_table_info(?)`, table), " ") + " "
