@@ -966,7 +966,8 @@ func (c *PerfConfiguration) OmarchyOnlyColumn(release string) *PerfOnlyColumn {
 	return nil
 }
 
-// Gaps are the Configuration's biggest gaps in the Release's column.
+// Gaps are the Configuration's biggest gaps in the Release's column,
+// worst first, then the "no build" and "no driver" rows.
 func (c *PerfConfiguration) Gaps(release string) []PerfGap {
 	var under, missing []PerfGap
 	if col := c.Column(release); col != nil {
@@ -979,7 +980,9 @@ func (c *PerfConfiguration) Gaps(release string) []PerfGap {
 			}
 		}
 	}
-	return append(under, missing...)
+	gaps := append(under, missing...)
+	sortGaps(gaps)
+	return gaps
 }
 
 // Gaps are the biggest gaps across the lab in the Release's columns: the
