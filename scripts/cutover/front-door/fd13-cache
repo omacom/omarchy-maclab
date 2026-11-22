@@ -48,7 +48,7 @@ while (( $# )); do
   shift
 done
 
-PAGES="/ /matrix /models /features /gaps /aurora /benchmarks /candidates /reports /data /terms /privacy"
+PAGES="/ /matrix /models /features /gaps /aurora /performance /candidates /reports /data /terms /privacy"
 EXPORTS="/api/v1/reports.json /api/v1/matrix.json"
 BROWSER="public, max-age=0"
 EDGE="max-age=60, stale-while-revalidate=86400, stale-if-error=86400"

@@ -34,7 +34,7 @@
 <thead><tr><th>Benchmark</th><th>Stack / version</th><th class="score-head">Score</th><th>Machines</th><th>Tool</th></tr></thead>
 <tbody>
 {{range .Scores}}<tr class="score-row" data-benchmark="{{.Benchmark}}" data-stack="{{.Stack}}" data-version="{{.Version}}" data-build="{{.BuildID}}">
-<td><a href="{{.BenchmarkHref}}">{{.BenchmarkName}}</a> <span class="dim">suite {{.Suite}}</span></td>
+<td>{{.BenchmarkName}} <span class="dim">suite {{.Suite}}</span></td>
 <td>{{.Label}}</td>
 <td class="score-cell">{{template "score_bar" .Share}}<a class="score-value" href="{{.ScoreHref}}">{{.Score}}</a> <span class="dim">{{.Unit}}</span></td>
 <td>{{.Machines}}</td>
@@ -42,10 +42,19 @@
 </tr>
 {{end}}</tbody>
 </table></div>
-<p class="dim">Bars are against the best Mac on the same benchmark. <a href="{{href "/benchmarks"}}">Compare every Mac</a>.</p>
+<p class="dim">Bars are against the best Mac on the same benchmark; each score links to its run.</p>
 </section>
 
 {{end}}<section class="card">
+<h2 class="card-title">performance</h2>
+{{if .Performance}}<ul class="links">
+{{range .Performance}}<li><a href="{{.Href}}">{{.Cores}}</a>{{if .Overall.Has}} <span class="perf-text perf-{{.Overall.Colour}}">{{.Overall.Text}}</span> <span class="dim">{{.Of}}</span>{{end}}</li>
+{{end}}</ul>
+{{else}}<p class="dim">No Performance run on this model yet.</p>
+{{end}}<p class="dim"><a href="{{.PerformanceHref}}">Performance</a> compares Omarchy with macOS on the same Macs, Configuration by Configuration.</p>
+</section>
+
+<section class="card">
 <h2 class="card-title">reports</h2>
 {{template "report_list" .Reports}}</section>
 {{end}}{{end}}

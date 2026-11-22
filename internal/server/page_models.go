@@ -146,7 +146,45 @@ type modelPage struct {
 	Features                           []modelFeature
 	Legend                             legendView
 	Scores                             []scoreRowView
+	Performance                        []perfModelLink
+	PerformanceHref                    string
 	Reports                            []runView
+}
+
+// perfModelLink is one of a model's Configurations, linking to its
+// Performance page with its Overall on the default Release.
+type perfModelLink struct {
+	Cores, Href, Of string
+	Overall         perfFigureView
+}
+
+// modelPerformance are the board's Configurations on the Performance pages.
+func (s *Server) modelPerformance(board string) []perfModelLink {
+	set, err := reports.PerfSet("")
+	if err != nil {
+		return nil
+	}
+	f, err := s.reports.PerformanceFigures(s.catalogue, set, true)
+	if err != nil {
+		s.log.Printf("performance figures for /models/%s: %v", board, err)
+		return nil
+	}
+	var out []perfModelLink
+	release := f.DefaultRelease()
+	for _, c := range f.Configurations {
+		if c.Board != board {
+			continue
+		}
+		l := perfModelLink{Cores: perfCores(c.CPU, c.GPU), Href: s.href("/performance/" + c.Path())}
+		if release != nil {
+			if col := c.Column(release.Key); col != nil && col.Overall != nil {
+				l.Overall = perfFigure(col.Overall, col.OverallColour, nil)
+				l.Of = "of macOS " + c.Comparison().MacOSVersion + " on " + release.Kernel
+			}
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // pModel is one Mac model: what its chip is expected to do, and what each
@@ -175,7 +213,8 @@ func (s *Server) pModel(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
 	chip := s.catalogue.ChipForSoC(latest.SoC())
 	page := modelPage{Name: latest.ShortModel(), Chip: latest.Chip(), Generation: s.catalogue.ChipName(chip), SoC: latest.SoC(), Board: latest.Board(),
-		Legend: legend(), Scores: s.boardScores(p, r.PathValue("board")), Reports: s.runList(p, runs, false)}
+		Legend: legend(), Scores: s.boardScores(p, r.PathValue("board")), Reports: s.runList(p, runs, false),
+		Performance: s.modelPerformance(r.PathValue("board")), PerformanceHref: s.href("/performance")}
 	for i, row := range rows {
 		page.Configurations = append(page.Configurations, configurationView{i + 1, row.Configuration.Label()})
 	}

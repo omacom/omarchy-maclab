@@ -398,33 +398,36 @@ func (l *publicLab) withReference(board string) {
 	}
 }
 
-func scoreRows(t *testing.T, page *node, benchmark string) []*node {
-	return page.all(t, `section[id="benchmark-`+benchmark+`"] tr.score-row`)
+// benchmarkRows are the rows of one benchmark in benchmarks.json, best
+// first: its check id and suite, such as "benchmark.storage" and 1.
+func (l *publicLab) benchmarkRows(check string, suite float64) []doc {
+	l.t.Helper()
+	for _, benchmark := range rowsOf(l.exported("/api/v1/benchmarks.json"), "benchmarks") {
+		if benchmark["check"] == check && benchmark["suite"] == suite {
+			return rowsOf(benchmark, "rows")
+		}
+	}
+	return nil
 }
 
 func TestStorageRowsSplitByCapacityAndOtherBenchmarksDoNot(t *testing.T) {
 	l := newPublicLab(t, nil)
 	l.add(storageRun(t, 3000, "1TB"), "a")
 	l.add(storageRun(t, 6000, "2TB"), "b")
-	page := l.page("/benchmarks")
-	storage := `section[id="benchmark-storage-suite-1"]`
-	if !page.hasText(t, storage+" .card-title", "storage · suite 1") || !page.hasText(t, storage+" th", "MB/s") || !page.hasText(t, storage+" tr.score-row .score-value", "6,000") {
-		t.Error("the storage card")
+	var capacities []any
+	for _, row := range l.benchmarkRows("benchmark.storage", 1) {
+		capacities = append(capacities, row["capacity"])
 	}
-	var capacities []string
-	for _, row := range scoreRows(t, page, "storage-suite-1") {
-		capacities = append(capacities, row.sole(t, ".capacity-cell").words())
-	}
-	same(t, "the capacities, best first", capacities, []string{"2TB", "1TB"})
-	if len(scoreRows(t, page, "opengl-suite-1")) != 1 || page.count(t, `section[id="benchmark-opengl-suite-1"] .capacity-cell`) != 0 {
-		t.Error("another benchmark splits by capacity")
+	same(t, "the capacities, best first", capacities, []any{"2TB", "1TB"})
+	if rows := l.benchmarkRows("benchmark.opengl", 1); len(rows) != 1 || rows[0]["capacity"] != nil {
+		t.Errorf("another benchmark splits by capacity: %v", rows)
 	}
 
-	// A report without a capacity is accepted and shows as unknown.
+	// A report without a capacity is accepted, its row with none.
 	l = newPublicLab(t, nil)
 	l.add(storageRun(t, 3000, ""), "a")
-	if !l.page("/benchmarks").hasText(t, storage+" .capacity-cell", "unknown") {
-		t.Error("a storage score without a capacity")
+	if rows := l.benchmarkRows("benchmark.storage", 1); len(rows) != 1 || rows[0]["capacity"] != nil {
+		t.Errorf("a storage score without a capacity: %v", rows)
 	}
 }
 
@@ -433,33 +436,26 @@ func TestTheMacOSColumnShowsTheSameBoardsNumberWithItsConditions(t *testing.T) {
 	l.withReference("j416c")
 	l.add(storageRun(t, 3000, "1TB"), "a")
 	l.add(storageRun(t, 6000, "2TB"), "b")
-	page := l.page("/benchmarks")
-	h264 := `section[id="benchmark-h264-decode-suite-1"] .macos-cell`
-	if !page.says(t, h264, "900") || !page.says(t, h264, "macOS 26.6, on AC, brightness about 50%, 1 display, 2026-11-01") {
-		t.Errorf("the macOS cell: %q", page.all(t, h264)[0].words())
+	const conditions = "macOS 26.6, on AC, brightness about 50%, 1 display, 2026-11-01"
+	if rows := l.benchmarkRows("benchmark.h264-decode", 1); len(rows) != 1 || rows[0]["macos"] != 900.0 || rows[0]["macos_conditions"] != conditions {
+		t.Errorf("the decode row's macOS number: %v", rows)
 	}
-	// GL and Vulkan have no macOS column.
-	if page.hasText(t, `section[id="benchmark-opengl-suite-1"] th`, "macOS") || page.count(t, `section[id="benchmark-vulkan-suite-1"] .macos-cell`) != 0 {
-		t.Error("a macOS column where macOS has no counterpart")
+	// Storage has macOS only at the same capacity.
+	rows := l.benchmarkRows("benchmark.storage", 1)
+	same(t, "the 1TB row", []any{rows[1]["capacity"], rows[1]["macos"], rows[1]["macos_conditions"]}, []any{"1TB", 6000.0, conditions})
+	if rows[0]["macos"] != nil {
+		t.Errorf("the 2TB row has a macOS number: %v", rows[0])
 	}
-	// Storage shows macOS only at the same capacity.
-	rows := scoreRows(t, page, "storage-suite-1")
-	if !strings.Contains(rows[1].sole(t, ".macos-cell").words(), "6,000") || !strings.Contains(rows[0].sole(t, ".macos-cell").words(), "no macOS reference at this capacity") {
-		t.Errorf("storage's macOS cells: %q, %q", rows[0].sole(t, ".macos-cell").words(), rows[1].sole(t, ".macos-cell").words())
-	}
-	// The export carries the capacity and the macOS number.
-	for _, benchmark := range rowsOf(l.exported("/api/v1/benchmarks"), "benchmarks") {
-		if benchmark["check"] == "benchmark.storage" {
-			row := rowsOf(benchmark, "rows")[1]
-			same(t, "the export's row", []any{row["capacity"], row["macos"], row["macos_conditions"]}, []any{"1TB", 6000.0, "macOS 26.6, on AC, brightness about 50%, 1 display, 2026-11-01"})
-		}
+	// GL has no macOS counterpart.
+	if rows := l.benchmarkRows("benchmark.opengl", 1); len(rows) != 1 || rows[0]["macos"] != nil {
+		t.Errorf("a macOS number where macOS has no counterpart: %v", rows)
 	}
 
-	// A board with no reference shows a dash.
+	// A board with no reference has none.
 	l = newPublicLab(t, nil)
 	l.add(goldenDoc(t, benchmarkGolden), "a")
-	if !l.page("/benchmarks").hasText(t, h264, "–") {
-		t.Error("a board with no reference")
+	if rows := l.benchmarkRows("benchmark.h264-decode", 1); len(rows) != 1 || rows[0]["macos"] != nil {
+		t.Errorf("a board with no reference: %v", rows)
 	}
 }
 
@@ -473,7 +469,7 @@ func TestTheRunPageShowsTheSSDsCapacityAndEachScore(t *testing.T) {
 	m1 := l.add(runWith(t, 0.6, "m1-pro-converged", 0), "c")
 	page := l.page("/reports/" + m1)
 	if !page.says(t, `li[id="check-benchmark.opengl"] .score`, "score 1,792 points (glmark2 2023.01, suite 1)") ||
-		page.count(t, `li[id="check-benchmark.hevc-decode"] .score a[href="/benchmarks#benchmark-hevc-decode-suite-1"]`) != 1 {
+		page.count(t, `li[id="check-benchmark.hevc-decode"] .score a[href="/models/j314s#benchmarks"]`) != 1 {
 		t.Errorf("the scores on the run's page: %q", page.sole(t, `li[id="check-benchmark.opengl"] .score`).words())
 	}
 }
@@ -484,51 +480,35 @@ func TestEachBenchmarkComparesMacsBestFirstEachMachineCountedOnceWithItsLatestSc
 	l.add(goldenDoc(t, benchmarkGolden), "a")
 	l.add(runWith(t, 1.1, "", 0), "c") // a second M2 Max
 	l.add(runWith(t, 0.6, "m1-pro-converged", 0), "b")
-	page := l.page("/benchmarks")
-	if !page.hasText(t, `section[id="benchmark-opengl-suite-1"] .card-title`, "opengl · suite 1") {
-		t.Error("the card's title")
+	rows := l.benchmarkRows("benchmark.opengl", 1)
+	var boards []any
+	for _, row := range rows {
+		boards = append(boards, row["board"])
 	}
-	rows := scoreRows(t, page, "opengl-suite-1")
-	same(t, "the boards, best first", attrsOf(rows, "data-board"), []string{"j416c", "j314s"})
-	m2, m1 := rows[0], rows[1]
+	same(t, "the boards, best first", boards, []any{"j416c", "j314s"})
 	// The M2's two machines: 2987 and 3286 (the median is between them); the older 1494 run doesn't count.
-	if m2.sole(t, ".score-value").words() != "3,136.5" || m2.sole(t, ".score-range").words() != "2,987–3,286" || !m2.hasText(t, "td", "2 (3 runs)") {
-		t.Errorf("the M2's row: %q", m2.words())
-	}
-	if m2.sole(t, ".score-bar rect").attr("width") != "100.0" || m1.sole(t, ".score-bar rect").attr("width") != "57.1" || m1.sole(t, ".score-value").words() != "1,792" {
-		t.Errorf("the bars: %q, %q", m2.sole(t, ".score-bar rect").attr("width"), m1.sole(t, ".score-bar rect").attr("width"))
-	}
-	if !m1.hasText(t, "td", "converged 4.0.0-alpha · build 99ace40.361571887310001 (linux-aurora 7.1.12.aurora2-10, omarchy-mac-boot 20260926-1.45)") ||
-		m1.attr("data-build") != "99ace40.361571887310001" {
-		t.Errorf("the M1's row: %q", m1.words())
-	}
-	if !page.hasText(t, `section[id="benchmark-h264-decode-suite-1"] tr.score-row .score-value`, "691") ||
-		!page.hasText(t, `section[id="benchmark-vulkan-suite-1"] tr.score-row td.dim`, "vkmark 2025.01") || !page.hasText(t, ".site-nav a.current", "Benchmarks") {
-		t.Error("the decode score, the tool or the current page")
-	}
-	if page.count(t, `a[href="/api/v1/benchmarks.json"]`) != 1 || page.count(t, "[style]") != 0 {
-		t.Error("no link to benchmarks.json, or a style attribute")
+	m2, m1 := rows[0], rows[1]
+	same(t, "the M2's row", []any{m2["score"], m2["low"], m2["high"], m2["machines"], m2["runs"]}, []any{3136.5, 2987.0, 3286.0, 2.0, 3.0})
+	if m1["score"] != 1792.0 || at(m1, "build", "id") != "99ace40.361571887310001" {
+		t.Errorf("the M1's row: %v", m1)
 	}
 
 	// Scores from another suite are never compared with these.
 	l = newPublicLab(t, nil)
 	l.add(goldenDoc(t, benchmarkGolden), "a")
 	l.add(runWith(t, 2.0, "", 2), "b")
-	page = l.page("/benchmarks")
-	if len(scoreRows(t, page, "opengl-suite-1")) != 1 || !page.hasText(t, `section[id="benchmark-opengl-suite-2"] tr.score-row .score-value`, "5,974") ||
-		!page.hasText(t, `section[id="benchmark-opengl-suite-1"] tr.score-row .score-value`, "2,987") {
-		t.Error("two suites are compared with each other")
+	one, two := l.benchmarkRows("benchmark.opengl", 1), l.benchmarkRows("benchmark.opengl", 2)
+	if len(one) != 1 || len(two) != 1 || one[0]["score"] != 2987.0 || two[0]["score"] != 5974.0 {
+		t.Errorf("two suites are compared with each other: %v, %v", one, two)
 	}
-	same(t, "the newest suite first", attrsOf(page.all(t, "section.benchmark"), "id")[:2], []string{"benchmark-opengl-suite-2", "benchmark-opengl-suite-1"})
 }
 
 func TestRunsWithoutScoresAndHiddenReportsAddNothing(t *testing.T) {
 	l := newPublicLab(t, nil)
 	l.add(goldenDoc(t, "m2-max-converged"), "a") // its benchmarks were skipped
 	l.hideReport(l.add(goldenDoc(t, benchmarkGolden), "b"))
-	page := l.page("/benchmarks")
-	if page.count(t, ".score-row") != 0 || !page.says(t, ".card", "No report has a benchmark score yet") {
-		t.Error("a run without scores or a hidden report added a score")
+	if got := rowsOf(l.exported("/api/v1/benchmarks.json"), "benchmarks"); len(got) != 0 {
+		t.Errorf("a run without scores or a hidden report added a score: %v", got)
 	}
 }
 

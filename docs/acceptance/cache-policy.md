@@ -13,7 +13,7 @@ Chosen 2026-11-15 (Brisbane). The spec leaves the exact pair to the build and as
 | An artifact | `Cache-Control: private` |
 | Everything else: `/api/*` but the exports, `/join`, `/status`, a deletion link, sign-in, every error, a forward on the Alias | `Cache-Control: no-store` |
 
-The public pages are `/`, `/matrix`, `/models`, `/features`, `/gaps`, `/aurora`, `/benchmarks`, `/candidates`, `/reports`, `/data`, `/terms`, `/privacy` and what is under `/models/`, `/features/`, `/candidates/` and `/reports/`, never a path ending in `/deletion`. The exports are `/api/v1/reports`, `/api/v1/checks`, `/api/v1/matrix`, `/api/v1/benchmarks` and `/api/v1/aurora`, each also with its `.json` or `.csv` ending. `internal/server/edge.go` holds the list; a test fails when it and the first cache rule of `scripts/cloud/edge.json` name different paths.
+The public pages are `/`, `/matrix`, `/models`, `/features`, `/gaps`, `/aurora`, `/performance`, `/candidates`, `/reports`, `/data`, `/terms`, `/privacy` and what is under `/models/`, `/features/`, `/performance/`, `/candidates/` and `/reports/`, never a path ending in `/deletion`. The exports are `/api/v1/reports`, `/api/v1/checks`, `/api/v1/matrix`, `/api/v1/benchmarks` and `/api/v1/aurora`, each also with its `.json` or `.csv` ending, and `/api/v1/performance.json`. `internal/server/edge.go` holds the list; a test fails when it and the first cache rule of `scripts/cloud/edge.json` name different paths.
 
 ## Why this pair
 

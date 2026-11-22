@@ -347,7 +347,7 @@ func (s *Server) reportPage(r *http.Request, p *reports.Published, run *reports.
 			value, _ := score.Get("value")
 			suite := words(member(score, "suite"))
 			c.Score = &scoreView{Value: reports.ScoreWords(value), Unit: reports.UnitWords(words(member(score, "unit"))), Tool: words(member(score, "tool")), Suite: suite,
-				Compare: s.href("/benchmarks") + "#benchmark-" + strings.TrimPrefix(check.ID, "benchmark.") + "-suite-" + suite}
+				Compare: s.href("/models/"+run.Board()) + "#benchmarks"}
 		}
 		c.Evidence = strings.Join(check.Evidence(), "\n")
 		name, _, _ := strings.Cut(check.ID, ".")
