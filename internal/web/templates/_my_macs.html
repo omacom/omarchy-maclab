@@ -32,6 +32,10 @@
 {{if .Why}}<p>{{.Why}}</p>
 {{end}}{{if .LastLog}}<p class="dim">The last line the lab had from it: <code>{{.LastLog}}</code></p>
 {{end}}</div>
+{{end}}{{with .MacOSWait}}<div class="fence" id="macos-at-mac-{{$card.Name}}">
+<p><b>The lab would like {{$card.Name}}'s macOS result</b>, and waits for you at the Mac until {{.}}, else it is dropped. Say so when you are at it: the lab then boots macOS once, and you type its password and log in. It comes back to Omarchy by itself.</p>
+<form class="inline" method="post" action="{{href (print $card.Page "/macos/at-mac")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><input type="hidden" name="back" value="my-macs"><button class="button button-small" type="submit">I am at the Mac</button></form>
+</div>
 {{end}}<dl class="facts">
 <dt>Configuration</dt><dd>{{.Configuration}}</dd>
 <dt>State</dt><dd>{{.State}}{{if .Reason}} <span class="dim">{{.Reason}}</span>{{end}}</dd>

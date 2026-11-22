@@ -20,7 +20,15 @@ const (
 	MacOSRunning    = "running"     // the runner took it
 	MacOSDone       = "done"        // the results are in
 	MacOSNeedsHands = "needs_hands" // the runner did not report within the deadline
+	MacOSCancelled  = "cancelled"   // its start failed: macOS was not set as the next boot
+	MacOSDropped    = "dropped"     // an Attended Mac had nobody at it within a day
 )
+
+// MacOSEnded is whether a run in state is over: it waits for no boot and is
+// handed to no runner. A needs_hands run still takes its late results.
+func MacOSEnded(state string) bool {
+	return state == MacOSDone || state == MacOSNeedsHands || state == MacOSCancelled || state == MacOSDropped
+}
 
 // NoMacOSEquivalent is the note of a benchmark with no macOS build.
 const NoMacOSEquivalent = "no macOS equivalent"
@@ -56,7 +64,26 @@ type MacOSRun struct {
 	Set  string `json:"set,omitempty"` // the Benchmark set whose list it runs
 	// PerfRun is the Performance run (perf_runs) the results go to, POST
 	// /api/macos/runner/performance/{PerfRun}/results; 0 is none yet.
-	PerfRun   int64           `json:"perf_run,omitempty"`
+	PerfRun int64 `json:"perf_run,omitempty"`
+	// Version and Build are the macOS the run measures: the build the
+	// Mac's runner last reported when it was queued, then the build of the
+	// boot that took it.
+	Version string `json:"version,omitempty"`
+	Build   string `json:"build,omitempty"`
+	// Boot is the boot that took the run (kern.bootsessionuuid, hashed):
+	// labd hands it to that boot alone.
+	Boot string `json:"boot,omitempty"`
+	// Attended is a run of an Attended Mac: labd boots macOS only once a
+	// person says they are at the Mac (AtMac, by AtMacBy), and drops the
+	// run at Expires, a day after the Mac's Volunteer or the Lab group was
+	// told (Told) that it is due.
+	Attended bool       `json:"attended,omitempty"`
+	Told     *time.Time `json:"told,omitempty"`
+	Expires  *time.Time `json:"expires,omitempty"`
+	AtMac    *time.Time `json:"at_mac,omitempty"`
+	AtMacBy  string     `json:"at_mac_by,omitempty"`
+	// Job is the job that boots macOS for the run.
+	Job       string          `json:"job,omitempty"`
 	State     string          `json:"state"`
 	Artifacts []MacOSArtifact `json:"artifacts,omitempty"`
 	Queued    time.Time       `json:"queued"`
@@ -65,6 +92,13 @@ type MacOSRun struct {
 	Done      *time.Time      `json:"done,omitempty"`
 	Results   []BenchResult   `json:"results,omitempty"`
 	Error     string          `json:"error,omitempty"`
+}
+
+// MacOSJobSpec makes a job a Mac's macOS run: it boots macOS once for the
+// queued run, waits for its results or its deadline, and ends once the Mac
+// is back on its Known-good kernel.
+type MacOSJobSpec struct {
+	Run string `json:"run"`
 }
 
 // MacOSRunRequest queues a macOS run (POST /api/devices/{name}/macos-runs).
@@ -109,6 +143,10 @@ type MacOSSide struct {
 	Enrolled   bool       `json:"enrolled"`
 	Attendance string     `json:"attendance"`
 	Said       *time.Time `json:"said,omitempty"`
+	// Version and Build are the macOS its runner last reported, at
+	// enrollment or at a macOS boot.
+	Version string `json:"version,omitempty"`
+	Build   string `json:"build,omitempty"`
 }
 
 // MacOSPoll is labd's answer to a runner's poll: the run to do, or none.

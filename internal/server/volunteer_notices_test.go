@@ -565,7 +565,7 @@ func (m Notification) Action() bool {
 // ---- the five wordings, and what a Notice never carries ----
 
 // noticeWordings are the only bodies a Notice may have, after the Mac's
-// name: the five fixed wordings (spec 13), the restart one in its laptop
+// name: the six fixed wordings (spec 13), the restart one in its laptop
 // and desktop steps, the job one starting and done.
 var noticeWordings = []*regexp.Regexp{
 	regexp.MustCompile(`^It needs a restart: hold its power button \(the Touch ID key, top right of the keyboard\) for 10 seconds, until the screen stays black, then wait 5 seconds and press it once to turn it back on\. Open My Macs\.$`),
@@ -575,6 +575,7 @@ var noticeWordings = []*regexp.Regexp{
 	regexp.MustCompile(`^Job [a-z0-9-]+ is done \([a-z_-]+\)\. The lab is finished with this Mac for now: you can reboot it or use it\. Open My Macs\.$`),
 	regexp.MustCompile(`^The lab's terms changed\. This Mac is waiting for you: open My Macs\.$`),
 	regexp.MustCompile(`^An update is waiting for this Mac\. Open My Macs\.$`),
+	regexp.MustCompile(`^The lab would like this Mac's macOS result\. It waits a day for someone at the Mac: if that is you, open My Macs and say you are at it\.$`),
 }
 
 // asksForAPasswordOrACommand are words a Notice never says (spec 14,
@@ -612,9 +613,9 @@ func checkNotice(t *testing.T, p ntfyPost, mac string, never ...string) {
 	}
 }
 
-func TestOnlyTheFiveWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T) {
-	if len(noticeKinds) != 5 {
-		t.Fatalf("%d kinds of Notice, want the five", len(noticeKinds))
+func TestOnlyTheSixWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T) {
+	if len(noticeKinds) != 6 {
+		t.Fatalf("%d kinds of Notice, want the six", len(noticeKinds))
 	}
 	pub, _ := ParsePublicURL("https://lab.example.org")
 	s := &Server{cfg: Config{PublicURL: pub}}
@@ -634,9 +635,10 @@ func TestOnlyTheFiveWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T)
 			}
 		}
 	}
-	// two restarts, one ending, a job starting and done, terms, an update
-	if len(seen) != 7 {
-		t.Errorf("%d bodies, want 7: %v", len(seen), seen)
+	// two restarts, one ending, a job starting and done, terms, an update,
+	// a macOS result due
+	if len(seen) != 8 {
+		t.Errorf("%d bodies, want 8: %v", len(seen), seen)
 	}
 }
 

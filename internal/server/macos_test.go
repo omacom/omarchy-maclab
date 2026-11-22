@@ -107,10 +107,13 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 		t.Fatalf("started: %d %s", resp.StatusCode, body)
 	}
 
-	_, body = l.as(secret, "GET", "/api/macos/runner/poll", nil)
-	got := decodeInto[api.MacOSPoll](t, body).Run
+	// A poll that says no boot is handed nothing; the boot after the start is.
+	if _, body := l.as(secret, "GET", "/api/macos/runner/poll", nil); decodeInto[api.MacOSPoll](t, body).Run != nil {
+		t.Fatalf("a run to a boot that said not which: %s", body)
+	}
+	got := pollAs(t, l, secret, bootHash(1), *decodeInto[api.MacOSRun](t, body).Started, "")
 	if got == nil || got.ID != run.ID || got.Tier != api.TierExtended || got.State != api.MacOSRunning {
-		t.Fatalf("poll: %s", body)
+		t.Fatalf("poll: %+v", got)
 	}
 	if resp, body := l.as(secret, "GET", "/api/macos/runner/artifacts/"+sha, nil); resp.StatusCode != 200 || body != "web benchmarks bundle" {
 		t.Errorf("artifact: %d %q", resp.StatusCode, body)

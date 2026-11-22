@@ -182,6 +182,17 @@ func (g labGroupLines) Publishing(mac string, on bool) {
 	}
 }
 
+// MacOSRunDue is a Lab-owned Attended Mac whose macOS run is due: it waits
+// for a person at the Mac until then, and links to the Mac's page, where
+// they say so.
+func (g labGroupLines) MacOSRunDue(mac string, until time.Time) {
+	text := "The macOS run of " + mac + " is due: it waits for a person at the Mac until " + when(until) + ", else it is dropped."
+	if at := g.link("/macs/" + mac); at != "" {
+		text += " Say you are at it on its page: " + at
+	}
+	g.l.post(lineLab, text)
+}
+
 func (g labGroupLines) MacLeftByVolunteer(mac string) {
 	g.l.post(lineLab, mac+" left the lab: its Volunteer ended it.")
 }

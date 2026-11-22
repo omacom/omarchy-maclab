@@ -99,8 +99,11 @@ type macCard struct {
 	Agent, LabAgent, UpdateLine string
 	// MacOS is its macOS side in words; MacOSLine the runner's one-time
 	// line, on the answer to Set up macOS only.
-	MacOS               string
-	MacOSLine           *macOSLine
+	MacOS     string
+	MacOSLine *macOSLine
+	// MacOSWait is until when its macOS run waits for its Volunteer at
+	// the Mac, "" when it waits for nobody.
+	MacOSWait           string
 	Jobs                []macJobRow
 	Reports             []cardReport
 	Record, Audit, Exec []recordShownLine
@@ -255,6 +258,7 @@ func (s *Server) macCard(v *dev, p Person) macCard {
 		Holder: row.Holder, HolderKind: row.HolderKind, HolderClass: row.HolderClass, Until: row.Until,
 		Agent: d.Facts.AgentVersion, LabAgent: d.LabAgent, UpdateLine: agentUpdateLine(d), Commands: onlyAtTheMac, LeaveSentence: leaveSentence(d.Name),
 		MacOS: macOSWords(s.macOSSide(d.Name))}
+	c.MacOSWait = s.macOSWaitWords(v, p)
 	// Until its first baseline has passed, the stage says what the Mac
 	// waits for; labd's own note then is a Maintainer's.
 	if d.Arrival != "" && d.Arrival != ArrivalReady {

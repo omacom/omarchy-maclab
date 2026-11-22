@@ -218,6 +218,7 @@ func (s *Server) afterRetiring(d *api.Device, l leaving) {
 	if _, err := s.macOS().revoke(d.Name); err != nil {
 		s.log.Printf("retire %s: its macOS runner: %v", d.Name, err)
 	}
+	s.cancelDroppedMacOSRuns()
 	s.dropNamedState(d.Name)
 }
 

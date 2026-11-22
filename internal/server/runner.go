@@ -584,6 +584,10 @@ func windowCut(what string) (string, string) {
 // Volunteer's Mac, it waits for a window it fits in. labd's own omarchy-m-test
 // refreshes aren't retried: the next one is due anyway.
 func (r *jobRun) retry() {
+	if r.j.Spec.MacOS != nil {
+		r.ev("not retried: the Mac's macOS run is queued again at its next slot")
+		return
+	}
 	if r.j.Spec.Holder == omtHolder {
 		return
 	}
@@ -675,6 +679,9 @@ func (r *jobRun) finishAt(outcome, summary string, at time.Time) {
 
 func (r *jobRun) execute(ctx context.Context) (string, string) {
 	v, j := r.v, r.j
+	if j.Spec.MacOS != nil {
+		return r.macOSRun(ctx)
+	}
 	if j.Spec.Compare != nil {
 		return r.compare(ctx)
 	}
@@ -1121,6 +1128,9 @@ func (r *jobRun) labBootJob() time.Duration {
 // identity checks before, booted and after, and on a Volunteer's Mac the
 // Reboot warning's wait.
 func (r *jobRun) expectedLength() time.Duration {
+	if r.j.Spec.MacOS != nil {
+		return macosDeadline(api.TierExtended) + 2*r.boot + r.s.cfg.RebootGrace
+	}
 	d := r.s.cfg.StageTimeout + r.labBootJob()
 	if c := r.j.Spec.Compare; c != nil {
 		d *= 2

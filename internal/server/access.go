@@ -152,6 +152,9 @@ func (s *Server) unlimitMac(v *dev, by Person) error {
 // needsFull is why a job spec needs a Volunteer's Mac at Full, or "": a
 // Maintainer's script, as root or in the Volunteer's session.
 func needsFull(spec api.JobSpec) string {
+	if spec.MacOS != nil {
+		return "booting macOS once"
+	}
 	if spec.Compare != nil {
 		return "a Compare's Candidate boot"
 	}

@@ -2,15 +2,17 @@ package server
 
 // macOS runs: the same benchmarks in macOS, on the same Mac, unattended.
 //
-// A run is queued for a Mac (queueMacOSRun, or POST
+// A run is queued for a Mac: its macOS result (queueMacOSSide,
+// macos_side.go), or by a Maintainer (queueMacOSRun, or POST
 // /api/devices/{name}/macos-runs). lab-agent boot-macos-once tells labd it is
 // booting macOS once (POST /api/agent/macos-started), which starts the run's
 // deadline. In macOS, lab-macos-runner, a LaunchDaemon enrolled once per Mac
-// with a one-time token, asks labd at boot for its run (GET
-// /api/macos/runner/poll), fetches the run's pinned artifacts by sha256, runs
-// the tier's list and uploads the results, then reboots back to Omarchy. A
-// run not reported by its deadline (a FileVault Mac waits for its password
-// at the screen) leaves the Mac Needs hands.
+// with a one-time token, reports the macOS build and asks labd at boot for
+// its run (GET /api/macos/runner/poll), which is handed only to the boot
+// that began after labd started it; it fetches the run's pinned artifacts by
+// sha256, runs the list and uploads the results, then reboots back to
+// Omarchy. A run not reported by its deadline (a FileVault Mac waits for its
+// password at the screen) leaves the Mac Needs hands.
 //
 // A runner's secret belongs to the Mac's enrollment (Device.ID): it works
 // only while that enrollment lasts, and it is revoked when the Mac Leaves or
@@ -29,23 +31,35 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
+	"github.com/omacom/omarchy-maclab/internal/perf"
 )
 
 const macosTokenTTL = time.Hour
 
 // macosDeadline is how long a started run has to report: the boot, the
-// benchmarks of its tier and the upload.
-var macosDeadline = func(tier string) time.Duration {
-	if tier == api.TierExtended {
-		return 60 * time.Minute
-	}
-	return 30 * time.Minute
+// benchmarks of its list and the upload. A run past it is needs_hands and
+// its Mac Needs hands; results that come later are still taken.
+var macosDeadline = func(tier string) time.Duration { return 60 * time.Minute }
+
+// macosWaitForPerson is how long labd waits for a person at an Attended Mac
+// once its macOS run is due: past it, the macOS side is dropped.
+var macosWaitForPerson = 24 * time.Hour
+
+// macosBuild is what a Mac's runner last reported of its macOS, and for
+// which enrollment.
+type macosBuild struct {
+	Enrollment string    `json:"enrollment"`
+	Version    string    `json:"version"`
+	Build      string    `json:"build"`
+	Said       time.Time `json:"said"`
 }
 
 type macosToken struct {
@@ -67,6 +81,7 @@ type macosState struct {
 	Tokens   map[string]macosToken    `json:"tokens"`   // hash of a one-time token
 	Enrolled map[string]macosRunner   `json:"enrolled"` // hash of a runner's secret
 	Runs     map[string]*api.MacOSRun `json:"runs"`     // the Mac's latest run
+	Builds   map[string]macosBuild    `json:"builds,omitempty"`
 	// Runners are the secrets of before they belonged to an enrollment
 	// (hash -> Mac). They are dropped as labd opens the file: such a
 	// runner enrolls again.
@@ -77,7 +92,9 @@ type macosRuns struct {
 	mu     sync.Mutex
 	path   string
 	st     macosState
-	timers map[string]chan struct{} // closed to stop the Mac's deadline
+	timers map[string]chan struct{} // closed to stop the Mac's deadline, or its wait for a person
+	// dropped is the Performance runs of runs revoke dropped.
+	dropped []int64
 }
 
 func openMacOSRuns(dir string) *macosRuns {
@@ -99,6 +116,9 @@ func openMacOSRuns(dir string) *macosRuns {
 	}
 	if m.st.Runs == nil {
 		m.st.Runs = map[string]*api.MacOSRun{}
+	}
+	if m.st.Builds == nil {
+		m.st.Builds = map[string]macosBuild{}
 	}
 	return m
 }
@@ -134,14 +154,42 @@ func (m *macosRuns) run(mac string) *api.MacOSRun {
 var errRunWaiting = errors.New("a macOS run waits for this Mac already")
 
 func (m *macosRuns) queue(mac, tier, set string, arts []api.MacOSArtifact, now time.Time) (*api.MacOSRun, error) {
+	return m.queueRun(&api.MacOSRun{Mac: mac, Tier: tier, Set: set, Artifacts: arts}, now)
+}
+
+// queueRun queues r as the Mac's run, unless one waits already.
+func (m *macosRuns) queueRun(r *api.MacOSRun, now time.Time) (*api.MacOSRun, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if r := m.st.Runs[mac]; r != nil && r.State != api.MacOSDone && r.State != api.MacOSNeedsHands {
-		return nil, fmt.Errorf("%w (%s, %s)", errRunWaiting, r.ID, r.State)
+	if was := m.st.Runs[r.Mac]; was != nil && !api.MacOSEnded(was.State) {
+		return nil, fmt.Errorf("%w (%s, %s)", errRunWaiting, was.ID, was.State)
 	}
-	r := &api.MacOSRun{ID: "mos-" + randHex(6), Mac: mac, Tier: tier, Set: set, State: api.MacOSQueued, Artifacts: arts, Queued: now}
-	m.st.Runs[mac] = r
+	r = cloneRun(r)
+	r.ID, r.State, r.Queued = "mos-"+randHex(6), api.MacOSQueued, now
+	m.st.Runs[r.Mac] = r
 	return cloneRun(r), m.saveLocked()
+}
+
+// sayBuild keeps the macOS version and build the runner of the Mac's
+// enrollment reported.
+func (m *macosRuns) sayBuild(mac, enrollment, version, build string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if was, ok := m.st.Builds[mac]; ok && was.Enrollment == enrollment && was.Version == version && was.Build == build {
+		was.Said = at
+		m.st.Builds[mac] = was
+		return nil
+	}
+	m.st.Builds[mac] = macosBuild{Enrollment: enrollment, Version: version, Build: build, Said: at}
+	return m.saveLocked()
+}
+
+// buildOf is the macOS the runner of the Mac's enrollment last reported.
+func (m *macosRuns) buildOf(mac, enrollment string) (macosBuild, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.st.Builds[mac]
+	return b, ok && b.Enrollment == enrollment && b.Build != ""
 }
 
 func (m *macosRuns) addToken(hash, mac, enrollment string, exp time.Time) error {
@@ -241,14 +289,26 @@ func (m *macosRuns) revoke(mac string) (int, error) {
 			delete(m.st.Tokens, h)
 		}
 	}
-	if r := m.st.Runs[mac]; r != nil && r.State != api.MacOSDone && r.State != api.MacOSNeedsHands {
+	if r := m.st.Runs[mac]; r != nil && !api.MacOSEnded(r.State) {
+		m.dropped = append(m.dropped, r.PerfRun)
 		delete(m.st.Runs, mac)
 	}
+	delete(m.st.Builds, mac)
 	if stop := m.timers[mac]; stop != nil {
 		close(stop)
 		delete(m.timers, mac)
 	}
 	return n, m.saveLocked()
+}
+
+// takeDropped is the Performance runs of the runs revoke dropped, for labd
+// to cancel.
+func (m *macosRuns) takeDropped() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := m.dropped
+	m.dropped = nil
+	return d
 }
 
 // change applies f to the Mac's run under the lock and saves it.
@@ -273,22 +333,33 @@ func (s *Server) macOS() *macosRuns {
 	s.macosOnce.Do(func() {
 		s.macos = openMacOSRuns(s.cfg.DataDir)
 		s.macos.mu.Lock()
-		var started []*api.MacOSRun
+		var started, waiting []*api.MacOSRun
 		for _, r := range s.macos.st.Runs {
-			if (r.State == api.MacOSStarted || r.State == api.MacOSRunning) && r.Deadline != nil {
+			switch {
+			case (r.State == api.MacOSStarted || r.State == api.MacOSRunning) && r.Deadline != nil:
 				started = append(started, cloneRun(r))
+			case r.State == api.MacOSQueued && r.Expires != nil && r.AtMac == nil:
+				waiting = append(waiting, cloneRun(r))
 			}
 		}
 		s.macos.mu.Unlock()
 		for _, r := range started {
 			s.armMacOSDeadline(r.Mac, r.ID, r.Deadline.Sub(s.now()))
 		}
+		for _, r := range waiting {
+			s.armMacOSTimer(r.Mac, r.ID, r.Expires.Sub(s.now()), s.macOSNobodyCame)
+		}
 	})
 	return s.macos
 }
 
-// macOSBenchSet is the Benchmark set a macOS run takes its files from.
+// macOSBenchSet is the Benchmark set a macOS run a Maintainer queues takes
+// its files from.
 var macOSBenchSet = sets.Newest
+
+// macOSCurrentSet is the set a Mac's macOS result is taken of: the current
+// set.
+var macOSCurrentSet = sets.Current
 
 // macOSBench is the pinned macOS files of the set's Quick list (default) or
 // Full list (extended), by file id; a placeholder is left out. Each must be
@@ -303,17 +374,24 @@ func (s *Server) macOSBench(tier string) (string, []api.MacOSArtifact, error) {
 	if tier == api.TierExtended {
 		list = sets.Full
 	}
+	arts, err := s.macOSFiles(set, list)
+	return set.Name, arts, err
+}
+
+// macOSFiles is the pinned macOS files of the set's list, each in the
+// artifact store.
+func (s *Server) macOSFiles(set *sets.Set, list string) ([]api.MacOSArtifact, error) {
 	var out []api.MacOSArtifact
 	for _, f := range set.FilesFor(sets.MacOS, set.List(list)) {
 		if !f.Pinned() {
 			continue
 		}
 		if _, err := os.Stat(s.artifactPath(f.SHA256)); err != nil {
-			return "", nil, fmt.Errorf("%s: the macOS file %s (%s) is not in the artifact store: lab bench mirror", set.Name, f.ID, short(f.SHA256))
+			return nil, fmt.Errorf("%s: the macOS file %s (%s) is not in the artifact store: lab bench mirror", set.Name, f.ID, short(f.SHA256))
 		}
 		out = append(out, api.MacOSArtifact{Name: f.ID, SHA256: f.SHA256})
 	}
-	return set.Name, out, nil
+	return out, nil
 }
 
 var errNoMac = errors.New("no such Mac")
@@ -342,6 +420,13 @@ func (s *Server) queueMacOSRun(mac, tier string) (*api.MacOSRun, error) {
 }
 
 func (s *Server) armMacOSDeadline(mac, id string, d time.Duration) {
+	s.armMacOSTimer(mac, id, d, s.macOSDeadlinePassed)
+}
+
+// armMacOSTimer has f called for the Mac's run id after d, in place of any
+// earlier timer of the Mac's: a run waits for a person, then for its
+// deadline, never both.
+func (s *Server) armMacOSTimer(mac, id string, d time.Duration, f func(mac, id string)) {
 	m := s.macOS()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -354,11 +439,21 @@ func (s *Server) armMacOSDeadline(mac, id string, d time.Duration) {
 	go func() {
 		select {
 		case <-at:
-			s.macOSDeadlinePassed(mac, id)
+			f(mac, id)
 		case <-stop:
 		case <-s.ctx.Done():
 		}
 	}()
+}
+
+// stopTimer stops the Mac's timer.
+func (m *macosRuns) stopTimer(mac string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if stop := m.timers[mac]; stop != nil {
+		close(stop)
+		delete(m.timers, mac)
+	}
 }
 
 func (s *Server) macOSDeadlinePassed(mac, id string) {
@@ -374,6 +469,11 @@ func (s *Server) macOSDeadlinePassed(mac, id string) {
 		return
 	}
 	s.log.Printf("macOS run %s on %s: no report by its deadline: Needs hands", r.ID, mac)
+	if r.PerfRun > 0 {
+		if err := s.store.endPerfRun(r.PerfRun, perf.NeedsHands, s.now()); err != nil {
+			s.log.Printf("macOS run %s: its performance run %d: %v", r.ID, r.PerfRun, err)
+		}
+	}
 	if v := s.dev(mac); v != nil {
 		v.setState(api.StateNeedsHands, "macOS run "+r.ID+" did not report in time: a FileVault Mac waits for its password at the screen; type it, or hold the power button and boot Omarchy")
 	}
@@ -387,6 +487,9 @@ func (s *Server) macosRoutes() []route {
 		{"POST /api/devices/{name}/macos-runs", maintainers, s.hQueueMacOSRun},
 		{"GET /api/devices/{name}/macos-runs", maintainers, s.hMacOSRun},
 		{"GET /api/devices/{name}/macos", maintainers, s.hMacOSSide},
+		// A person at an Attended Mac whose macOS run is due: its
+		// Volunteer, or a Maintainer (atTheMac says who).
+		{"POST /api/devices/{name}/macos/at-mac", macNamed, s.hMacOSAtMac},
 		// The runner's own: a one-time token, then its secret.
 		{"POST /api/macos/runner/enroll", anyone, s.hMacOSRunnerEnroll},
 		{"GET /api/macos/runner/poll", anyone, s.macosRunner(s.hMacOSPoll)},
@@ -486,7 +589,33 @@ func (s *Server) hMacOSRunnerEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("the macOS runner of %s enrolled", t.Mac)
+	s.macOSBuildSaid(t.Mac, t.Enrollment, r)
 	writeJSON(w, api.MacOSEnrolled{Mac: t.Mac, Secret: secret})
+}
+
+var (
+	reMacOSVersion = regexp.MustCompile(`^[0-9]{1,3}(\.[0-9]{1,3}){0,3}$`)
+	reMacOSBuild   = regexp.MustCompile(`^[0-9]{2}[A-Z][0-9]{1,5}[a-z]?$`)
+)
+
+// macOSBuildSaid keeps the macOS version and build a runner reported, at
+// enrollment and at every macOS boot (sw_vers, as ?version=&build=): a
+// person's own boot reports this and nothing else. What does not read as a
+// macOS version and build is not kept. With the build known, a missing
+// macOS result is queued.
+func (s *Server) macOSBuildSaid(mac, enrollment string, r *http.Request) {
+	q := r.URL.Query()
+	version, build := q.Get("version"), q.Get("build")
+	if !reMacOSVersion.MatchString(version) || !reMacOSBuild.MatchString(build) {
+		return
+	}
+	if err := s.macOS().sayBuild(mac, enrollment, version, build, s.now()); err != nil {
+		s.log.Printf("%s: its macOS build: %v", mac, err)
+		return
+	}
+	if run, err := s.queueMacOSSide(mac); err == nil && run != nil {
+		s.log.Printf("%s: no macOS result of %s at macOS %s (%s): macOS run %s queued", mac, run.Set, version, build, run.ID)
+	}
 }
 
 // hMacOSAttendance is the runner saying, after a boot, whether it reached
@@ -531,6 +660,9 @@ func (s *Server) macOSSide(mac string) api.MacOSSide {
 		said := e.Said
 		side.Said = &said
 	}
+	if b, ok := s.macOS().buildOf(mac, id); ok {
+		side.Version, side.Build = b.Version, b.Build
+	}
 	return side
 }
 
@@ -570,9 +702,10 @@ func (s *Server) hMacOSRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, run)
 }
 
-// hMacOSStarted is lab-agent boot-macos-once, before it blesses macOS for
-// the next boot: refused unless a run is queued, so that a Mac never boots
-// macOS for nothing.
+// hMacOSStarted is lab-agent boot-macos-once, once asahi-bless has set
+// macOS as the next boot: refused unless a run is queued, which has
+// lab-agent put the next boot back, so that a Mac never boots macOS for
+// nothing. The run's deadline starts here.
 func (s *Server) hMacOSStarted(w http.ResponseWriter, r *http.Request) {
 	v := agentDev(r)
 	v.mu.Lock()
@@ -596,18 +729,61 @@ func (s *Server) hMacOSStarted(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, run)
 }
 
+// A started run is the boot's that began from macosClockSkew before the
+// run started to macosStartWindow after, as the runner has it too.
+const (
+	macosClockSkew   = 2 * time.Minute
+	macosStartWindow = 15 * time.Minute
+)
+
+var reBootSession = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// hMacOSPoll is a runner's poll at a macOS boot. It reports the boot's
+// macOS build, which labd keeps, and the boot (?boot=, its session hashed,
+// and ?booted=, when it began, in Unix seconds). A started run is handed
+// only to a boot that began after labd started it, and is bound to the
+// first such boot: no other boot gets it, and a person's own boot gets
+// nothing.
 func (s *Server) hMacOSPoll(w http.ResponseWriter, r *http.Request) {
 	mac := r.Context().Value(macosRunnerKey{}).(string)
-	run, err := s.macOS().change(mac, func(r *api.MacOSRun) error {
-		if r.State != api.MacOSStarted && r.State != api.MacOSRunning {
+	if id, ok := s.enrollmentOf(mac); ok {
+		s.macOSBuildSaid(mac, id, r)
+	}
+	q := r.URL.Query()
+	boot := q.Get("boot")
+	secs, berr := strconv.ParseInt(q.Get("booted"), 10, 64)
+	version, build := q.Get("version"), q.Get("build")
+	retarget := false
+	run, err := s.macOS().change(mac, func(m *api.MacOSRun) error {
+		switch {
+		case m.State != api.MacOSStarted && m.State != api.MacOSRunning:
+			return errNoRun
+		case m.Boot != "":
+			if m.Boot != boot {
+				return errNoRun
+			}
+			return nil
+		case !reBootSession.MatchString(boot) || berr != nil || m.Started == nil:
 			return errNoRun
 		}
-		r.State = api.MacOSRunning
+		at := time.Unix(secs, 0)
+		if at.Before(m.Started.Add(-macosClockSkew)) || at.After(m.Started.Add(macosStartWindow)) {
+			return errNoRun
+		}
+		m.Boot, m.State = boot, api.MacOSRunning
+		if reMacOSBuild.MatchString(build) && reMacOSVersion.MatchString(version) && build != m.Build && m.Build != "" {
+			m.Version, m.Build, retarget = version, build, true
+		}
 		return nil
 	})
 	if err != nil {
 		writeJSON(w, api.MacOSPoll{})
 		return
+	}
+	if retarget && run.PerfRun > 0 {
+		if err := s.store.retargetMacOSPerfRun(run.PerfRun, version, build); err != nil {
+			s.log.Printf("macOS run %s: its performance run at macOS %s: %v", run.ID, build, err)
+		}
 	}
 	writeJSON(w, api.MacOSPoll{Run: run})
 }
@@ -646,13 +822,7 @@ func (s *Server) hMacOSResults(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 409, "no macOS run %s is running on %s", up.RunID, mac)
 		return
 	}
-	m := s.macOS()
-	m.mu.Lock()
-	if stop := m.timers[mac]; stop != nil {
-		close(stop)
-		delete(m.timers, mac)
-	}
-	m.mu.Unlock()
+	s.macOS().stopTimer(mac)
 	s.log.Printf("%s: macOS run %s done, %d results", mac, run.ID, len(run.Results))
 	writeJSON(w, map[string]string{"run": run.ID, "state": run.State})
 }
