@@ -103,11 +103,9 @@ const (
 )
 
 // Upload is what the runner sends labd at the end of a macOS run: its
-// bench.json and bench-conditions.json, and whether it succeeded. RunID is
-// only for labd's older endpoint (/api/macos/runner/results), which finds
-// the run by it; the Performance one has the run in its path.
+// bench.json and bench-conditions.json, and whether it succeeded, to the
+// run's performance run.
 type Upload struct {
-	RunID      string     `json:"run_id,omitempty"`
 	Entries    []Result   `json:"entries"`
 	Conditions Conditions `json:"conditions"`
 	State      string     `json:"state"`

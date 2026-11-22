@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,32 +11,29 @@ import (
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
+	"github.com/omacom/omarchy-maclab/internal/perf"
 )
 
-// macosBench makes the macOS runs' Benchmark set one with a single macOS
-// file, in the artifact store, and a placeholder beside it.
-func macosBench(t *testing.T, l *lab) string {
-	t.Helper()
+// A macOS run's set must have its macOS files in the artifact store, where
+// lab bench mirror puts them; a placeholder is left out.
+func TestAMacOSRunIsRefusedWhenItsSetsFilesAreNotMirrored(t *testing.T) {
+	l := newLab(t, false)
 	sha := l.artifact("web benchmarks bundle")
 	set := &sets.Set{Name: "bench-9", N: 9,
 		Metrics: []sets.Metric{
 			{ID: "web", List: sets.Quick, MacOS: &sets.Side{Files: []string{"web-benchmarks"}}},
-			{ID: "later", List: sets.Full, MacOS: &sets.Side{Files: []string{"web-benchmarks", "not-built"}}},
+			{ID: "later", List: sets.Full, MacOS: &sets.Side{Files: []string{"web-benchmarks", "not-built", "not-mirrored"}}},
 		},
 		Files: map[string][]sets.File{sets.MacOS: {
 			{ID: "web-benchmarks", Version: "1", Kind: "tarball", SHA256: sha},
 			{ID: "not-built", Version: "1", Kind: "tarball", SHA256: sets.Placeholder},
+			{ID: "not-mirrored", Version: "1", Kind: "tarball", SHA256: strings.Repeat("ab", 32)},
 		}}}
-	old := macOSBenchSet
-	macOSBenchSet = func() (*sets.Set, error) { return set, nil }
-	t.Cleanup(func() { macOSBenchSet = old })
-	return sha
-}
-
-func TestAMacOSRunIsRefusedWhenItsSetsFilesAreNotMirrored(t *testing.T) {
-	l := newLab(t, false)
-	if _, err := l.s.queueMacOSRun(l.name, api.TierDefault); err == nil || !strings.Contains(err.Error(), "lab bench mirror") {
+	if _, err := l.s.openMacOSSide(l.name, "e1", set, macosBuild{}); err == nil || !strings.Contains(err.Error(), "not-mirrored") || !strings.Contains(err.Error(), "lab bench mirror") {
 		t.Fatalf("err %v", err)
+	}
+	if arts, err := l.s.macOSFiles(set, sets.Quick); err != nil || len(arts) != 1 || arts[0].SHA256 != sha {
+		t.Errorf("the Quick list's files: %+v %v", arts, err)
 	}
 }
 
@@ -76,7 +74,7 @@ func enrollRunner(t *testing.T, l *lab) string {
 
 func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 	l := newLab(t, false)
-	sha := macosBench(t, l)
+	macOSResultSet(t, l)
 	secret := enrollRunner(t, l)
 
 	// Nothing queued: the runner hears so, and boot-macos-once is refused
@@ -88,15 +86,14 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 		t.Fatalf("started with none queued: %d %s", resp.StatusCode, body)
 	}
 
-	run, err := l.s.queueMacOSRun(l.name, api.TierExtended)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.State != api.MacOSQueued || run.Set != "bench-9" || len(run.Artifacts) != 1 || run.Artifacts[0].SHA256 != sha {
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
+	run := l.s.macOS().run(l.name)
+	if run == nil || run.State != api.MacOSQueued || run.Set != "bench-1" || run.PerfRun == 0 || len(run.Artifacts) == 0 {
 		t.Fatalf("queued: %+v", run)
 	}
-	if _, err := l.s.queueMacOSRun(l.name, api.TierDefault); err == nil {
-		t.Error("a second run queued over the first")
+	sha := run.Artifacts[0].SHA256
+	if again, err := l.s.queueMacOSSide(l.name); err != nil || again != nil {
+		t.Errorf("a second run queued over the first: %+v %v", again, err)
 	}
 	// Queued but not started: the runner waits for the boot.
 	if _, body := l.as(secret, "GET", "/api/macos/runner/poll", nil); decodeInto[api.MacOSPoll](t, body).Run != nil {
@@ -115,7 +112,7 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 	if got == nil || got.ID != run.ID || got.Tier != api.TierExtended || got.State != api.MacOSRunning {
 		t.Fatalf("poll: %+v", got)
 	}
-	if resp, body := l.as(secret, "GET", "/api/macos/runner/artifacts/"+sha, nil); resp.StatusCode != 200 || body != "web benchmarks bundle" {
+	if resp, body := l.as(secret, "GET", "/api/macos/runner/artifacts/"+sha, nil); resp.StatusCode != 200 || body != "bench-1's macOS files" {
 		t.Errorf("artifact: %d %q", resp.StatusCode, body)
 	}
 	other := l.artifact("not in the run")
@@ -126,43 +123,25 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 		t.Errorf("a wrong runner secret: %d", resp.StatusCode)
 	}
 
-	v := 412.5
-	up := api.MacOSResults{RunID: run.ID, Results: []api.BenchResult{
-		{Name: "speedometer/chrome", Version: "3.1", Value: &v, Unit: "score", HigherIsBetter: true, Spread: 3, Seconds: 120},
-		{Name: "kernel-compile", Note: api.NoMacOSEquivalent},
-	}}
-	if resp, body := l.as(secret, "POST", "/api/macos/runner/results", up); resp.StatusCode != 200 {
+	path := fmt.Sprintf("/api/macos/runner/performance/%d/results", run.PerfRun)
+	if resp, body := l.as(secret, "POST", path, macOSUpload(t, perf.Succeeded, map[string]float64{"coremark-single": 31000})); resp.StatusCode != 200 {
 		t.Fatalf("results: %d %s", resp.StatusCode, body)
 	}
 	_, body = l.get("GET", "/api/devices/"+l.name+"/macos-runs")
-	done := decodeInto[api.MacOSRun](t, body)
-	if done.State != api.MacOSDone || len(done.Results) != 2 || *done.Results[0].Value != v || done.Results[1].Value != nil {
+	if done := decodeInto[api.MacOSRun](t, body); done.State != api.MacOSDone {
 		t.Fatalf("done: %s", body)
 	}
-	if resp, _ := l.as(secret, "POST", "/api/macos/runner/results", up); resp.StatusCode != 409 {
-		t.Errorf("results taken twice: %d", resp.StatusCode)
+	// Its result is kept: nothing more is queued for the set and build.
+	if again, err := l.s.queueMacOSSide(l.name); err != nil || again != nil {
+		t.Errorf("queued again after its result: %+v %v", again, err)
 	}
-	// Done, the Mac takes a new run.
-	if resp, body := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos-runs", api.MacOSRunRequest{}); resp.StatusCode != 200 {
-		t.Errorf("a new run after one done: %d %s", resp.StatusCode, body)
+	// A Maintainer queues no macOS run by hand, nor does the runner upload
+	// anywhere but to its performance run.
+	if resp, _ := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos-runs", map[string]string{}); resp.StatusCode/100 == 2 {
+		t.Errorf("a macOS run queued by hand: %d", resp.StatusCode)
 	}
-}
-
-func TestAMacOSRunIsQueuedByAMaintainerOnly(t *testing.T) {
-	l := newLab(t, false)
-	macosBench(t, l)
-	if resp, body := l.as("", "POST", "/api/devices/"+l.name+"/macos-runs", api.MacOSRunRequest{Tier: "default"}); resp.StatusCode == 200 {
-		t.Fatalf("queued with no credential: %s", body)
-	}
-	if resp, body := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos-runs", api.MacOSRunRequest{Tier: "fast"}); resp.StatusCode != 400 {
-		t.Errorf("an unknown tier: %d %s", resp.StatusCode, body)
-	}
-	if resp, body := l.as(harnessToken, "POST", "/api/devices/nobody/macos-runs", api.MacOSRunRequest{}); resp.StatusCode != 404 {
-		t.Errorf("an unknown Mac: %d %s", resp.StatusCode, body)
-	}
-	resp, body := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos-runs", api.MacOSRunRequest{})
-	if resp.StatusCode != 200 || decodeInto[api.MacOSRun](t, body).Tier != api.TierDefault {
-		t.Fatalf("queue: %d %s", resp.StatusCode, body)
+	if resp, _ := l.as(secret, "POST", "/api/macos/runner/results", map[string]string{"run_id": run.ID}); resp.StatusCode/100 == 2 {
+		t.Errorf("results to the retired endpoint: %d", resp.StatusCode)
 	}
 	if resp, _ := l.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": "nobody"}); resp.StatusCode != 404 {
 		t.Errorf("a token for an unknown Mac: %d", resp.StatusCode)
@@ -176,10 +155,8 @@ func TestAMacOSRunPastItsDeadlineNeedsHands(t *testing.T) {
 	macosDeadline = func(string) time.Duration { return 300 * time.Millisecond }
 	t.Cleanup(func() { macosDeadline = was })
 	l := newLab(t, false)
-	macosBench(t, l)
-	if _, err := l.s.queueMacOSRun(l.name, api.TierDefault); err != nil {
-		t.Fatal(err)
-	}
+	macOSResultSet(t, l)
+	reportBuild(t, l, enrollRunner(t, l), testMacOSVersion, testMacOSBuild)
 	if resp, body := l.as(l.secret, "POST", "/api/agent/macos-started", nil); resp.StatusCode != 200 {
 		t.Fatalf("started: %d %s", resp.StatusCode, body)
 	}
@@ -208,14 +185,14 @@ func TestMacOSRunsAreKeptInTheDataDir(t *testing.T) {
 	if _, err := m.sayAttendance("mos_x", true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.queue("m2-max", api.TierDefault, "", nil, time.Now()); err != nil {
+	if _, err := m.queueRun(&api.MacOSRun{Mac: "m2-max", Tier: api.TierExtended, Set: "bench-1", PerfRun: 3}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	m2 := openMacOSRuns(dir)
 	if e, ok := m2.runnerOf("mos_x"); !ok || e.Mac != "m2-max" || e.Enrollment != "enr-1" || !e.Unattended {
 		t.Errorf("runner lost: %+v %v", e, ok)
 	}
-	if r := m2.run("m2-max"); r == nil || r.State != api.MacOSQueued {
+	if r := m2.run("m2-max"); r == nil || r.State != api.MacOSQueued || r.PerfRun != 3 {
 		t.Errorf("run lost: %+v", r)
 	}
 
@@ -239,12 +216,13 @@ func TestMacOSRunsAreKeptInTheDataDir(t *testing.T) {
 // and a Mac that Joins again under the name gets none of them.
 func TestAMacOSRunnerSecretIsRevokedWhenItsVolunteerLeaves(t *testing.T) {
 	n, _ := leavingLab(t, labConfig{})
+	macOSResultSet(t, n.lab)
 	secret := enrollRunner(t, n.lab)
 	_, body := n.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": n.name})
 	unused := decodeInto[api.MacOSEnrollToken](t, body).Token
-	macosBench(t, n.lab)
-	if _, err := n.s.queueMacOSRun(n.name, api.TierDefault); err != nil {
-		t.Fatal(err)
+	reportBuild(t, n.lab, secret, testMacOSVersion, testMacOSBuild)
+	if r := n.s.macOS().run(n.name); r == nil || r.State != api.MacOSQueued {
+		t.Fatalf("queued: %+v", r)
 	}
 
 	n.mustVolunteer("leave", "--yes")
@@ -255,12 +233,13 @@ func TestAMacOSRunnerSecretIsRevokedWhenItsVolunteerLeaves(t *testing.T) {
 // The same when a Maintainer ends the enrollment and the Mac is Retired.
 func TestAMacOSRunnerSecretIsRevokedWhenItsMacIsRetired(t *testing.T) {
 	n, grace := leavingLab(t, labConfig{})
+	macOSResultSet(t, n.lab)
 	secret := enrollRunner(t, n.lab)
 	_, body := n.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": n.name})
 	unused := decodeInto[api.MacOSEnrollToken](t, body).Token
-	macosBench(t, n.lab)
-	if _, err := n.s.queueMacOSRun(n.name, api.TierDefault); err != nil {
-		t.Fatal(err)
+	reportBuild(t, n.lab, secret, testMacOSVersion, testMacOSBuild)
+	if r := n.s.macOS().run(n.name); r == nil || r.State != api.MacOSQueued {
+		t.Fatalf("queued: %+v", r)
 	}
 
 	n.leavingMustEnd(grace, n.name)

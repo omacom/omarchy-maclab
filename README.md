@@ -1597,7 +1597,7 @@ Its tools follow the commands one for one, each named after its command:
 `lab_build_get`, `lab_installed_list`, `lab_installed_status`,
 `lab_installed_freeze_manifest`, `lab_installed_freeze_entry`,
 `lab_installed_verdict`, `lab_installed_promote`, `lab_agent_update`,
-`lab_macos_enroll`, `lab_builder_add`, `lab_builder_remove`, `lab_builder_list`,
+`lab_macos_enroll`, `lab_macos_at_mac`, `lab_builder_add`, `lab_builder_remove`, `lab_builder_list`,
 `lab_set_create`, `lab_set_capture`, `lab_set_list`, `lab_set_show`,
 `lab_compare`, `lab_compare_done`, `lab_compare_publish`, `lab_compare_show`,
 `lab_perf_rerun` and `lab_version`. Four commands have no tool: `login` (the Lab token is typed by

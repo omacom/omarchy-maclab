@@ -587,6 +587,7 @@ A first sign-in makes the lab know the person; it gives no browser session, no L
 | `controller add <name> --url URL --fingerprint F --token-file F`, `controller list`, `controller remove <name>` | added | the Out-of-band controllers: a Mac lab controller added or removed, Maintainers only; no MCP tool, as it carries a token |
 | `agent-update <mac>` | added | updates a Lab-owned Mac's agent while it is idle, Maintainers only |
 | `macos enroll <mac>` | added | the one-time line that enrolls the Mac's macOS runner and offers to turn FileVault off and log in automatically, Maintainers only; a Volunteer has it on My Macs (Performance) |
+| `macos at-mac <mac>` | added | a person at an Attended Mac whose macOS run waits for one, as on its page and My Macs: labd boots macOS; the Mac's Volunteer, a Maintainer, or the M team at a Lab-owned Mac (Performance) |
 | `set create <name> --pkg NAME=repo:V\|file:SHA[@V]\|build:ID …` | added | makes a Package set, Maintainers only ("Package sets and Compare") |
 | `set capture <name> --from <mac>` | added | a Package set of the stack a Mac last reported, Maintainers only |
 | `set list`, `set show <name>` | added | the Package sets; one set with each file's sha256 |

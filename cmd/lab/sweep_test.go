@@ -24,6 +24,7 @@ var specTable = map[string]string{
 	"installed verdict":         "added",
 	"agent-update":              "added",
 	"macos enroll":              "added",
+	"macos at-mac":              "added",
 	"set create":                "added",
 	"set capture":               "added",
 	"set list":                  "added",

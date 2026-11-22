@@ -2,15 +2,16 @@ package server
 
 // macOS runs: the same benchmarks in macOS, on the same Mac, unattended.
 //
-// A run is queued for a Mac: its macOS result (queueMacOSSide,
-// macos_side.go), or by a Maintainer (queueMacOSRun, or POST
-// /api/devices/{name}/macos-runs). lab-agent boot-macos-once tells labd it is
+// A run is an attempt at a Mac's macOS result (queueMacOSSide,
+// macos_side.go): the scheduler's, or a Compare's with --macos and no kept
+// result. lab-agent boot-macos-once tells labd it is
 // booting macOS once (POST /api/agent/macos-started), which starts the run's
 // deadline. In macOS, lab-macos-runner, a LaunchDaemon enrolled once per Mac
 // with a one-time token, reports the macOS build and asks labd at boot for
 // its run (GET /api/macos/runner/poll), which is handed only to the boot
 // that began after labd started it; it fetches the run's pinned artifacts by
-// sha256, runs the list and uploads the results, then reboots back to
+// sha256, runs the list and uploads the results to the run's performance
+// run (POST /api/macos/runner/performance/{run}/results), then reboots back to
 // Omarchy. A run not reported by its deadline (a FileVault Mac waits for its
 // password at the screen) leaves the Mac Needs hands.
 //
@@ -21,7 +22,7 @@ package server
 // /api/macos/runner/attendance), and Attended again when one did not.
 //
 // The queue and the runners' secrets are kept in macos-runs.json in the data
-// directory; the tier's artifacts are the newest Benchmark set's macOS files.
+// directory; a run's artifacts are its set's macOS files.
 
 import (
 	"context"
@@ -152,10 +153,6 @@ func (m *macosRuns) run(mac string) *api.MacOSRun {
 }
 
 var errRunWaiting = errors.New("a macOS run waits for this Mac already")
-
-func (m *macosRuns) queue(mac, tier, set string, arts []api.MacOSArtifact, now time.Time) (*api.MacOSRun, error) {
-	return m.queueRun(&api.MacOSRun{Mac: mac, Tier: tier, Set: set, Artifacts: arts}, now)
-}
 
 // queueRun queues r as the Mac's run, unless one waits already.
 func (m *macosRuns) queueRun(r *api.MacOSRun, now time.Time) (*api.MacOSRun, error) {
@@ -353,29 +350,18 @@ func (s *Server) macOS() *macosRuns {
 	return s.macos
 }
 
-// macOSBenchSet is the Benchmark set a macOS run a Maintainer queues takes
-// its files from.
-var macOSBenchSet = sets.Newest
-
 // macOSCurrentSet is the set a Mac's macOS result is taken of: the current
-// set.
-var macOSCurrentSet = sets.Current
+// set. A test swaps it under macOSSetMu.
+var (
+	macOSSetMu      sync.RWMutex
+	macOSCurrentSet = sets.Current
+)
 
-// macOSBench is the pinned macOS files of the set's Quick list (default) or
-// Full list (extended), by file id; a placeholder is left out. Each must be
-// in the artifact store, where lab bench mirror puts it. The set's name goes
-// with the run, for the runner to find the list.
-func (s *Server) macOSBench(tier string) (string, []api.MacOSArtifact, error) {
-	set, err := macOSBenchSet()
-	if err != nil {
-		return "", nil, err
-	}
-	list := sets.Quick
-	if tier == api.TierExtended {
-		list = sets.Full
-	}
-	arts, err := s.macOSFiles(set, list)
-	return set.Name, arts, err
+func currentMacOSSet() (*sets.Set, error) {
+	macOSSetMu.RLock()
+	f := macOSCurrentSet
+	macOSSetMu.RUnlock()
+	return f()
 }
 
 // macOSFiles is the pinned macOS files of the set's list, each in the
@@ -395,29 +381,6 @@ func (s *Server) macOSFiles(set *sets.Set, list string) ([]api.MacOSArtifact, er
 }
 
 var errNoMac = errors.New("no such Mac")
-
-// queueMacOSRun queues a macOS run of the tier's benchmarks on the Mac. It
-// runs when lab-agent boot-macos-once boots the Mac into macOS.
-func (s *Server) queueMacOSRun(mac, tier string) (*api.MacOSRun, error) {
-	if tier == "" {
-		tier = api.TierDefault
-	}
-	if tier != api.TierDefault && tier != api.TierExtended {
-		return nil, fmt.Errorf("tier %q: want default or extended", tier)
-	}
-	if s.dev(mac) == nil {
-		return nil, fmt.Errorf("%w %q", errNoMac, mac)
-	}
-	set, arts, err := s.macOSBench(tier)
-	if err != nil {
-		return nil, err
-	}
-	r, err := s.macOS().queue(mac, tier, set, arts, s.now())
-	if err == nil {
-		s.log.Printf("macOS run %s (%s) queued for %s", r.ID, tier, mac)
-	}
-	return r, err
-}
 
 func (s *Server) armMacOSDeadline(mac, id string, d time.Duration) {
 	s.armMacOSTimer(mac, id, d, s.macOSDeadlinePassed)
@@ -484,7 +447,6 @@ func (s *Server) macosRoutes() []route {
 	return []route{
 		{"POST /api/agent/macos-started", ownMac, s.hMacOSStarted},
 		{"POST /api/macos/enroll-tokens", maintainers, s.hMacOSEnrollToken},
-		{"POST /api/devices/{name}/macos-runs", maintainers, s.hQueueMacOSRun},
 		{"GET /api/devices/{name}/macos-runs", maintainers, s.hMacOSRun},
 		{"GET /api/devices/{name}/macos", maintainers, s.hMacOSSide},
 		// A person at an Attended Mac whose macOS run is due: its
@@ -494,7 +456,6 @@ func (s *Server) macosRoutes() []route {
 		{"POST /api/macos/runner/enroll", anyone, s.hMacOSRunnerEnroll},
 		{"GET /api/macos/runner/poll", anyone, s.macosRunner(s.hMacOSPoll)},
 		{"GET /api/macos/runner/artifacts/{sha}", anyone, s.macosRunner(s.hMacOSArtifact)},
-		{"POST /api/macos/runner/results", anyone, s.macosRunner(s.hMacOSResults)},
 		{"POST /api/macos/runner/attendance", anyone, s.macosRunner(s.hMacOSAttendance)},
 	}
 }
@@ -615,6 +576,7 @@ func (s *Server) macOSBuildSaid(mac, enrollment string, r *http.Request) {
 	}
 	if run, err := s.queueMacOSSide(mac); err == nil && run != nil {
 		s.log.Printf("%s: no macOS result of %s at macOS %s (%s): macOS run %s queued", mac, run.Set, version, build, run.ID)
+		s.perfKick()
 	}
 }
 
@@ -673,24 +635,6 @@ func (s *Server) hMacOSSide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.macOSSide(name))
-}
-
-func (s *Server) hQueueMacOSRun(w http.ResponseWriter, r *http.Request) {
-	var req api.MacOSRunRequest
-	if r.ContentLength != 0 && !decodeBody(w, r, 4096, &req) {
-		return
-	}
-	run, err := s.queueMacOSRun(r.PathValue("name"), req.Tier)
-	switch {
-	case errors.Is(err, errNoMac):
-		httpErr(w, 404, "%v", err)
-	case errors.Is(err, errRunWaiting):
-		httpErr(w, 409, "%v", err)
-	case err != nil:
-		httpErr(w, 400, "%v", err)
-	default:
-		writeJSON(w, run)
-	}
 }
 
 func (s *Server) hMacOSRun(w http.ResponseWriter, r *http.Request) {
@@ -802,27 +746,4 @@ func (s *Server) hMacOSArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpErr(w, 404, "no artifact %s for this Mac now", short(sha))
-}
-
-func (s *Server) hMacOSResults(w http.ResponseWriter, r *http.Request) {
-	mac := r.Context().Value(macosRunnerKey{}).(string)
-	var up api.MacOSResults
-	if !decodeBody(w, r, 1<<20, &up) {
-		return
-	}
-	now := s.now()
-	run, err := s.macOS().change(mac, func(r *api.MacOSRun) error {
-		if r.ID != up.RunID || (r.State != api.MacOSRunning && r.State != api.MacOSNeedsHands) {
-			return errNoRun
-		}
-		r.State, r.Done, r.Results, r.Error = api.MacOSDone, &now, up.Results, up.Error
-		return nil
-	})
-	if err != nil {
-		httpErr(w, 409, "no macOS run %s is running on %s", up.RunID, mac)
-		return
-	}
-	s.macOS().stopTimer(mac)
-	s.log.Printf("%s: macOS run %s done, %d results", mac, run.ID, len(run.Results))
-	writeJSON(w, map[string]string{"run": run.ID, "state": run.State})
 }

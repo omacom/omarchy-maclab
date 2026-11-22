@@ -163,14 +163,17 @@ func (r *Runner) Boot(ctx context.Context) error {
 		r.say("macOS run %s: this boot cannot record that it took the run (%v): nothing is measured", run.ID, err)
 		return nil
 	}
+	reboot := r.Reboot
+	if reboot == nil {
+		reboot = func() error { return exec.Command("/sbin/shutdown", "-r", "now").Run() }
+	}
+	if run.PerfRun <= 0 {
+		r.say("macOS run %s has no performance run to upload to: nothing is measured; rebooting to Omarchy", run.ID)
+		return reboot()
+	}
 	r.say("macOS run %s (%s) on %s", run.ID, run.Tier, r.Config.Mac)
 	up, runErr := r.Run(ctx, run)
-	path := "/api/macos/runner/results"
-	if run.PerfRun > 0 {
-		path = "/api/macos/runner/performance/" + strconv.FormatInt(run.PerfRun, 10) + "/results"
-	} else {
-		up.RunID = run.ID
-	}
+	path := "/api/macos/runner/performance/" + strconv.FormatInt(run.PerfRun, 10) + "/results"
 	var upErr error
 	for i := 0; i < 5; i++ {
 		if upErr = call(context.WithoutCancel(ctx), r.client(), "POST", r.url(path), r.Config.Secret, up, nil); upErr == nil {
@@ -178,10 +181,6 @@ func (r *Runner) Boot(ctx context.Context) error {
 		}
 		r.say("upload: %v", upErr)
 		sleep(ctx, 10*time.Second)
-	}
-	reboot := r.Reboot
-	if reboot == nil {
-		reboot = func() error { return exec.Command("/sbin/shutdown", "-r", "now").Run() }
 	}
 	r.say("rebooting to Omarchy")
 	return errors.Join(runErr, upErr, reboot())

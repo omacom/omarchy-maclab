@@ -52,7 +52,7 @@ var errNoMacOSWait = errors.New("no macOS run of this Mac waits for a person")
 // two attempts that failed, or a run dropped for nobody at the Mac, until
 // the Mac's next Omarchy side has ended.
 func (s *Server) queueMacOSSide(mac string) (*api.MacOSRun, error) {
-	set, err := macOSCurrentSet()
+	set, err := currentMacOSSet()
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +91,13 @@ func (s *Server) queueMacOSSideOf(mac string, set *sets.Set) (*api.MacOSRun, err
 	if n, err := s.store.macOSTries(mac, set.Name, b.Build); err != nil || n >= macOSTriesMax {
 		return nil, err
 	}
+	return s.openMacOSSide(mac, enrollment, set, b)
+}
+
+// openMacOSSide opens an attempt at the Mac's macOS result of the set at
+// build b, and queues its run. nil, nil when a run of the Mac waits already, or an attempt of
+// the set and build is running.
+func (s *Server) openMacOSSide(mac, enrollment string, set *sets.Set, b macosBuild) (*api.MacOSRun, error) {
 	arts, err := s.macOSFiles(set, sets.Full)
 	if err != nil {
 		return nil, err
@@ -127,7 +134,7 @@ func (s *Server) queueMacOSSideOf(mac string, set *sets.Set) (*api.MacOSRun, err
 func (s *Server) macOSWanted(v *dev) *api.JobSpec {
 	name := v.snapshot().Name
 	if _, err := s.queueMacOSSide(name); err != nil {
-		s.log.Printf("%s: its macOS run: %v", name, err)
+		s.perfNote(name+"'s macOS run", err) // asked at every pass of the scheduler
 	}
 	run := s.macOS().run(name)
 	if run == nil || run.State != api.MacOSQueued || run.PerfRun == 0 || s.macOSJobOpen(run) {
@@ -287,8 +294,9 @@ func (s *Server) atTheMac(v *dev, p Person) (*api.MacOSRun, error) {
 	}
 	s.macOS().stopTimer(d.Name)
 	s.log.Printf("%s: %s is at the Mac for macOS run %s", d.Name, run.AtMacBy, run.ID)
-	if _, err := s.submitMacOSRun(v, run); err != nil {
-		s.log.Printf("%s: the job of macOS run %s waits for the Mac's next slot: %v", d.Name, run.ID, err)
+	if !s.macOSJobOpen(run) && s.claimForPerf(v, *macOSJobSpec(d.Name, run.ID)) == nil {
+		s.log.Printf("%s: the job of macOS run %s waits for the Mac's next slot", d.Name, run.ID)
+		s.perfKick()
 	}
 	return s.macOS().run(d.Name), nil
 }
@@ -506,21 +514,37 @@ func benchOf(setName string, rs []perf.Result) []api.BenchResult {
 	return out
 }
 
-// compareMacOSRun is the macOS run a Compare boots macOS for: the Mac's
-// queued run of the set, a new one that is its macOS result, or, with no
-// build reported yet, a run of the tier's list.
-func (s *Server) compareMacOSRun(mac, tier, setName string) (*api.MacOSRun, error) {
+// compareMacOSRun is the macOS run a Compare with no kept macOS result
+// boots macOS for, always an attempt at the Mac's macOS result of the
+// job's set, so its values are by metric id and are kept: the Mac's queued
+// run of the set, or a new one at the build the runner last reported, even
+// where the scheduler would wait (two attempts failed, a run dropped).
+func (s *Server) compareMacOSRun(mac, setName string) (*api.MacOSRun, error) {
 	if run := s.macOS().run(mac); run != nil && run.State == api.MacOSQueued && run.PerfRun > 0 && run.Set == setName {
 		return run, nil
 	}
-	if setName != "" {
-		if set, err := perfSet(setName); err == nil {
-			if run, err := s.queueMacOSSideOf(mac, set); err != nil || run != nil {
-				return run, err
-			}
+	set, err := currentMacOSSet()
+	if err != nil || set.Name != setName {
+		if set, err = perfSet(setName); err != nil {
+			return nil, err
 		}
 	}
-	return s.queueMacOSRun(mac, tier)
+	if run, err := s.queueMacOSSideOf(mac, set); err != nil || run != nil {
+		return run, err
+	}
+	enrollment, in := s.enrollmentOf(mac)
+	if !in || !s.macOS().enrolled(mac, enrollment) {
+		return nil, fmt.Errorf("%s's macOS runner is not enrolled", mac)
+	}
+	b, ok := s.macOS().buildOf(mac, enrollment)
+	if !ok {
+		return nil, fmt.Errorf("%s's macOS runner has not reported its macOS build, as it does at enrollment and at every macOS boot", mac)
+	}
+	run, err := s.openMacOSSide(mac, enrollment, set, b)
+	if err == nil && run == nil {
+		err = errors.New("another macOS run of this Mac is queued or running")
+	}
+	return run, err
 }
 
 // ---- the store ----

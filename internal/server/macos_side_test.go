@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,10 +36,15 @@ func macOSResultSet(t *testing.T, l *lab) *sets.Set {
 		}
 	}
 	set.Files = files
-	cur, bench := macOSCurrentSet, macOSBenchSet
+	macOSSetMu.Lock()
+	cur := macOSCurrentSet
 	macOSCurrentSet = func() (*sets.Set, error) { return set, nil }
-	macOSBenchSet = func() (*sets.Set, error) { return set, nil }
-	t.Cleanup(func() { macOSCurrentSet, macOSBenchSet = cur, bench })
+	macOSSetMu.Unlock()
+	t.Cleanup(func() {
+		macOSSetMu.Lock()
+		macOSCurrentSet = cur
+		macOSSetMu.Unlock()
+	})
 	return set
 }
 
@@ -72,6 +79,52 @@ func pollAs(t *testing.T, l *lab, secret, boot string, at time.Time, build strin
 }
 
 func bootHash(n int) string { return fmt.Sprintf("%032x", n) }
+
+// macOSJobs are the Mac's macOS runs' jobs, oldest first.
+func (l *lab) macOSJobs() []*api.Job {
+	l.t.Helper()
+	all, err := l.s.store.jobs(l.name, 100, false)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	var out []*api.Job
+	for _, j := range all {
+		if j.Spec.MacOS != nil {
+			out = append(out, j)
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// nthMacOSJob waits for the job of the Mac's nth macOS run to end.
+func (l *lab) nthMacOSJob(n int) *api.Job {
+	l.t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		if js := l.macOSJobs(); len(js) >= n {
+			return l.wait(js[n-1].ID, time.Until(deadline))
+		}
+		l.s.perfKick()
+		time.Sleep(100 * time.Millisecond)
+	}
+	l.t.Fatalf("no macOS run job %d; the Mac has %d", n, len(l.macOSJobs()))
+	return nil
+}
+
+// holdFromScheduler keeps the Performance scheduler off the Mac, as a
+// Lease does, until the func it answers is called.
+func (l *lab) holdFromScheduler() func() {
+	v := l.s.dev(l.name)
+	v.mu.Lock()
+	v.d.Lease = &api.Lease{Holder: "tester", Expires: time.Now().Add(time.Hour)}
+	v.mu.Unlock()
+	return func() {
+		v.mu.Lock()
+		v.d.Lease = nil
+		v.mu.Unlock()
+	}
+}
 
 // macOSUpload is what the runner sends for its performance run: bench-1
 // results, and the state that ends the attempt.
@@ -425,16 +478,12 @@ func TestAFailedMacOSStartIsCancelled(t *testing.T) {
 	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
 		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
 	}
-	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	l.sim.BlessFails = errors.New("asahi-bless --next --set-boot 1: NVRAM write failed")
 	l.sim.InMacOS = func() { t.Error("booted macOS") }
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	v := l.s.dev(l.name)
-	spec := l.s.macOSWanted(v)
-	if spec == nil || spec.MacOS == nil {
-		t.Fatal("an Unattended Mac's run is not wanted")
-	}
 	run := l.s.macOS().run(l.name)
-	j := l.run(*spec)
+	j := l.nthMacOSJob(1)
 	l.expect(j, api.OutcomeInfra)
 	if !strings.Contains(j.Summary, "NVRAM write failed") {
 		t.Errorf("summary: %s", j.Summary)
@@ -456,6 +505,7 @@ func TestAFailedMacOSStartIsCancelled(t *testing.T) {
 func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 	l, _ := compareLab(t, nil)
 	macOSResultSet(t, l)
+	free := l.holdFromScheduler() // the result is kept before the scheduler would take the run
 	secret := enrollRunner(t, l)
 	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
 		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
@@ -469,8 +519,13 @@ func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 	if _, err := l.s.store.takePerf(run.PerfRun, c, l.s.now()); err != nil {
 		t.Fatal(err)
 	}
-	l.s.macOSPerfEnded(l.name, run.PerfRun, perf.Succeeded)
+	now := l.s.now()
+	l.s.macOS().change(l.name, func(m *api.MacOSRun) error {
+		m.State, m.Done = api.MacOSDone, &now
+		return nil
+	})
 	l.sim.InMacOS = func() { t.Error("booted macOS for a kept result") }
+	free()
 
 	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
 	l.expect(j, api.OutcomePass)
@@ -494,5 +549,85 @@ func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 	evs, _ := json.Marshal(j.Events)
 	if !strings.Contains(string(evs), "macOS is not booted") {
 		t.Errorf("events: %s", evs)
+	}
+}
+
+// A Compare with --macos and no kept macOS result measures one: it opens
+// an attempt at the Mac's macOS result of the job's set, even where the
+// scheduler queues none (two attempts failed), boots macOS once, and
+// compares its values by metric id. The result is kept for the next Compare.
+// With no build reported, the Compare's macOS side says why it ran none.
+func TestACompareWithNoKeptMacOSResultMeasuresOneAndKeepsIt(t *testing.T) {
+	l, _ := compareLab(t, nil)
+	macOSResultSet(t, l)
+	secret := enrollRunner(t, l)
+	if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 200 {
+		t.Fatalf("attendance: %d %s", resp.StatusCode, body)
+	}
+	none := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
+	if m := none.Result.Compare.Side(api.SideMacOS); m == nil || !strings.Contains(m.Error, "has not reported its macOS build") {
+		t.Fatalf("a Compare with no build reported: %+v", m)
+	}
+	enrollment := l.s.dev(l.name).snapshot().ID
+	for i := 0; i < macOSTriesMax; i++ {
+		pr, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enrollment, Set: "bench-1", Side: perf.SideMacOS,
+			MacOSVersion: testMacOSVersion, MacOSBuild: testMacOSBuild, List: sets.Full}, l.s.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := l.s.store.endPerfRun(pr.ID, perf.Failed, l.s.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
+	if r := l.s.macOS().run(l.name); r != nil {
+		t.Fatalf("a run queued after two failed attempts: %+v", r)
+	}
+	var booted atomic.Int32
+	l.sim.MacOSFor = 2 * time.Second
+	l.sim.InMacOS = func() {
+		booted.Add(1)
+		got := pollAs(t, l, secret, bootHash(11), l.s.now(), "")
+		if got == nil || got.PerfRun == 0 || got.Build != testMacOSBuild {
+			t.Errorf("the lab's boot was handed %+v", got)
+			return
+		}
+		path := fmt.Sprintf("/api/macos/runner/performance/%d/results", got.PerfRun)
+		if r, body := l.as(secret, "POST", path, macOSUpload(t, perf.Succeeded, map[string]float64{"coremark-single": 102, "speedometer": 30})); r.StatusCode != 200 {
+			t.Errorf("results: %d %s", r.StatusCode, body)
+		}
+	}
+
+	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
+	l.expect(j, api.OutcomePass)
+	res := j.Result.Compare
+	if m := res.Side(api.SideMacOS); m == nil || m.Boot != api.MacOSDone || len(m.Bench) != 2 || booted.Load() != 1 {
+		t.Fatalf("macOS: %+v, %d boots", m, booted.Load())
+	}
+	if c := rowOf(t, res, "coremark-single"); !near(c.MacOS, 102) || !near(c.MacOSDelta, 2) || c.MacOSVerdict != api.VerdictNoChange {
+		t.Errorf("CoreMark in macOS: %+v", c)
+	}
+	if sp := rowOf(t, res, "speedometer"); !near(sp.MacOS, 30) || sp.MacOSVerdict != api.VerdictBetter {
+		t.Errorf("Speedometer in macOS: %+v", sp)
+	}
+	run := l.s.macOS().run(l.name)
+	if pr := l.perfRunOf(run.PerfRun); pr.Side != perf.SideMacOS || pr.Set != "bench-1" || pr.MacOSBuild != testMacOSBuild || pr.State != perf.Succeeded || pr.Attempt != macOSTriesMax+1 {
+		t.Errorf("its attempt: %+v", pr)
+	}
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, "bench-1", testMacOSBuild); len(kept) != 2 {
+		t.Errorf("the macOS result: %+v", kept)
+	}
+	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.ActiveJob == "" })
+	if spec := l.s.macOSWanted(l.s.dev(l.name)); spec != nil {
+		t.Errorf("the scheduler wants another macOS run: %+v", spec)
+	}
+
+	again := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
+	l.expect(again, api.OutcomePass)
+	if m := again.Result.Compare.Side(api.SideMacOS); m == nil || m.Boot != macOSKept || booted.Load() != 1 {
+		t.Errorf("the next Compare's macOS: %+v, %d boots", m, booted.Load())
+	}
+	if c := rowOf(t, again.Result.Compare, "coremark-single"); !near(c.MacOS, 102) {
+		t.Errorf("CoreMark in macOS, kept: %+v", c)
 	}
 }

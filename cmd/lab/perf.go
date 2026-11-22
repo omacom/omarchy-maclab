@@ -44,3 +44,12 @@ func perfCmd(ctx context.Context, c *client.Client, args []string) error {
 	fmt.Printf("%s: %s\n", j.Outcome, j.Summary)
 	return nil
 }
+
+// atMacWords is what `lab macos at-mac` and its tool say of the run.
+func atMacWords(mac string, run *api.MacOSRun) string {
+	what := fmt.Sprintf("%s: macOS run %s, %s's Full list at macOS %s (%s)", mac, run.ID, run.Set, run.Version, run.Build)
+	if run.Job == "" {
+		return what + ": macOS boots at the Mac's next slot. Type its password and log in when it does."
+	}
+	return what + ": job " + run.Job + " boots macOS now. Type its password and log in when it asks."
+}
