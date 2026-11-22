@@ -162,6 +162,9 @@ type Sim struct {
 	testHold   chan struct{}    // see HoldTests
 	inhibitors map[int][]string // held inhibitors' --what names, by token; a boot clears them
 	inhibitSeq int
+
+	benchAnswer func(run int64, metric string) (float64, string) // see SetBenchAnswer
+	benchRuns   [][]string                                       // see BenchRuns
 }
 
 // simDisk is what a snapper snapshot holds of the simulated @ (packages and
@@ -889,6 +892,9 @@ func (s *Sim) RunTest(ctx context.Context, job string, t api.TestSpec, fetch Fet
 	}
 	if t.Builtin == "omarchy-m-test" {
 		return s.omtReport(t, outDir, b)
+	}
+	if t.Bench != nil && isBench(t.Builtin) {
+		return s.simBench(t, outDir)
 	}
 	s.mu.Lock()
 	obsFn := s.InstalledObs

@@ -78,6 +78,41 @@ func TestTheBuiltinsRunTheQuickAndFullLists(t *testing.T) {
 	}
 }
 
+// A Performance run of a whole list fetches what the builtin does; of one
+// metric, only that metric's files; of a metric outside the list, nothing.
+func TestAPerformanceRunFetchesItsMetricsFiles(t *testing.T) {
+	s, err := Set()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range []string{sets.Quick, sets.Full} {
+		var ids []string
+		for _, m := range s.List(list) {
+			if m.Omarchy != nil {
+				ids = append(ids, m.ID)
+			}
+		}
+		got, err := FilesOf(s, list, ids)
+		if err != nil || !slices.Equal(got, Files(s, list)) {
+			t.Errorf("%s: %v (%v), want %v", list, got, err, Files(s, list))
+		}
+	}
+	for _, m := range s.Metrics {
+		got, _ := FilesOf(s, sets.Full, []string{m.ID})
+		for _, f := range got {
+			if !slices.Contains(m.Omarchy.Files, f.ID) {
+				t.Errorf("%s fetches %s", m.ID, f.ID)
+			}
+		}
+	}
+	full := slices.IndexFunc(s.Metrics, func(m sets.Metric) bool { return m.List == sets.Full })
+	for _, ids := range [][]string{{s.Metrics[full].ID}, {"nope"}, nil} {
+		if _, err := FilesOf(s, sets.Quick, ids); err == nil {
+			t.Errorf("quick %v: no error", ids)
+		}
+	}
+}
+
 func TestEveryPinnedFileOfEverySetIsKept(t *testing.T) {
 	shas, err := Pinned()
 	if err != nil {

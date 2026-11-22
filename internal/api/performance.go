@@ -41,6 +41,20 @@ type BenchRun struct {
 	Run     int64    `json:"run"`
 }
 
+// BenchUpload is what became of the bench builtin's upload to its
+// Performance run: Taken when labd took it, with how many results were new
+// and how many it had, and the state the upload ended the attempt with;
+// else Error, after the last of Tries.
+type BenchUpload struct {
+	Run     int64  `json:"run"`
+	Taken   bool   `json:"taken"`
+	State   string `json:"state,omitempty"`
+	Results int    `json:"results"`
+	Already int    `json:"already,omitempty"`
+	Tries   int    `json:"tries"`
+	Error   string `json:"error,omitempty"`
+}
+
 // PerformanceResult is what a Performance run did: its attempt, the kernel
 // it measured on, and the versions it booted, by exact package name.
 type PerformanceResult struct {

@@ -853,6 +853,8 @@ type TestResult struct {
 	Tail    string   `json:"tail,omitempty"`
 	Files   []string `json:"files,omitempty"`
 	Error   string   `json:"error,omitempty"`
+	// Bench is a Performance run's upload, for a test with TestSpec.Bench.
+	Bench *BenchUpload `json:"bench,omitempty"`
 }
 
 type JobState string

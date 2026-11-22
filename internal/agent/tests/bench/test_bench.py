@@ -714,7 +714,7 @@ class Conditions(Case):
         self.h.write("sys/class/backlight/apple-panel-bl/max_brightness", "500")
         self.h.write("sys/class/backlight/apple-panel-bl/brightness", "120")
         c, saved = bench.conditions(self.h, busy_fn=lambda h: 1.0)
-        self.assertEqual((c["power_profile"], c["backlight"], c["on_ac"]), ("balanced", 0.5, True))
+        self.assertEqual((c["power_profile"], c["backlight_percent"], c["on_ac"], c["cpu_busy_percent"]), ("balanced", 50, True, 1.0))
         self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "250")
         bench.restore(self.h, saved)
         self.assertEqual(self.h.read("sys/class/backlight/apple-panel-bl/brightness"), "120")
@@ -797,6 +797,45 @@ class Output(Case):
         self.assertEqual({r["reason"] for r in rows}, {"not_run"})
         self.assertEqual((cond["set"], cond["list"], cond["refused"]), ("bench-1", "quick", None))
         self.assertEqual(code, 0)
+
+    def test_only_runs_the_metrics_named_in_the_sets_order(self):
+        full = [m["id"] for m in SET["metrics"] if m.get("omarchy")]
+        pick = [full[5], full[1]]
+        code, rows, cond = self.main("--list", "full", "--only", ",".join(pick), impl={})
+        self.assertEqual(code, 0)
+        self.assertEqual([r["metric"] for r in rows], [full[1], full[5]])
+        self.assertEqual(cond["list"], "full")
+
+    def test_only_refuses_an_id_outside_the_list_and_measures_nothing(self):
+        quick = [m["id"] for m in SET["metrics"] if m["list"] == "quick"]
+        full_only = next(m["id"] for m in SET["metrics"] if m["list"] == "full")
+        out = pathlib.Path(self.d.name, "out", "bench.json")
+        for only, says in (("nope", "nope"), (quick[0] + ",nope", "nope"), (full_only, full_only),
+                           (quick[0] + "," + quick[0], "twice"), ("", "--only")):
+            with self.subTest(only=only):
+                self.log.seek(0)
+                self.log.truncate()
+                with self.assertRaises(FileNotFoundError):
+                    self.main("--list", "quick", "--only", only, impl={})
+                self.assertIn("--only", self.log.getvalue())
+                self.assertIn(says, self.log.getvalue())
+                self.assertFalse(out.exists())
+
+    def test_only_is_checked_before_the_conditions_are_set(self):
+        self.h.write("sys/class/power_supply/bat/type", "Battery")
+        self.h.write("sys/class/power_supply/ac/type", "Mains")
+        self.h.write("sys/class/power_supply/ac/online", "0")
+        setf = pathlib.Path(self.d.name, "set.json")
+        setf.write_text(json.dumps(self.set))
+        code = bench.main(["--set", str(setf), "--only", "nope", "--cache", str(self.cache), "--work", str(self.work),
+                           "--out", str(pathlib.Path(self.d.name, "bench.json"))], host=self.h, stderr=self.log)
+        self.assertEqual(code, 2)
+        self.assertNotIn("conditions:", self.log.getvalue())
+
+    def test_the_conditions_carry_labds_field_names(self):
+        labd = {"on_ac", "cpu_busy_percent", "backlight_percent", "power_profile", "low_power_mode", "refresh_hz", "free_percent"}
+        _, _, cond = self.main("--list", "quick", impl={})
+        self.assertEqual(set(cond) - labd, {"set", "list", "refused", "battery"})
 
     def test_values_and_spreads_with_a_cool_down_before_each(self):
         impl = {"boot-time": lambda ctx, m: bench.Value(9.5), "power-idle": lambda ctx, m: bench.Value(6.0, 0.25)}
