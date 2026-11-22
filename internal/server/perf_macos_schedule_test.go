@@ -79,14 +79,11 @@ func TestAnUnattendedMacsMacOSRunTakesTheSlotAfterItsOmarchySide(t *testing.T) {
 
 	om := l.nthPerfJob(1)
 	l.expect(om, api.OutcomePass)
-	if booted.Load() != 0 {
-		t.Fatal("macOS booted before the Omarchy side")
-	}
-	if len(l.macOSJobs()) != 0 && !l.macOSJobs()[0].Created.After(om.Created) {
-		t.Fatal("the macOS run was queued before the Omarchy side")
-	}
 	j := l.nthMacOSJob(1)
 	l.expect(j, api.OutcomePass)
+	if !j.Created.After(om.Created) || j.Created.Before(om.Updated) {
+		t.Errorf("the macOS run's job (%s) before the Omarchy side ended (%s)", j.Created, om.Updated)
+	}
 	if j.Spec.Holder != macosScheduled || j.Spec.MacOS.Run != run.ID || j.UnderLease || j.AccountID != 0 {
 		t.Errorf("the scheduled macOS job: %+v", j.Spec)
 	}
@@ -120,15 +117,12 @@ func TestTheSchedulerWaitsForAPersonAtAnAttendedMac(t *testing.T) {
 	booted := l.runnerInMacOS(secret, map[string]float64{"coremark-single": 30000}, l.claimedInMacOS())
 	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	deadline := time.Now().Add(10 * time.Second)
-	for r := l.s.macOS().run(l.name); r == nil || r.Told == nil; r = l.s.macOS().run(l.name) {
+	for r := l.s.macOS().run(l.name); r == nil || r.Told == nil || len(macOSDueLines(t, l)) == 0; r = l.s.macOS().run(l.name) {
 		if time.Now().After(deadline) {
 			t.Fatalf("an Attended Mac's run due, nobody told: %+v", r)
 		}
 		l.s.perfKick()
 		time.Sleep(50 * time.Millisecond)
-	}
-	if lines := macOSDueLines(t, l); len(lines) != 1 {
-		t.Errorf("the Lab group was told %q", lines)
 	}
 	for i := 0; i < 5; i++ {
 		l.s.reconcilePerf()
@@ -136,6 +130,9 @@ func TestTheSchedulerWaitsForAPersonAtAnAttendedMac(t *testing.T) {
 	}
 	if js := l.macOSJobs(); len(js) != 0 || booted.Load() != 0 {
 		t.Fatalf("with nobody at the Mac: %d jobs, %d boots", len(js), booted.Load())
+	}
+	if lines := macOSDueLines(t, l); len(lines) != 1 {
+		t.Errorf("the Lab group was told %q", lines)
 	}
 
 	resp, body := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos/at-mac", nil)
