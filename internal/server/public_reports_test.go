@@ -353,7 +353,7 @@ func TestVerifiedRunsOnlyOrCommunityRunsOnly(t *testing.T) {
 	}
 	// Nobody is named: not on the page, not in an export.
 	for _, target := range []string{"/reports", "/reports/" + m3ID, "/api/v1/reports.json", "/api/v1/reports.csv", "/api/v1/checks.csv", "/api/v1/matrix.json",
-		"/api/v1/benchmarks.json", "/api/v1/aurora.json", "/gaps", "/aurora", "/benchmarks", "/candidates", "/data"} {
+		"/api/v1/benchmarks.json", "/api/v1/aurora.json", "/gaps", "/aurora", "/performance", "/candidates", "/data"} {
 		if body := l.export(target); strings.Contains(body, "maralcbr") || strings.Contains(body, "7001") || strings.Contains(body, "key:machine-") {
 			t.Errorf("%s names a person or a Machine key", target)
 		}

@@ -54,14 +54,14 @@
       "want": [
         {
           "description": "Public pages and exports, for a request without the session cookie or a Lab token, may be cached as labd says",
-          "expression": "(http.host eq \"lab.omarchy-mac.org\" and not http.cookie contains \"lab_session=\" and not any(lower(http.request.headers.names[*])[*] eq \"authorization\") and not ends_with(http.request.uri.path, \"/deletion\") and (http.request.uri.path in {\"/\" \"/matrix\" \"/models\" \"/features\" \"/gaps\" \"/aurora\" \"/benchmarks\" \"/candidates\" \"/reports\" \"/data\" \"/install\" \"/install/lab\" \"/terms\" \"/privacy\" \"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\"} or starts_with(http.request.uri.path, \"/models/\") or starts_with(http.request.uri.path, \"/features/\") or starts_with(http.request.uri.path, \"/candidates/\") or starts_with(http.request.uri.path, \"/reports/\")))",
+          "expression": "(http.host eq \"lab.omarchy-mac.org\" and not http.cookie contains \"lab_session=\" and not any(lower(http.request.headers.names[*])[*] eq \"authorization\") and not ends_with(http.request.uri.path, \"/deletion\") and (http.request.uri.path in {\"/\" \"/matrix\" \"/models\" \"/features\" \"/gaps\" \"/aurora\" \"/performance\" \"/candidates\" \"/reports\" \"/data\" \"/install\" \"/install/lab\" \"/terms\" \"/privacy\" \"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\" \"/api/v1/performance.json\"} or starts_with(http.request.uri.path, \"/models/\") or starts_with(http.request.uri.path, \"/features/\") or starts_with(http.request.uri.path, \"/performance/\") or starts_with(http.request.uri.path, \"/candidates/\") or starts_with(http.request.uri.path, \"/reports/\")))",
           "action": "set_cache_settings",
           "action_parameters": {"cache": true},
           "enabled": true
         },
         {
           "description": "Under /api/: never cached, but an export asked for without the session cookie",
-          "expression": "(http.host eq \"lab.omarchy-mac.org\" and starts_with(http.request.uri.path, \"/api/\") and (http.cookie contains \"lab_session=\" or not http.request.uri.path in {\"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\"}))",
+          "expression": "(http.host eq \"lab.omarchy-mac.org\" and starts_with(http.request.uri.path, \"/api/\") and (http.cookie contains \"lab_session=\" or not http.request.uri.path in {\"/api/v1/reports\" \"/api/v1/reports.json\" \"/api/v1/reports.csv\" \"/api/v1/checks\" \"/api/v1/checks.csv\" \"/api/v1/matrix\" \"/api/v1/matrix.json\" \"/api/v1/benchmarks\" \"/api/v1/benchmarks.json\" \"/api/v1/aurora\" \"/api/v1/aurora.json\" \"/api/v1/performance.json\"}))",
           "action": "set_cache_settings",
           "action_parameters": {"cache": false},
           "enabled": true

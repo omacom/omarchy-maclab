@@ -1,0 +1,35 @@
+{{define "perf_picker"}}<form class="perf-picker" method="get" action="{{.Action}}" data-autosubmit>
+<label class="filter-field"><span>Benchmark set</span><select name="set">
+{{range .Sets}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select></label>
+{{if .Releases}}<label class="filter-field"><span>Release</span><select name="release">
+{{range .Releases}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select></label>
+{{end}}<input type="hidden" name="volunteers" value="false">
+<label class="filter-check"><input type="checkbox" name="volunteers" value="true"{{if .Volunteers}} checked{{end}}> <span>Show Volunteer Macs</span></label>
+{{if .Older}}<input type="hidden" name="older" value="1">
+{{end}}<button class="button button-small button-plain" type="submit">Show</button>
+</form>{{end}}
+
+{{define "perf_legend"}}<ul class="perf-legend" aria-label="Colours">
+<li><span class="perf-swatch perf-green"></span>Faster than macOS</li>
+<li><span class="perf-swatch perf-grey"></span>Within the benchmark's tolerance</li>
+<li><span class="perf-swatch perf-yellow"></span>85% and over</li>
+<li><span class="perf-swatch perf-orange"></span>60% to 85%</li>
+<li><span class="perf-swatch perf-red"></span>Under 60%</li>
+</ul>{{end}}
+
+{{define "perf_bar"}}<svg class="perf-bar" viewBox="0 0 150 10" preserveAspectRatio="none" aria-hidden="true"><rect class="perf-track" width="150" height="10"/>{{if .Has}}<rect class="perf-{{.Colour}}" width="{{.Width}}" height="10"/>{{end}}<line class="perf-tick" x1="100" x2="100" y1="0" y2="10"/></svg>{{end}}
+
+{{define "perf_figure"}}<span class="perf-text perf-{{.Colour}}">{{.Text}}</span>{{end}}
+
+{{define "perf_gaps"}}<ol class="perf-gaps">
+{{range .}}<li>
+<span class="perf-gap-category">{{.Category}}</span>
+<span class="perf-gap-name">{{.Name}}</span>
+<span class="perf-gap-figure">{{if .Reason}}<span class="perf-text perf-red">{{.Reason}}</span>{{else}}{{template "perf_figure" .Figure}} <span class="dim">{{.Of}}</span>{{end}}</span>
+{{if .Trend}}<span class="perf-gap-trend mono">{{.Trend}}</span>
+{{end}}{{if .Where}}<a class="perf-gap-where" href="{{.WhereHref}}">{{.Where}}</a>
+{{end}}{{if .API}}<span class="badge badge-api">{{.API}}</span>
+{{end}}</li>
+{{end}}</ol>{{end}}

@@ -115,7 +115,7 @@ func TestEveryPageHasTheOneHeaderForWhoeverLooks(t *testing.T) {
 			row = signIn.ReplaceAllString(row, "")
 			if row1 == "" {
 				row1 = row
-				if got, want := linkLabels(row), "omarchy  mac lab, Matrix, Models, Features, Kernel gaps, Aurora, Benchmarks, Candidates, Reports, Data, Install"; got != want {
+				if got, want := linkLabels(row), "omarchy  mac lab, Matrix, Models, Features, Kernel gaps, Aurora, Performance, Candidates, Reports, Data, Install"; got != want {
 					t.Errorf("row 1 is %q, want %q", got, want)
 				}
 			}

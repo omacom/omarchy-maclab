@@ -434,6 +434,7 @@ func TestTheBiggestGapsAreTheRowsFurthestUnderMacOSThenNoBuild(t *testing.T) {
 	}
 	l.ratio(a, r, "speedometer", 70, 0)
 	l.ratio(a, r, "coremark-single", 96, 0)
+	l.ratio(a, r, "7zip", 80, 0)
 	l.ratio(b, r, "motionmark", 30, 0)
 	l.ratio(b, r, "power-idle", 150, 0)
 	l.reason(a, r, "mlx-matmul-fp16", "no_build")
@@ -443,8 +444,15 @@ func TestTheBiggestGapsAreTheRowsFurthestUnderMacOSThenNoBuild(t *testing.T) {
 	for _, gap := range f.Gaps(r) {
 		got = append(got, gap.Configuration.Board+" "+gap.Row.Metric)
 	}
-	if strings.Join(got, ", ") != "j313 motionmark, j314s speedometer, j314s mlx-matmul-fp16" {
+	if strings.Join(got, ", ") != "j313 motionmark, j314s speedometer, j314s 7zip, j314s mlx-matmul-fp16" {
 		t.Errorf("gaps: %v", got)
+	}
+	got = nil
+	for _, gap := range f.Configuration("j314s", 10, 16).Gaps(r) {
+		got = append(got, gap.Row.Metric)
+	}
+	if strings.Join(got, ", ") != "speedometer, 7zip, mlx-matmul-fp16" {
+		t.Errorf("a Configuration's gaps, worst first: %v", got)
 	}
 }
 

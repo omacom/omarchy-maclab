@@ -1,0 +1,41 @@
+{{define "main"}}{{with .Data}}<div class="reading">
+<h1>Performance</h1>
+<p class="subtitle">Omarchy against macOS on the same Mac, for every Configuration. Each figure is a percent of the macOS version its row names, the one its Macs last ran: the median over the Configuration's Macs, each paired with its own macOS result{{with .Release}}, on {{.Kernel}} ({{.Verdict}}){{end}}.</p>
+{{template "perf_picker" .Picker}}
+{{template "perf_legend"}}
+
+{{if .Release}}<section class="card perf-lab-gaps">
+<h2 class="card-title">biggest gaps across the lab</h2>
+{{if .Gaps}}{{template "perf_gaps" .Gaps}}{{if .MoreGaps}}<p class="dim">and {{.MoreGaps}} more on the Configurations' pages.</p>
+{{end}}{{else}}<p class="dim">No row is beyond its tolerance under macOS on {{.Release.Kernel}}.</p>
+{{end}}</section>
+{{else}}<div class="empty"><p>No Release has been measured yet. A Release shows here once it is frozen and a Performance run of it has ended.</p></div>
+{{end}}</div>
+
+{{$cats := .Categories}}{{$span := .Span}}{{range .Families}}<details class="card perf-family"{{if .Open}} open{{end}}>
+<summary class="perf-family-head">
+<span class="perf-family-name">{{.Name}}</span>
+<span class="dim">{{.Count}}</span>
+{{if .Median.Has}}<span class="perf-family-median">{{template "perf_bar" .Median}} <span class="dim">median</span> {{template "perf_figure" .Median}}</span>{{else}}<span class="dim">no runs yet</span>{{end}}
+</summary>
+<div class="scroll perf-box"><table class="list perf-table">
+<thead><tr><th scope="col">Configuration</th><th scope="col">Macs</th><th scope="col" class="perf-overall-head">Overall</th>{{range $cats}}<th scope="col" class="perf-num">{{.}}</th>{{end}}</tr></thead>
+<tbody>
+{{range .Rows}}<tr class="perf-config-row{{if not .Measured}} perf-unmeasured{{end}}">
+<td>{{if .Href}}<a class="perf-config-name" href="{{.Href}}">{{.Name}}</a>{{else}}<span class="perf-config-name">{{.Name}}</span>{{end}}
+<span class="row-meta mono">{{.Board}}{{with .Cores}} · {{.}}{{end}}</span></td>
+<td>{{.Kinds}}{{if .VolunteerOnly}} <span class="badge badge-volunteer">Volunteer only</span>{{end}}
+<span class="row-meta">{{with .MacOS}}macOS {{.}}{{end}}{{if and .MacOS .SSD}} · {{end}}{{with .SSD}}SSD {{.}}{{end}}</span></td>
+{{if .Measured}}<td class="perf-overall">{{template "perf_bar" .Overall}} {{template "perf_figure" .Overall}}{{with .Overall.Trend}} <span class="dim perf-trend">{{.}}</span>{{end}}<span class="row-meta">{{.Of}}</span></td>
+{{range .Categories}}<td class="perf-num">{{template "perf_figure" .}}</td>{{end}}
+{{else}}<td colspan="{{$span}}" class="perf-waiting dim">{{.Waiting}}{{if .Lend}} <a href="{{.LendHref}}">{{.Lend}}</a>{{end}}</td>
+{{end}}</tr>
+{{end}}</tbody>
+</table></div>
+</details>
+{{end}}
+<div class="reading">
+<p class="dim">The tick on each bar is macOS, 100%; bars run to 150%. Power is macOS's draw over Omarchy's, so higher is better there too. A Configuration's figure is its Lab-owned and Counted Macs'; where it has only Volunteers' Macs, theirs, marked. A row that fell back, has no build or no driver, no comparable sensor or was not run is kept out of every mean and listed on its Configuration's page.</p>
+<p class="dim"><a href="{{.DataHref}}">performance.json</a> (CC0).</p>
+</div>
+{{end}}{{end}}

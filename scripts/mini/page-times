@@ -26,7 +26,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib.sh"
 [[ $# == 0 ]] || { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-PAGES="/ /matrix /models /features /gaps /aurora /benchmarks /candidates /reports /data /terms /privacy /status"
+PAGES="/ /matrix /models /features /gaps /aurora /performance /candidates /reports /data /terms /privacy /status"
 TRIES=20
 log_dir="$LAB_DATA/callers"
 [[ -r $log_dir ]] || fail "the caller log ($log_dir) is not readable: run it as the lab account"

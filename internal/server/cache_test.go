@@ -114,14 +114,14 @@ func firstLink(t *testing.T, body, prefix string) string {
 
 var exportPaths = []string{
 	"/api/v1/reports", "/api/v1/reports.json", "/api/v1/reports.csv", "/api/v1/checks", "/api/v1/checks.csv",
-	"/api/v1/matrix", "/api/v1/matrix.json", "/api/v1/benchmarks", "/api/v1/benchmarks.json", "/api/v1/aurora", "/api/v1/aurora.json",
+	"/api/v1/matrix", "/api/v1/matrix.json", "/api/v1/benchmarks", "/api/v1/benchmarks.json", "/api/v1/aurora", "/api/v1/aurora.json", "/api/v1/performance.json",
 }
 
 // publicPaths are the public pages and exports of a lab with reports: the
 // plain ones, and one of each kind that names something.
 func (l *cacheLab) publicPaths() []string {
 	l.t.Helper()
-	paths := []string{"/", "/matrix", "/models", "/features", "/gaps", "/aurora", "/benchmarks", "/candidates", "/reports", "/data", "/terms", "/privacy",
+	paths := []string{"/", "/matrix", "/models", "/features", "/gaps", "/aurora", "/performance", "/candidates", "/reports", "/data", "/terms", "/privacy",
 		"/matrix?group=soc", "/reports?page=1"}
 	paths = append(paths, exportPaths...)
 	paths = append(paths, "/api/v1/matrix.json?group=soc")

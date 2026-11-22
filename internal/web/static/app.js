@@ -91,3 +91,32 @@
     }
   });
 })();
+
+// The Performance pages: a picker's form goes as soon as a choice changes,
+// its Show button kept for a browser that runs no script; a row's Volunteer
+// line opens under it from the button beside the row's name, shown until
+// the script runs.
+(function () {
+  "use strict";
+  var forms = document.querySelectorAll("form[data-autosubmit]");
+  for (var i = 0; i < forms.length; i++) {
+    var button = forms[i].querySelector("button[type=submit]");
+    if (button) button.hidden = true;
+    forms[i].addEventListener("change", function (event) { event.currentTarget.submit(); });
+  }
+  var toggles = document.querySelectorAll("button[data-volunteer-line]");
+  for (var j = 0; j < toggles.length; j++) {
+    var line = document.getElementById(toggles[j].getAttribute("aria-controls"));
+    if (!line) continue;
+    line.hidden = true;
+    toggles[j].setAttribute("aria-expanded", "false");
+    toggles[j].hidden = false;
+  }
+  document.addEventListener("click", function (event) {
+    var toggle = event.target.closest ? event.target.closest("button[data-volunteer-line]") : null;
+    var row = toggle && document.getElementById(toggle.getAttribute("aria-controls"));
+    if (!row) return;
+    row.hidden = !row.hidden;
+    toggle.setAttribute("aria-expanded", row.hidden ? "false" : "true");
+  });
+})();

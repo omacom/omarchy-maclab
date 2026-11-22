@@ -13,7 +13,7 @@ class PageParityTest < ActionDispatch::IntegrationTest
   PAGES = [ "/", "/matrix", "/matrix?group=build", "/matrix?group=release", "/matrix?group=model&confirmed=1", "/matrix?group=build&state=works&layer=aurora",
             "/models", "/models/j416c", "/models/j613", "/features", "/features?model=j416c", "/features/gpu", "/features/brightness",
             "/reports", "/reports?gen=m1&confirmed=1", "/reports?runs=tester&set=edge-demo", "/reports/preview-0000000000000016", "/reports/preview-0000000000000019",
-            "/gaps", "/aurora", "/benchmarks", "/candidates", "/candidates/edge-demo", "/candidates/edge-passing", "/candidates/edge-waiting" ].freeze
+            "/gaps", "/aurora", "/candidates", "/candidates/edge-demo", "/candidates/edge-passing", "/candidates/edge-waiting" ].freeze
   # The exports, asked of the site itself.
   EXPORTS = [ "/api/v1/reports.json?model=j613", "/api/v1/reports.json?set=edge-demo", "/api/v1/reports.csv", "/api/v1/reports.csv?confirmed=1&runs=tester",
               "/api/v1/checks.csv", "/api/v1/checks.csv?model=j416c&state=regression", "/api/v1/checks.csv?confirmed=1&layer=aurora&state=gap",

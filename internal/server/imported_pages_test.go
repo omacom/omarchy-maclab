@@ -43,7 +43,7 @@ func TestTheOldSitesReportsOnceImportedAreServedLikeAnyOthers(t *testing.T) {
 	}
 
 	// Every public page and export answers, and counts the published reports alone.
-	for _, target := range []string{"/", "/matrix", "/matrix?group=build", "/models", "/features", "/gaps", "/aurora", "/benchmarks", "/candidates", "/data",
+	for _, target := range []string{"/", "/matrix", "/matrix?group=build", "/models", "/features", "/gaps", "/aurora", "/performance", "/candidates", "/data",
 		"/api/v1/reports.csv", "/api/v1/checks.csv", "/api/v1/matrix.json", "/api/v1/benchmarks.json", "/api/v1/aurora.json"} {
 		if w := l.do("GET", target, ""); w.Code != http.StatusOK {
 			t.Errorf("GET %s: %d", target, w.Code)
