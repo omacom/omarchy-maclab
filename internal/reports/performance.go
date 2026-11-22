@@ -93,63 +93,101 @@ var (
 	rePerfText    = regexp.MustCompile(`^[ -~]{0,64}$`)
 )
 
-func (p *Performance) check() error {
-	macs, releases := map[string]bool{}, map[string]bool{}
+// Pruned is p without what PublishPerformance would refuse, and why each
+// was left out: labd copies the rest, so that one row it cannot publish
+// holds back neither the others nor a deletion.
+func (p Performance) Pruned() (Performance, []error) {
+	var out Performance
+	var errs []error
+	macs, releases, positions := map[string]bool{}, map[string]bool{}, map[int]bool{}
 	for _, m := range p.Macs {
-		switch {
-		case !rePerfKey.MatchString(m.Key):
-			return fmt.Errorf("a Mac's key %q is not opaque", m.Key)
-		case macs[m.Key]:
-			return fmt.Errorf("Mac %s twice", m.Key)
-		case m.Kind != PerfLabOwned && m.Kind != PerfCounted && m.Kind != PerfVolunteer:
-			return fmt.Errorf("Mac %s: kind %q", m.Key, m.Kind)
-		case !rePerfBoard.MatchString(m.Board) || m.CPU <= 0 || m.GPU <= 0:
-			return fmt.Errorf("Mac %s: Configuration %s %dc-%dg", m.Key, m.Board, m.CPU, m.GPU)
+		if err := checkPerfMac(m, macs); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 		macs[m.Key] = true
+		out.Macs = append(out.Macs, m)
 	}
-	positions := map[int]bool{}
 	for _, r := range p.Releases {
-		switch {
-		case !rePerfKey.MatchString(r.Key):
-			return fmt.Errorf("a Release's key %q is not opaque", r.Key)
-		case releases[r.Key]:
-			return fmt.Errorf("Release %s twice", r.Key)
-		case r.Verdict != PerfQualified && r.Verdict != PerfNoVerdictYet:
-			return fmt.Errorf("Release %s: verdict %q is not published", r.Key, r.Verdict)
-		case !rePerfVersion.MatchString(r.Kernel):
-			return fmt.Errorf("Release %s: kernel %q", r.Key, r.Kernel)
-		case r.Position <= 0 || positions[r.Position]:
-			return fmt.Errorf("Release %s: position %d", r.Key, r.Position)
+		if err := checkPerfRelease(r, releases, positions); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 		releases[r.Key], positions[r.Position] = true, true
+		out.Releases = append(out.Releases, r)
 	}
 	for _, v := range p.Values {
-		at := fmt.Sprintf("%s %s %s", v.Mac, v.Set, v.Metric)
-		switch {
-		case !macs[v.Mac]:
-			return fmt.Errorf("%s: no such Mac", at)
-		case !rePerfSet.MatchString(v.Set) || !rePerfMetric.MatchString(v.Metric):
-			return fmt.Errorf("%s: not a set and metric", at)
-		case v.Side == perf.SideOmarchy && (!releases[v.Release] || v.MacOSBuild != "" || v.MacOSVersion != ""):
-			return fmt.Errorf("%s: an Omarchy value names a published Release and no macOS build", at)
-		case v.Side == perf.SideMacOS && (v.Release != "" || !rePerfBuild.MatchString(v.MacOSBuild) || (v.MacOSVersion != "" && !rePerfMacOS.MatchString(v.MacOSVersion)) || len(v.Booted) > 0):
-			return fmt.Errorf("%s: a macOS value names its macOS version and build, and no Release", at)
-		case v.Side != perf.SideOmarchy && v.Side != perf.SideMacOS:
-			return fmt.Errorf("%s: side %q", at, v.Side)
-		case (v.Value == nil) == (v.Reason == nil):
-			return fmt.Errorf("%s: a value or a reason code, not both or neither", at)
-		case v.Reason != nil && !perf.KnownReason(*v.Reason):
-			return fmt.Errorf("%s: %q is not a reason code", at, *v.Reason)
-		case !rePerfText.MatchString(v.Unit) || !rePerfText.MatchString(v.API):
-			return fmt.Errorf("%s: unit or api", at)
-		case v.Measured.IsZero():
-			return fmt.Errorf("%s: no time measured", at)
+		if err := checkPerfValue(v, macs, releases); err != nil {
+			errs = append(errs, err)
+			continue
 		}
-		for name, version := range v.Booted {
-			if !rePerfPackage.MatchString(name) || !rePerfVersion.MatchString(version) {
-				return fmt.Errorf("%s: booted %q %q", at, name, version)
-			}
+		out.Values = append(out.Values, v)
+	}
+	return out, errs
+}
+
+func (p *Performance) check() error {
+	if _, errs := p.Pruned(); len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+func checkPerfMac(m PerfMac, seen map[string]bool) error {
+	switch {
+	case !rePerfKey.MatchString(m.Key):
+		return fmt.Errorf("a Mac's key %q is not opaque", m.Key)
+	case seen[m.Key]:
+		return fmt.Errorf("Mac %s twice", m.Key)
+	case m.Kind != PerfLabOwned && m.Kind != PerfCounted && m.Kind != PerfVolunteer:
+		return fmt.Errorf("Mac %s: kind %q", m.Key, m.Kind)
+	case !rePerfBoard.MatchString(m.Board) || m.CPU <= 0 || m.GPU <= 0:
+		return fmt.Errorf("Mac %s: Configuration %q %dc-%dg", m.Key, m.Board, m.CPU, m.GPU)
+	}
+	return nil
+}
+
+func checkPerfRelease(r PerfRelease, seen map[string]bool, positions map[int]bool) error {
+	switch {
+	case !rePerfKey.MatchString(r.Key):
+		return fmt.Errorf("a Release's key %q is not opaque", r.Key)
+	case seen[r.Key]:
+		return fmt.Errorf("Release %s twice", r.Key)
+	case r.Verdict != PerfQualified && r.Verdict != PerfNoVerdictYet:
+		return fmt.Errorf("Release %s: verdict %q is not published", r.Key, r.Verdict)
+	case !rePerfVersion.MatchString(r.Kernel):
+		return fmt.Errorf("Release %s: kernel %q", r.Key, r.Kernel)
+	case r.Position <= 0 || positions[r.Position]:
+		return fmt.Errorf("Release %s: position %d", r.Key, r.Position)
+	}
+	return nil
+}
+
+func checkPerfValue(v PerfValue, macs, releases map[string]bool) error {
+	at := fmt.Sprintf("%s %s %s", v.Mac, v.Set, v.Metric)
+	switch {
+	case !macs[v.Mac]:
+		return fmt.Errorf("%s: no such Mac", at)
+	case !rePerfSet.MatchString(v.Set) || !rePerfMetric.MatchString(v.Metric):
+		return fmt.Errorf("%s: not a set and metric", at)
+	case v.Side == perf.SideOmarchy && (!releases[v.Release] || v.MacOSBuild != "" || v.MacOSVersion != ""):
+		return fmt.Errorf("%s: an Omarchy value names a published Release and no macOS build", at)
+	case v.Side == perf.SideMacOS && (v.Release != "" || !rePerfBuild.MatchString(v.MacOSBuild) || (v.MacOSVersion != "" && !rePerfMacOS.MatchString(v.MacOSVersion)) || len(v.Booted) > 0):
+		return fmt.Errorf("%s: a macOS value names its macOS version and build, and no Release", at)
+	case v.Side != perf.SideOmarchy && v.Side != perf.SideMacOS:
+		return fmt.Errorf("%s: side %q", at, v.Side)
+	case (v.Value == nil) == (v.Reason == nil):
+		return fmt.Errorf("%s: a value or a reason code, not both or neither", at)
+	case v.Reason != nil && !perf.KnownReason(*v.Reason):
+		return fmt.Errorf("%s: %q is not a reason code", at, *v.Reason)
+	case !rePerfText.MatchString(v.Unit) || !rePerfText.MatchString(v.API):
+		return fmt.Errorf("%s: unit or api", at)
+	case v.Measured.IsZero():
+		return fmt.Errorf("%s: no time measured", at)
+	}
+	for name, version := range v.Booted {
+		if !rePerfPackage.MatchString(name) || !rePerfVersion.MatchString(version) {
+			return fmt.Errorf("%s: booted %q %q", at, name, version)
 		}
 	}
 	return nil

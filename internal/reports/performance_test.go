@@ -107,4 +107,15 @@ func TestPerformanceRefusesWhatIsNotPublished(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("a refused copy changed reports.db: %+v", got)
 	}
+
+	// Pruned leaves out what would be refused, and what names it.
+	p := perfFixture()
+	p.Macs[1].Key, p.Values[2].Mac = "vera-macbook", "vera-macbook"
+	pruned, errs := p.Pruned()
+	if len(errs) != 2 || len(pruned.Macs) != 1 || len(pruned.Values) != 2 {
+		t.Fatalf("pruned: %+v %v", pruned, errs)
+	}
+	if _, err := s.PublishPerformance(pruned, perfAt); err != nil {
+		t.Fatal(err)
+	}
 }
