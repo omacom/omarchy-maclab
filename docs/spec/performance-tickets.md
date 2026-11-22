@@ -14,7 +14,7 @@ The build of section 22 of `spec.md` ("Performance"), one ticket per slice. A ti
 | P8 | The macOS side in labd | P5, P6 | done |
 | P9 | Publishing and Counted | P6 | done |
 | P10 | The figures | P9 | done |
-| P11 | Compare on Benchmark sets | P4, P8 | doing |
+| P11 | Compare on Benchmark sets | P4, P8 | done |
 | P12 | Performance pages | P10 | doing |
 | P13 | Time bench-1 on the slowest Lab-owned Mac | P2, P4, P5, P14 | human |
 | P14 | lab-agent runs a Performance run's metrics | P4, P7 | done |
