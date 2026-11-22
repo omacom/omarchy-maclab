@@ -16,8 +16,12 @@ type PackageSet struct {
 	CreatedBy string    `json:"created_by"`
 	Created   time.Time `json:"created"`
 	// CapturedFrom is the Mac a set captured with lab set capture came from.
-	CapturedFrom string    `json:"captured_from,omitempty"`
-	Items        []SetItem `json:"items"`
+	CapturedFrom string `json:"captured_from,omitempty"`
+	// Release and ManifestSHA256 are a Release's set, release-<version>:
+	// its frozen manifest's packages, made from that manifest by its digest.
+	Release        string    `json:"release,omitempty"`
+	ManifestSHA256 string    `json:"manifest_sha256,omitempty"`
+	Items          []SetItem `json:"items"`
 }
 
 // Where a Package set's package comes from.

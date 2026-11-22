@@ -103,6 +103,9 @@ func testArtifacts(t api.TestSpec) []string {
 	for _, p := range t.Payload {
 		shas = append(shas, p.SHA256)
 	}
+	if t.Bench != nil {
+		return append(shas, benchFiles(t.Bench)...)
+	}
 	if t.Builtin == "bench" || t.Builtin == "bench-extended" {
 		if items, err := bench.Manifest(); err == nil {
 			for _, it := range items {
@@ -121,6 +124,9 @@ func (v *dev) endJobLocked(job string) {
 	defer v.mu.Unlock()
 	if v.d.ActiveJob == job {
 		v.d.ActiveJob = ""
+	}
+	if v.perfClaim == job {
+		v.perfClaim = ""
 	}
 	if l := v.d.Lease; l != nil && l.Job == job {
 		free := *l

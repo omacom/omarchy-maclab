@@ -38,6 +38,7 @@
 <dt>Availability window</dt><dd>{{if .Schedule}}{{.Schedule}}{{if .Zone}} <span class="dim">({{.Zone}})</span>{{end}}{{else}}none yet{{end}} <br>{{.Window}}{{if .Pending}} <br>{{.Pending}} <span class="dim">pending until the Mac checks in</span>{{end}}</dd>
 <dt>Access level</dt><dd>{{.AccessLevel}}</dd>
 <dt>Publishing</dt><dd>{{if .Publishing}}on <span class="dim">the lab may publish this Mac's reports</span>{{else}}off <span class="dim">the lab publishes none of this Mac's reports</span>{{end}}</dd>
+<dt>Performance runs</dt><dd>{{if .Performance}}on <span class="dim">the lab may use this Mac's window to measure Releases, at Access level Full and on AC power</span>{{else}}off <span class="dim">the lab starts no Performance run here</span>{{end}} <span class="dim">changed at the Mac</span></dd>
 <dt>Installed runs</dt><dd>{{if .Eligible}}Eligible{{else}}not Eligible <span class="dim">its system cannot be captured first</span>{{end}} <span class="dim">Installed runs are not offered on a Volunteer's Mac yet.</span></dd>
 <dt>Notices</dt><dd>{{if .Topic}}{{template "copy" (copy "the Notices topic" .Topic)}}{{else}}<span class="dim">no topic</span>{{end}} <span class="nowrap">job Notices {{if .JobNotices}}on{{else}}off{{end}}</span>{{template "topic-refused" .TopicRefused}}</dd>
 <dt>Lease</dt><dd>{{if .Holder}}@{{.Holder}}{{if .HolderKind}} <span class="badge {{.HolderClass}}">{{.HolderKind}}</span>{{end}} <span class="nowrap">until {{.Until}}</span>{{else}}<span class="dim">none</span>{{end}}</dd>

@@ -32,7 +32,7 @@ var (
 )
 
 const perfRunCols = `id, mac, enrollment, set_name, side, release_version, macos_version, macos_build, list,
-attempt, state, booted, boot_seconds, conditions, started, ended`
+attempt, state, booted, boot_seconds, conditions, started, ended, metrics`
 
 // openPerfRun opens the next attempt of r's Mac, set, side and Release or
 // macOS build, running from now.
@@ -67,9 +67,13 @@ WHERE mac=? AND set_name=? AND side=? AND release_version=? AND macos_build=?`,
 		return r, err
 	}
 	r.State, r.Started, r.Ended, r.Booted, r.BootSeconds, r.Conditions = perf.Running, now, nil, nil, nil, nil
+	metrics, _ := json.Marshal(r.Metrics)
+	if r.Metrics == nil {
+		metrics = []byte("[]")
+	}
 	res, err := tx.Exec(`INSERT INTO perf_runs(mac, enrollment, set_name, side, release_version, macos_version,
-macos_build, list, attempt, state, started) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		r.Mac, r.Enrollment, r.Set, r.Side, r.Release, r.MacOSVersion, r.MacOSBuild, r.List, r.Attempt, r.State, now.UnixMicro())
+macos_build, list, attempt, state, started, metrics) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.Mac, r.Enrollment, r.Set, r.Side, r.Release, r.MacOSVersion, r.MacOSBuild, r.List, r.Attempt, r.State, now.UnixMicro(), string(metrics))
 	if err != nil {
 		return r, err
 	}
@@ -83,14 +87,17 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanPerfRun(row rowScanner) (perf.Run, error) {
 	var r perf.Run
-	var booted, cond string
+	var booted, cond, metrics string
 	var boot sql.NullFloat64
 	var started int64
 	var ended sql.NullInt64
 	err := row.Scan(&r.ID, &r.Mac, &r.Enrollment, &r.Set, &r.Side, &r.Release, &r.MacOSVersion, &r.MacOSBuild,
-		&r.List, &r.Attempt, &r.State, &booted, &boot, &cond, &started, &ended)
+		&r.List, &r.Attempt, &r.State, &booted, &boot, &cond, &started, &ended, &metrics)
 	if err != nil {
 		return r, err
+	}
+	if metrics != "[]" {
+		json.Unmarshal([]byte(metrics), &r.Metrics)
 	}
 	if booted != "{}" {
 		json.Unmarshal([]byte(booted), &r.Booted)

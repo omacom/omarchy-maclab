@@ -193,6 +193,10 @@ type Device struct {
 	// latest check-in carried them. Only the Volunteer changes them, on the Mac.
 	AccessLevel string `json:"access_level,omitempty"`
 	Publish     bool   `json:"publish,omitempty"`
+	// Performance is whether a Volunteer's Mac lets Performance runs use its
+	// Availability window (`sudo lab-agent performance on`), as its latest
+	// check-in carried it. Off until its Volunteer turns it on.
+	Performance bool `json:"performance,omitempty"`
 	// MachineID tells the Mac's reports from another's: of its Machine key,
 	// recorded when the lab publishes a job's report. labd keeps it and
 	// shows it to nobody.
@@ -374,6 +378,8 @@ type Checkin struct {
 	// publishing opt-in; a Lab-owned Mac sends no AccessLevel.
 	AccessLevel string `json:"access_level,omitempty"`
 	Publish     bool   `json:"publish,omitempty"`
+	// Performance is a Volunteer's `performance on|off`, sent with AccessLevel.
+	Performance bool `json:"performance,omitempty"`
 	// AgentStart is a number this run of lab-agent picked as it started: a
 	// new one says the agent was started again, whatever its version.
 	AgentStart string `json:"agent_start,omitempty"`
@@ -762,6 +768,8 @@ type TestSpec struct {
 	// Payload is files the script needs beside it, by artifact sha256: each
 	// lands in $MACLAB_IN under its name before the script runs.
 	Payload []PayloadFile `json:"payload,omitempty"`
+	// Bench is a Performance run's benchmarks, for the bench builtin.
+	Bench *BenchRun `json:"bench,omitempty"`
 }
 
 // MaxPayloadFiles is how many payload files one script test may carry.
@@ -916,6 +924,9 @@ type JobSpec struct {
 	// Compare makes the job a Compare: two sides on the Mac, benchmarked
 	// and checked alike (see CompareSpec).
 	Compare *CompareSpec `json:"compare,omitempty"`
+	// Performance makes the job a Performance run: one Release, booted as a
+	// Candidate boot, measured with one Benchmark set (see PerformanceSpec).
+	Performance *PerformanceSpec `json:"performance,omitempty"`
 }
 
 // Mesa test modes. Staged is a diagnostic of the packages: they are unpacked
@@ -981,20 +992,21 @@ type JobEvent struct {
 }
 
 type JobResult struct {
-	Booted        bool             `json:"booted"`
-	BootKernel    string           `json:"boot_kernel,omitempty"`
-	BootCmdline   string           `json:"boot_cmdline,omitempty"` // /proc/cmdline of the test boot
-	BootSeconds   float64          `json:"boot_seconds,omitempty"`
-	FellBack      bool             `json:"fell_back,omitempty"`
-	Recovery      []string         `json:"recovery,omitempty"` // ladder steps that were needed
-	Tests         []TestResult     `json:"tests,omitempty"`
-	KernelEvents  []KernelEvent    `json:"kernel_events,omitempty"`
-	NewErrorLines []string         `json:"new_error_lines,omitempty"` // dmesg errors not in the baseline
-	Logs          []string         `json:"logs,omitempty"`
-	OMT           *OMTResult       `json:"omt,omitempty"` // omarchy-m-test, when it ran
-	Installed     *InstalledResult `json:"installed,omitempty"`
-	Mesa          *MesaResult      `json:"mesa,omitempty"`
-	Compare       *CompareResult   `json:"compare,omitempty"`
+	Booted        bool               `json:"booted"`
+	BootKernel    string             `json:"boot_kernel,omitempty"`
+	BootCmdline   string             `json:"boot_cmdline,omitempty"` // /proc/cmdline of the test boot
+	BootSeconds   float64            `json:"boot_seconds,omitempty"`
+	FellBack      bool               `json:"fell_back,omitempty"`
+	Recovery      []string           `json:"recovery,omitempty"` // ladder steps that were needed
+	Tests         []TestResult       `json:"tests,omitempty"`
+	KernelEvents  []KernelEvent      `json:"kernel_events,omitempty"`
+	NewErrorLines []string           `json:"new_error_lines,omitempty"` // dmesg errors not in the baseline
+	Logs          []string           `json:"logs,omitempty"`
+	OMT           *OMTResult         `json:"omt,omitempty"` // omarchy-m-test, when it ran
+	Installed     *InstalledResult   `json:"installed,omitempty"`
+	Mesa          *MesaResult        `json:"mesa,omitempty"`
+	Compare       *CompareResult     `json:"compare,omitempty"`
+	Performance   *PerformanceResult `json:"performance,omitempty"`
 }
 
 // InstalledResult is an installed-mode job's verdicts. The evidence files are

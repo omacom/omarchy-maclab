@@ -90,6 +90,11 @@ type dev struct {
 	// freed the Mac.
 	afterFree func()
 
+	// perfClaim is the scheduled Performance run that claimed the Mac, from
+	// its queueing until its cleanup ends: no Lease is taken meanwhile.
+	// "claiming" while the scheduler queues it.
+	perfClaim string
+
 	// forgotten: lab forget deleted the device's row. Set under mu, which
 	// every save holds, so nothing still holding the device writes it back.
 	forgotten bool
@@ -284,6 +289,7 @@ func (s *Server) joined(v *dev) {
 	}
 	s.macSaid(d.Name, d.ID, macJoined, "Joined as "+as+" ("+orUnknown(configuration)+")")
 	s.labGroup.MacJoined(d.Name, configuration, d.Kind)
+	s.perfKick()
 	if !d.IsVolunteer() || d.VolunteerID == 0 {
 		return
 	}

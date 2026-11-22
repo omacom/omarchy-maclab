@@ -174,6 +174,11 @@ type Server struct {
 	// macos is the macOS runs (macos.go), opened by macOS().
 	macos     *macosRuns
 	macosOnce sync.Once
+	// perfWake asks the Performance scheduler to look again now
+	// (perf_schedule.go).
+	perfWake chan struct{}
+	// perfNoted is what the scheduler logged it measures nothing for.
+	perfNoted sync.Map
 	reports   *reports.Store
 	// uploads takes reports in; nil without the machine-id key.
 	uploads   *reports.Uploads
@@ -389,7 +394,7 @@ func New(ctx context.Context, cfg Config, logger *log.Logger) (*Server, error) {
 		st.db.Close()
 		return nil, err
 	}
-	s := &Server{cfg: cfg, store: st, reports: rep, catalogue: features, installScript: installLine, installLabScript: installLabLine, installOpen: installOpen, installLabOpen: installLabOpen, log: logger, ctx: ctx, devs: map[string]*dev{}, cancels: map[string]context.CancelFunc{}, cancelWhy: map[string]string{}, callers: callers}
+	s := &Server{cfg: cfg, store: st, reports: rep, catalogue: features, installScript: installLine, installLabScript: installLabLine, installOpen: installOpen, installLabOpen: installLabOpen, log: logger, ctx: ctx, devs: map[string]*dev{}, cancels: map[string]context.CancelFunc{}, cancelWhy: map[string]string{}, callers: callers, perfWake: make(chan struct{}, 1)}
 	s.start = s.now()
 	opened, err := st.liveAt()
 	if err != nil {
@@ -521,6 +526,7 @@ func New(ctx context.Context, cfg Config, logger *log.Logger) (*Server, error) {
 	}
 	go s.gcLoop()
 	go s.omtScheduler()
+	go s.perfScheduler()
 	go s.callerLogLoop()
 	go s.sightLoop()
 	go s.recoverAfterStart(wasUp)
@@ -722,7 +728,7 @@ func hashSecret(s string) string {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	for _, rt := range append(append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...), s.perfRoutes()...) {
+	for _, rt := range append(append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...), append(s.perfRoutes(), s.perfRunRoutes()...)...) {
 		s.register(m, rt)
 	}
 	// The interface's own files and pages: each page says who may open it.
@@ -1753,6 +1759,9 @@ func (s *Server) retry(by Person, id, holder string) (*api.Job, int, error) {
 	if old.State != api.JobDone {
 		return nil, 409, fmt.Errorf("job %s is still %s; only a finished job can be retried", id, old.State)
 	}
+	if p := old.Spec.Performance; p != nil {
+		return nil, 409, fmt.Errorf("a Performance run is run again with lab perf rerun %s %s", old.Spec.Device, p.Release)
+	}
 	if old.Spec.Compare != nil {
 		j, err := s.retryCompare(by, old)
 		if err != nil {
@@ -1981,7 +1990,7 @@ func (s *Server) submit(by Person, spec api.JobSpec, retryOf string, notes ...st
 				}
 			}
 		}
-		if !has && spec.Compare == nil && s.omtWanted(v.snapshot(), spec) {
+		if !has && spec.Compare == nil && spec.Performance == nil && s.omtWanted(v.snapshot(), spec) {
 			ts := omtSpec()
 			ts.SkipOnScreen = d.Enrollment.IsVolunteer()
 			spec.Tests = append(spec.Tests, ts)
