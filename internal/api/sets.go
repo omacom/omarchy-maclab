@@ -108,10 +108,13 @@ func (it SetItem) Check() error {
 
 // stackExact and stackPrefix name the packages of the Omarchy Mac stack that
 // lab-agent reports and lab set capture records: the kernel and its headers,
-// m1n1, U-Boot, Mesa and Vulkan, the AVD video decoder, libfprint, and the
-// Asahi firmware.
+// m1n1, U-Boot, Mesa and Vulkan, the AVD video decoder, libfprint, the
+// Asahi firmware, and what a Performance run records it booted besides: the
+// Neural engine's driver and libane, MLX and llama.cpp. Those last are named
+// one by one: a name holding "ane" or "mlx" is no sign of either.
 var (
-	stackExact  = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract"}
+	stackExact = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract",
+		"ane-dkms", "libane", "python-libane", "mlx", "python-mlx", "llama.cpp", "llama.cpp-vulkan"}
 	stackPrefix = []string{"linux-aurora", "m1n1-", "uboot-", "mesa-", "vulkan-", "libfprint-"}
 )
 

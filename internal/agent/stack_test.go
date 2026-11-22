@@ -14,6 +14,14 @@ func TestStackOfPacmanQ(t *testing.T) {
 	if got := stackOf([]byte(out)); !maps.Equal(got, want) {
 		t.Fatalf("stack %v, want %v", got, want)
 	}
+	// The Neural engine's driver, libane, MLX and llama.cpp go by their
+	// names, never by a part of one.
+	out = "libane 0.2.0-1\nane-dkms 0.2.0-1\npython-mlx 0.29.1-1\nllama.cpp-vulkan b6500-1\n" +
+		"xfce4-panel 4.20.4-1\nplanetary 1-1\nlibmlx-tools 1-1\nllama-tools 1-1\n"
+	want = map[string]string{"libane": "0.2.0-1", "ane-dkms": "0.2.0-1", "python-mlx": "0.29.1-1", "llama.cpp-vulkan": "b6500-1"}
+	if got := stackOf([]byte(out)); !maps.Equal(got, want) {
+		t.Fatalf("stack %v, want %v", got, want)
+	}
 	if got := stackOf(nil); got != nil {
 		t.Fatalf("no pacman: %v", got)
 	}
