@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
 
 func pinned(name, body, url string) bench.Item {
@@ -66,6 +67,35 @@ func TestBenchMirrorRefusesBytesThatAreNotPinned(t *testing.T) {
 	}
 	if len(st.got) != 0 {
 		t.Errorf("stored %v", st.got)
+	}
+}
+
+func TestBenchMirrorTakesEverySetsPinnedFilesOnce(t *testing.T) {
+	all, err := sets.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said bytes.Buffer
+	items := mirrorItems(all, bench.Legacy(), &said)
+	names, shas := map[string]bool{}, map[string]bool{}
+	for _, it := range items {
+		if shas[it.SHA256] {
+			t.Errorf("%s mirrored twice", it.SHA256)
+		}
+		names[it.Name], shas[it.SHA256] = true, true
+	}
+	for _, n := range []string{"bench-1/omarchy/chrome", "bench-1/omarchy/speedometer", "bench-1/omarchy/clip-h264-1080p", "runner/glmark2", "runner/coremark"} {
+		if !names[n] {
+			t.Errorf("no %s in %v", n, names)
+		}
+	}
+	if names["bench-1/macos/speedometer"] || names["runner/clip"] {
+		t.Error("a file both systems share, or the runner's copy of one, was mirrored again")
+	}
+	for _, n := range []string{"bench-1/macos/chrome: a placeholder", "bench-1/omarchy/coremark: a placeholder"} {
+		if !strings.Contains(said.String(), n) {
+			t.Errorf("did not say %q: %s", n, said.String())
+		}
 	}
 }
 
