@@ -8,12 +8,12 @@ The build of section 22 of `spec.md` ("Performance"), one ticket per slice. A ti
 | P2 | The release workflow builds the benchmark programs | | done |
 | P3 | macOS runner set-up and enrollment | | done |
 | P4 | Omarchy runs a Benchmark set | P1 | done |
-| P5 | macOS runs a Benchmark set | P1, P3 | doing |
+| P5 | macOS runs a Benchmark set | P1, P3 | done |
 | P6 | Performance results in labd | P1 | done |
 | P7 | Performance run job and scheduling | P6 | doing |
-| P8 | The macOS side in labd | P5, P6 | todo |
-| P9 | Publishing and Counted | P6 | doing |
-| P10 | The figures | P9 | todo |
+| P8 | The macOS side in labd | P5, P6 | doing |
+| P9 | Publishing and Counted | P6 | done |
+| P10 | The figures | P9 | doing |
 | P11 | Compare on Benchmark sets | P4, P8 | todo |
 | P12 | Performance pages | P10 | todo |
 | P13 | Time bench-1 on the slowest Lab-owned Mac | P2, P4, P5 | human |
