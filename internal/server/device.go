@@ -345,6 +345,12 @@ func (s *Server) firstBaselineEnded(v *dev, job, outcome string) {
 // heartbeat records a check-in. Commands are handed out separately by deliver.
 func (v *dev) heartbeat(ci api.Checkin) {
 	defer v.s.decideTerms(v) // after the unlock below
+	published := false
+	defer func() {
+		if published {
+			v.s.publishPerf()
+		}
+	}()
 	// When the check-in came, not when it got the lock: one from the old
 	// boot queued behind a slow save must not count as heard after a
 	// reboot's grace (recover.go), nor a later one be stamped earlier.
@@ -374,9 +380,12 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	if v.syncWindowLocked(ci.Window) {
 		persist = true
 	}
+	publishing := v.d.Publish
 	if v.syncAccessLocked(ci) {
 		persist = true
 	}
+	// Its performance values leave reports.db, or come to it, at once.
+	published = v.d.Publish != publishing
 	if v.capLeaseLocked() {
 		persist = true
 	}

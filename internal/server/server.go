@@ -232,6 +232,9 @@ type Server struct {
 	// releaseMu makes a verdict one step: whose turn it is depends on the
 	// history it is added to.
 	releaseMu sync.Mutex
+	// perfPublishMu makes a copy of the published performance values to
+	// reports.db one step (perf_publish.go).
+	perfPublishMu sync.Mutex
 	// forgetting is held by a forgetting's sweep, and read by an Installed
 	// run's seal (installed.go).
 	forgetting sync.RWMutex
@@ -484,6 +487,7 @@ func New(ctx context.Context, cfg Config, logger *log.Logger) (*Server, error) {
 		go s.deviceLoop(v)
 	}
 	s.adoptReleases()
+	s.publishPerf()
 	s.termsTookEffect()
 	s.builds = newBuildMgr(s)
 	s.reconcileRunningBuilds()
@@ -722,7 +726,7 @@ func hashSecret(s string) string {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	for _, rt := range append(append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...), s.perfRoutes()...) {
+	for _, rt := range append(append(append(append(s.routes(), s.exportRoutes()...), s.macosRoutes()...), s.compareRoutes()...), append(s.perfRoutes(), s.perfPublishRoutes()...)...) {
 		s.register(m, rt)
 	}
 	// The interface's own files and pages: each page says who may open it.

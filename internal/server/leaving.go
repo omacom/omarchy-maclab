@@ -123,6 +123,7 @@ func (s *Server) endEnrollment(v *dev, l leaving) error {
 	v.bump()
 	v.mu.Unlock()
 	s.log.Printf("%s: enrollment ended (%s)", name, l.how)
+	s.publishPerf()
 
 	// The job holding the Mac ends incomplete (see runJob); the ones queued
 	// behind it, or waiting for the Mac or its window, have no Mac to run on.

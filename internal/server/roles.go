@@ -237,6 +237,8 @@ func (s *Server) subject(accountID int64) (knownPerson, error) {
 // the next one.
 func (s *Server) changed(accountID int64) {
 	s.conns.end(accountConnKey(accountID))
+	// Whether their Macs are Counted may have changed with the M team.
+	s.publishPerf()
 }
 
 // handleTyped is what a Maintainer typed as a GitHub handle, without the @

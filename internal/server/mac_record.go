@@ -31,6 +31,7 @@ const (
 	macLimited       = "limited"
 	macLimitRemoved  = "limit-removed"
 	macPublishing    = "publishing"
+	macCounted       = "counted"
 	macLeft          = "left"
 )
 
