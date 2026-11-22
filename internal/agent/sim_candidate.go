@@ -191,15 +191,25 @@ func (s *Sim) CleanupCandidate(ctx context.Context, job string, keep bool) error
 	return nil
 }
 
-// BootMacOS is boot-macos-once on the simulated Mac: labd is told, and the
-// next boot is macOS, for MacOSFor, then the Mac is back on its own system.
+// BootMacOS is boot-macos-once on the simulated Mac: the next boot is
+// macOS, for MacOSFor, then the Mac is back on its own system; labd is told
+// once it is set, and a refusal puts the next boot back.
 func (s *Sim) BootMacOS(ctx context.Context, started func() error) error {
+	s.mu.Lock()
+	fails := s.BlessFails
+	if fails == nil {
+		s.macOSNext = true
+	}
+	s.mu.Unlock()
+	if fails != nil {
+		return fails
+	}
 	if err := started(); err != nil {
+		s.mu.Lock()
+		s.macOSNext = false
+		s.mu.Unlock()
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.macOSNext = true
 	return nil
 }
 

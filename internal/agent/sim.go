@@ -154,6 +154,9 @@ type Sim struct {
 	// InMacOS, when set, is called as the Mac boots into macOS, where the
 	// lab's macOS runner does its run.
 	InMacOS func()
+	// BlessFails, when set, is asahi-bless failing to set macOS as the
+	// next boot.
+	BlessFails error
 
 	testLength time.Duration    // see SetTestLength
 	testHold   chan struct{}    // see HoldTests
