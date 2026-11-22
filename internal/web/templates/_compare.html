@@ -1,15 +1,15 @@
 {{define "compare-report"}}<section class="card" id="compare">
 <h2 class="card-title">compare</h2>
-<p>{{.Before}} (A) against {{.After}} (B), {{.Tier}} tier. omarchy-m-test: {{.Regressed}} regressed, {{.Fixed}} fixed.{{if .Hands}} A person: {{.Hands}}.{{end}}{{if .Published}} <span class="dim">Published {{.Published}}.</span>{{else}} <span class="dim">Private to Maintainers until published.</span>{{end}}</p>
+<p>{{.Before}} (A) against {{.After}} (B), {{.Tier}} tier{{if .Bench}} of {{.Bench}}{{end}}. omarchy-m-test: {{.Regressed}} regressed, {{.Fixed}} fixed.{{if .Hands}} A person: {{.Hands}}.{{end}}{{if .Published}} <span class="dim">Published {{.Published}}.</span>{{else}} <span class="dim">Private to Maintainers until published.</span>{{end}}</p>
 <div class="scroll"><table class="list stack">
-<thead><tr><th>Benchmark</th><th>A</th><th>B</th><th>Change</th><th>Verdict</th>{{if .MacOS}}<th>macOS</th><th>macOS against A</th>{{end}}<th>Noise</th></tr></thead>
+<thead><tr><th>Metric</th><th>A</th><th>B</th><th>Change</th><th>Verdict</th>{{if .MacOS}}<th>macOS</th><th>macOS against A</th>{{end}}<th>Tolerance</th></tr></thead>
 <tbody>
 {{range .Rows}}<tr>
-<td data-label="Benchmark">{{.Name}}{{if .Unit}} <span class="dim">{{.Unit}}</span>{{end}}{{if .Note}}<br><span class="dim">{{.Note}}</span>{{end}}</td>
+<td data-label="Metric">{{.Name}}{{if .Unit}} <span class="dim">{{.Unit}}</span>{{end}}{{if .Note}}<br><span class="dim">{{.Note}}</span>{{end}}</td>
 <td data-label="A">{{.A}}</td><td data-label="B">{{.B}}</td><td data-label="Change">{{.Delta}}</td>
 <td data-label="Verdict"><span class="{{.Class}}">{{.Verdict}}</span></td>
-{{if $.MacOS}}<td data-label="macOS">{{.MacOS}}</td><td data-label="macOS against A">{{.MacOSDelta}} <span class="{{.MacOSClass}}">{{.MacOSVerdict}}</span></td>
-{{end}}<td data-label="Noise" class="dim">{{.Noise}}</td>
+{{if $.MacOS}}<td data-label="macOS">{{.MacOS}}</td><td data-label="macOS against A">{{.MacOSDelta}} <span class="{{.MacOSClass}}">{{.MacOSVerdict}}</span>{{if .MacOSNote}}<br><span class="dim">{{.MacOSNote}}</span>{{end}}</td>
+{{end}}<td data-label="Tolerance" class="dim">{{.Tolerance}}</td>
 </tr>
 {{end}}</tbody>
 </table></div>

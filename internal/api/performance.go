@@ -30,6 +30,7 @@ type PerformanceSpec struct {
 
 // BenchRun is the bench builtin's task in a Performance run: the metrics of
 // the set to run, in order, on this system, and the attempt they upload to.
+// A Compare's has no Run: labd reads its bench.json with the test's files.
 // Each metric's files are the set's for Omarchy; the Mac fetches them from
 // labd by sha256 while the job runs. The upload carries only the fields and
 // reason codes of internal/perf, and ends the attempt with succeeded or

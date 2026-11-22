@@ -22,13 +22,13 @@ func init() {
 }
 
 type compareView struct {
-	ID, Before, After, Tier string
-	Sides                   []compareSideView
-	Rows                    []compareRowView
-	MacOS                   bool
-	Checks                  []api.CompareCheck // the checks that are not a plain pass
-	Regressed, Fixed        int
-	Published, Hands        string
+	ID, Before, After, Tier, Bench string
+	Sides                          []compareSideView
+	Rows                           []compareRowView
+	MacOS                          bool
+	Checks                         []api.CompareCheck // the checks that are not a plain pass
+	Regressed, Fixed               int
+	Published, Hands               string
 	// CanPublish and Waiting are for a Maintainer on the job's page.
 	CanPublish, Waiting bool
 }
@@ -41,8 +41,8 @@ type compareSideView struct {
 }
 
 type compareRowView struct {
-	Name, Unit, A, B, Delta, Verdict, Class, Noise, Note string
-	MacOS, MacOSDelta, MacOSVerdict, MacOSClass          string
+	Name, Unit, A, B, Delta, Verdict, Class, Tolerance, Note string
+	MacOS, MacOSDelta, MacOSVerdict, MacOSClass, MacOSNote   string
 }
 
 var verdictClass = map[string]string{api.VerdictBetter: "job-ok", api.VerdictWorse: "job-bad", api.VerdictNoChange: "dim", api.VerdictNotCompared: "dim"}
@@ -66,7 +66,7 @@ func compareViewOf(j *api.Job) *compareView {
 	if j.Spec.Compare == nil || res == nil {
 		return nil
 	}
-	cv := &compareView{ID: j.ID, Before: res.Before, After: res.After, Tier: res.Tier, Regressed: res.Regressed, Fixed: res.Fixed}
+	cv := &compareView{ID: j.ID, Before: res.Before, After: res.After, Tier: res.Tier, Bench: res.Bench, Regressed: res.Regressed, Fixed: res.Fixed}
 	for _, s := range res.Sides {
 		sv := compareSideView{Side: s.Side, Set: s.Set, Boot: s.Boot, Kernel: s.Kernel, GPUFirmware: orStr(s.GPUFirmware, "-"),
 			SIO: orStr(s.SIO, "-"), Thunderbolt: orStr(s.Thunderbolt, "-"), FailedUnits: orStr(strings.Join(s.FailedUnits, " "), "none"),
@@ -85,11 +85,8 @@ func compareViewOf(j *api.Job) *compareView {
 	}
 	for _, r := range res.Rows {
 		rv := compareRowView{Name: r.Name, Unit: r.Unit, A: num(r.A), B: num(r.B), Delta: pct(r.Delta), Verdict: r.Verdict,
-			Class: verdictClass[r.Verdict], Noise: fmt.Sprintf("±%.1f%% (%s)", r.Noise, r.NoiseFrom), Note: r.Note,
-			MacOS: num(r.MacOS), MacOSDelta: pct(r.MacOSDelta), MacOSVerdict: r.MacOSVerdict, MacOSClass: verdictClass[r.MacOSVerdict]}
-		if r.MacOSNote != "" {
-			rv.MacOSVerdict = r.MacOSNote
-		}
+			Class: verdictClass[r.Verdict], Tolerance: fmt.Sprintf("±%g%%", r.Tolerance), Note: r.Note,
+			MacOS: num(r.MacOS), MacOSDelta: pct(r.MacOSDelta), MacOSVerdict: r.MacOSVerdict, MacOSClass: verdictClass[r.MacOSVerdict], MacOSNote: r.MacOSNote}
 		if !r.HigherIsBetter && r.Unit != "" {
 			rv.Unit += ", lower is better"
 		}
