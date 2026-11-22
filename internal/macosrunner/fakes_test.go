@@ -31,17 +31,19 @@ import (
 
 // fakeLab is labd as the runner sees it: one run, its files, the upload.
 type fakeLab struct {
-	t       *testing.T
-	mu      sync.Mutex
-	run     *api.MacOSRun
-	files   map[string][]byte
-	polls   []url.Values
-	got     *Upload
-	raw     []byte
-	upPath  string
-	enrols  int
-	fetched []string
-	srv     *httptest.Server
+	t      *testing.T
+	mu     sync.Mutex
+	run    *api.MacOSRun
+	files  map[string][]byte
+	polls  []url.Values
+	got    *Upload
+	raw    []byte
+	upPath string
+	enrols int
+	// enrolQuery is what the enrolment told labd beside its token.
+	enrolQuery url.Values
+	fetched    []string
+	srv        *httptest.Server
 }
 
 func newFakeLab(t *testing.T, run *api.MacOSRun, files map[string][]byte) *fakeLab {
@@ -74,6 +76,7 @@ func (f *fakeLab) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.enrols++
+		f.enrolQuery = r.URL.Query()
 		json.NewEncoder(w).Encode(api.MacOSEnrolled{Mac: "m2-max", Secret: "mos_secret"})
 		return
 	case auth != "Bearer mos_secret":

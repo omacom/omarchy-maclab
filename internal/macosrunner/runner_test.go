@@ -677,8 +677,13 @@ func TestAFileThatIsNotTheSetsIsAnError(t *testing.T) {
 func TestEnrollKeepsTheSecretPrivate(t *testing.T) {
 	lab := newFakeLab(t, nil, nil)
 	path := filepath.Join(t.TempDir(), "etc", "macos-runner.json")
-	if err := Enroll(context.Background(), lab.srv.URL, "mos_enr_once", "maralc", path); err != nil {
+	h := newFakeHost()
+	if err := Enroll(context.Background(), lab.srv.URL, "mos_enr_once", "maralc", path, h); err != nil {
 		t.Fatal(err)
+	}
+	// The build is told at enrollment, as at every boot, and nothing else.
+	if q := lab.enrolQuery; len(q) != 2 || q.Get("version") != h.version || q.Get("build") != h.build {
+		t.Errorf("enrolled telling labd %v", q)
 	}
 	st, err := os.Stat(path)
 	if err != nil || st.Mode().Perm() != 0o600 {
@@ -688,7 +693,7 @@ func TestEnrollKeepsTheSecretPrivate(t *testing.T) {
 	if err != nil || c.Secret != "mos_secret" || c.Mac != "m2-max" || c.GUIUser != "maralc" || c.Server != lab.srv.URL {
 		t.Errorf("%+v %v", c, err)
 	}
-	if err := Enroll(context.Background(), lab.srv.URL, "mos_enr_once", "", path); err == nil {
+	if err := Enroll(context.Background(), lab.srv.URL, "mos_enr_once", "", path, h); err == nil {
 		t.Error("enrolled twice with one token")
 	}
 }

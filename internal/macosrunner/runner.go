@@ -60,11 +60,19 @@ func LoadConfig(path string) (Config, error) {
 }
 
 // Enroll spends the one-time token from `lab macos enroll` for this Mac's
-// runner secret and keeps it at path, mode 0600.
-func Enroll(ctx context.Context, server, token, guiUser, path string) error {
+// runner secret and keeps it at path, mode 0600. It tells labd the macOS
+// version and build, as every boot does; host nil is macOS itself.
+func Enroll(ctx context.Context, server, token, guiUser, path string, host Host) error {
 	server = strings.TrimRight(server, "/")
+	if host == nil {
+		host = MacHost{}
+	}
+	u := server + "/api/macos/runner/enroll"
+	if v, b, err := host.SWVers(ctx); err == nil {
+		u += BootFacts{Version: v, Build: b}.pollQuery()
+	}
 	var e api.MacOSEnrolled
-	if err := call(ctx, http.DefaultClient, "POST", server+"/api/macos/runner/enroll", token, nil, &e); err != nil {
+	if err := call(ctx, http.DefaultClient, "POST", u, token, nil, &e); err != nil {
 		return err
 	}
 	b, _ := json.MarshalIndent(Config{Server: server, Mac: e.Mac, Secret: e.Secret, GUIUser: guiUser}, "", "  ")

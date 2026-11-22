@@ -52,7 +52,7 @@ func main() {
 			break
 		}
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err = macosrunner.Enroll(ctx, *server, strings.TrimSpace(line), *gui, *config); err == nil {
+		if err = macosrunner.Enroll(ctx, *server, strings.TrimSpace(line), *gui, *config, nil); err == nil {
 			fmt.Printf("this Mac's macOS runner is enrolled; it runs at every boot (%s)\n", *config)
 			fmt.Println("Next, so that a macOS run needs nobody here: sudo lab-macos-runner setup")
 		}
