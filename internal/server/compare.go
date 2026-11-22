@@ -122,7 +122,7 @@ func (s *Server) retryCompare(p Person, old *api.Job) (*api.Job, error) {
 // submitCompare queues the Compare cs on Mac v under p's Lease, taken for
 // the job when p holds none.
 func (s *Server) submitCompare(p Person, v *dev, mac string, cs api.CompareSpec, retryOf string) (*api.Job, error) {
-	if cs.MacOS && !s.macOS().enrolled(mac) {
+	if cs.MacOS && !s.macOS().enrolled(mac, v.snapshot().ID) {
 		return nil, refuse(409, "%s's macOS runner is not enrolled: enroll it first (lab macos enroll %s), or leave out --macos", mac, mac)
 	}
 	if _, sighted := s.cables.of(mac); !sighted {
