@@ -534,6 +534,7 @@ func (s *Server) verdict(by Person, release string, req api.VerdictRequest) (api
 		return a, err
 	}
 	s.log.Printf("Release %s: %s recorded by %s", r.Name, stateWords(req.State), accountOr(by.AccountID, "someone"))
+	s.publishPerf()
 	if a.Release, err = s.releaseNow(r.Name); err != nil {
 		return a, err
 	}

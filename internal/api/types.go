@@ -197,6 +197,13 @@ type Device struct {
 	// recorded when the lab publishes a job's report. labd keeps it and
 	// shows it to nobody.
 	MachineID string `json:"machine_id,omitempty"`
+	// Counted is a Maintainer's mark on a Volunteer's Mac: its performance
+	// values join its Configuration's headline, as a Lab-owned Mac's do. An
+	// M team volunteer's Macs count without it.
+	Counted bool `json:"counted,omitempty"`
+	// PerfKey is the opaque key the Mac's published performance values go
+	// by in reports.db, never its name. labd keeps it and shows it to nobody.
+	PerfKey string `json:"perf_key,omitempty"`
 	// UpdateNoticed is the number of the lab's lab-agent the Mac's Volunteer
 	// was last sent a Notice about. labd keeps it and shows it to nobody.
 	UpdateNoticed string `json:"update_noticed,omitempty"`
@@ -1336,6 +1343,12 @@ type EnrollTokenResponse struct {
 	// signature, shows the terms and sets the Mac up. Empty when labd has no lab-agent to
 	// hand out.
 	JoinCommand string `json:"join_command,omitempty"`
+}
+
+// CountedRequest is a Maintainer marking a Volunteer's Mac Counted, or
+// taking the mark away: POST /api/devices/{name}/counted.
+type CountedRequest struct {
+	Counted *bool `json:"counted"`
 }
 
 type DevicePatch struct {

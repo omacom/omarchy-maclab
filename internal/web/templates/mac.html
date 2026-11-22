@@ -50,6 +50,10 @@
 <dt>Access level</dt><dd>{{.Facts.AccessLevel}}{{if not .Facts.Volunteers}} <span class="dim">a Lab-owned Mac</span>{{end}}</dd>
 {{- if .Facts.Volunteers}}
 <dt>Availability window</dt><dd>{{.Facts.Window}}</dd>
+<dt>Performance</dt><dd>{{.Facts.Counted}}
+{{- if .Maintainer}}
+<form class="inline" method="post" action="{{href (print .Path "/counted")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><input type="hidden" name="back" value="mac"><input type="hidden" name="counted" value="{{if .Facts.Marked}}off{{else}}on{{end}}"><button class="button button-small" type="submit">{{if .Facts.Marked}}Take the Counted mark away{{else}}Mark Counted{{end}}</button></form>
+{{- end}}</dd>
 {{- end}}
 <dt>Known-good kernel</dt><dd>{{if .Facts.KnownGood}}{{.Facts.KnownGood}}{{else}}<span class="dim">none: it has not passed its baseline</span>{{end}}</dd>
 <dt>Running</dt><dd>{{if .Facts.Kernel}}{{.Facts.Kernel}}{{else}}<span class="dim">unknown</span>{{end}}</dd>

@@ -82,6 +82,10 @@ type macFacts struct {
 	// Cable is a Lab-owned Mac's place on the lab server's cables, and
 	// NoHardReset why no Hard reset can reach it now.
 	Cable, NoHardReset string
+	// Counted says whether a Volunteer's Mac's performance values make the
+	// headline, and why; Marked is a Maintainer's mark on it.
+	Counted string
+	Marked  bool
 }
 
 type macJobRow struct {
@@ -230,6 +234,7 @@ func (s *Server) macFacts(v *dev, d DeviceView) macFacts {
 		f.LastSeen = whenDay(d.LastSeen)
 	}
 	if f.Volunteers {
+		f.Counted, f.Marked = s.countedWords(d.Device), d.Counted
 		switch {
 		case d.AccessLevel != api.AccessFull:
 			f.AccessLevel = "Qualification"

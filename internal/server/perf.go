@@ -413,6 +413,9 @@ func (s *Server) takePerfUpload(w http.ResponseWriter, r *http.Request, side str
 		httpErr(w, 500, "%v", err)
 		return
 	}
+	if c.State != "" {
+		s.publishPerf()
+	}
 	if t.Taken > 0 || c.State != "" {
 		s.log.Printf("%s: performance run %d (attempt %d, %s): %d results taken, %d had already; %s",
 			run.Mac, t.Run, t.Attempt, run.Set, t.Taken, t.Already, t.State)
