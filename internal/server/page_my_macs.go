@@ -96,11 +96,15 @@ type macCard struct {
 	// Agent is the Mac's lab-agent; LabAgent the lab's when the Mac's is
 	// older, and UpdateLine what its Volunteer runs at the Mac then.
 	Agent, LabAgent, UpdateLine string
-	Jobs                        []macJobRow
-	Reports                     []cardReport
-	Record, Audit, Exec         []recordShownLine
-	Commands                    []cardCommand
-	LeaveSentence               string
+	// MacOS is its macOS side in words; MacOSLine the runner's one-time
+	// line, on the answer to Set up macOS only.
+	MacOS               string
+	MacOSLine           *macOSLine
+	Jobs                []macJobRow
+	Reports             []cardReport
+	Record, Audit, Exec []recordShownLine
+	Commands            []cardCommand
+	LeaveSentence       string
 }
 
 type cardHands struct {
@@ -228,6 +232,13 @@ func (s *Server) myMacsOf(p Person) (*myMacs, error) {
 	return m, nil
 }
 
+// show puts each line on its Mac's card.
+func (m *myMacs) show(lines map[string]*macOSLine) {
+	for i := range m.Cards {
+		m.Cards[i].MacOSLine = lines[m.Cards[i].Name]
+	}
+}
+
 // empty is whether there is nothing of the person's to show: no Mac, none
 // that left and no Join command.
 func (m *myMacs) empty() bool { return len(m.Cards) == 0 && len(m.Left) == 0 && m.Unused == nil }
@@ -240,7 +251,8 @@ func (s *Server) macCard(v *dev, p Person) macCard {
 	c := macCard{Name: d.Name, Page: "/macs/" + url.PathEscape(d.Name), Configuration: row.Configuration, State: row.State, Reason: d.StateReason,
 		Limited: d.Limited, Publishing: d.Publish, Eligible: d.SnapshotEligible, Topic: s.macTopicURL(d.Enrollment), TopicRefused: d.NoticeTopicRefused, JobNotices: d.JobNotices,
 		Holder: row.Holder, HolderKind: row.HolderKind, HolderClass: row.HolderClass, Until: row.Until,
-		Agent: d.Facts.AgentVersion, LabAgent: d.LabAgent, UpdateLine: agentUpdateLine(d), Commands: onlyAtTheMac, LeaveSentence: leaveSentence(d.Name)}
+		Agent: d.Facts.AgentVersion, LabAgent: d.LabAgent, UpdateLine: agentUpdateLine(d), Commands: onlyAtTheMac, LeaveSentence: leaveSentence(d.Name),
+		MacOS: macOSWords(s.macOSSide(d.Name))}
 	// Until its first baseline has passed, the stage says what the Mac
 	// waits for; labd's own note then is a Maintainer's.
 	if d.Arrival != "" && d.Arrival != ArrivalReady {
@@ -376,9 +388,15 @@ func (s *Server) pMyMacs(w http.ResponseWriter, r *http.Request) {
 // have them; with a refusal of one of a card's buttons, it is said above
 // them under its own status.
 func (s *Server) renderMyMacs(w http.ResponseWriter, r *http.Request, refused error) {
+	s.renderMyMacsWith(w, r, refused, nil)
+}
+
+// renderMyMacsWith is renderMyMacs with the macOS runner's lines just made,
+// by Mac, each shown on its card.
+func (s *Server) renderMyMacsWith(w http.ResponseWriter, r *http.Request, refused error, lines map[string]*macOSLine) {
 	p := leaser(r)
 	if web.MTeamUp.Allows(p.Role()) {
-		s.renderMacs(w, r, showMine, refused)
+		s.renderMacsWith(w, r, showMine, refused, lines)
 		return
 	}
 	mine, err := s.myMacsOf(p)
@@ -386,6 +404,7 @@ func (s *Server) renderMyMacs(w http.ResponseWriter, r *http.Request, refused er
 		s.pageFailed(w, err)
 		return
 	}
+	mine.show(lines)
 	// Row 2 gives My Macs to who lends a Mac. It is also there for who lent
 	// one, or has a Join command on its way to one.
 	if mine.empty() && refused == nil {
