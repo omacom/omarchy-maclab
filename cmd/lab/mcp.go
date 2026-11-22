@@ -155,6 +155,14 @@ func newMCP(c *client.Client) *mcp.Server {
 			return text(fmt.Sprintf("The macOS runner's line for %s is in %s (mode 0600) and nowhere else. It enrolls one Mac's runner, once, and expires %s. The person runs it in macOS on the Mac after sudo ./install.sh from lab-macos-runner-darwin-arm64.tar.gz.",
 				a.Device, a.Out, t.Expires.Format(time.DateTime))), nil, nil
 		})
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_macos_at_mac", Description: "Say a person is at an Attended Mac whose macOS run waits for one (the Mac's Volunteer, or a Maintainer): labd then boots macOS, now or at the Mac's next slot, and the person types its password and logs in. Only when the person says they are at the Mac."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, a devArg) (*mcp.CallToolResult, any, error) {
+			run, err := c.MacOSAtMac(ctx, a.Device)
+			if err != nil {
+				return nil, nil, err
+			}
+			return text(atMacWords(a.Device, run)), nil, nil
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "lab_remove", Description: "End a Mac's enrollment (Maintainers): its device secret stops working at once, its record is Retired, and lab-agent removes the lab from the Mac at its next check-in; a Volunteer is told. Only when a person asks for it: it cannot be undone, the Mac has to Join again."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a devArg) (*mcp.CallToolResult, any, error) {
 			if err := c.EndEnrollment(ctx, a.Device); err != nil {

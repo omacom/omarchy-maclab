@@ -51,6 +51,8 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
                                       Volunteer's Mac is never sent one: its Volunteer runs sudo lab-agent update
   lab macos enroll <mac>              a Mac's macOS runner (Maintainers): prints the one-time line to run in macOS on
                                       the Mac, after its install.sh, good for 1 hour; then labd's macOS runs reach it
+  lab macos at-mac <mac>              you are at the Attended Mac whose macOS run waits for a person: labd boots
+                                      macOS, and you type its password and log in
   lab baseline <device>               prove the one-shot boot works; required once per Mac
   lab build <github-url> --device <mac> | --config <file>   build a kernel from a repo, branch, commit or PR URL (reused if built before)
   lab package <recipe-dir> [--commit <github-url>] [--pkgrel 11.14] [-o dir]
@@ -326,8 +328,16 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 
 	case "macos":
 		pos := parse(fs, args)
+		if len(pos) == 2 && pos[0] == "at-mac" {
+			run, err := c.MacOSAtMac(ctx, pos[1])
+			if err != nil {
+				return err
+			}
+			fmt.Println(atMacWords(pos[1], run))
+			return nil
+		}
 		if len(pos) != 2 || pos[0] != "enroll" {
-			return fmt.Errorf("usage: lab macos enroll <mac>")
+			return fmt.Errorf("usage: lab macos enroll <mac> | lab macos at-mac <mac>")
 		}
 		t, err := c.MacOSEnrollToken(ctx, pos[1])
 		if err != nil {

@@ -141,6 +141,13 @@ func (c *Client) MacOSEnrollToken(ctx context.Context, mac string) (*api.MacOSEn
 	return &out, c.do(ctx, "POST", "/api/macos/enroll-tokens", jsonBody(map[string]string{"mac": mac}), &out)
 }
 
+// MacOSAtMac says the caller is at the Mac whose macOS run waits for a
+// person: labd boots macOS for it. It answers the run.
+func (c *Client) MacOSAtMac(ctx context.Context, mac string) (*api.MacOSRun, error) {
+	var out api.MacOSRun
+	return &out, c.do(ctx, "POST", "/api/devices/"+url.PathEscape(mac)+"/macos/at-mac", nil, &out)
+}
+
 // QueueMacOSRun queues a macOS run of the tier's benchmarks on the Mac.
 func (c *Client) QueueMacOSRun(ctx context.Context, mac, tier string) (*api.MacOSRun, error) {
 	var out api.MacOSRun
