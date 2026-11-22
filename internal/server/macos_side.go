@@ -127,7 +127,7 @@ func (s *Server) queueMacOSSideOf(mac string, set *sets.Set) (*api.MacOSRun, err
 func (s *Server) macOSWanted(v *dev) *api.JobSpec {
 	name := v.snapshot().Name
 	if _, err := s.queueMacOSSide(name); err != nil {
-		s.log.Printf("%s: its macOS run: %v", name, err)
+		s.perfNote(name+"'s macOS run", err) // asked at every pass of the scheduler
 	}
 	run := s.macOS().run(name)
 	if run == nil || run.State != api.MacOSQueued || run.PerfRun == 0 || s.macOSJobOpen(run) {
