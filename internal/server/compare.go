@@ -2,9 +2,10 @@ package server
 
 // A Compare (spec "Package sets and Compare"): on one Mac, under a Lease the
 // job holds, side A (the Mac's known-good system, or a Package set) and side
-// B (a Package set), each set through a Candidate boot, run the same pinned
-// benchmark tier, omarchy-m-test unattended and a read of the Mac's facts;
-// with --macos the tier runs in macOS too; with --hands the job waits on B
+// B (a Package set), each set through a Candidate boot, run the same list of
+// the job's Benchmark set, omarchy-m-test unattended and a read of the Mac's
+// facts; with --macos the Mac's macOS result of that set is beside them,
+// measured for the job when none is kept; with --hands the job waits on B
 // for a person to press Done. The report is the job's, private to
 // Maintainers until one publishes it.
 
@@ -22,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -49,12 +52,37 @@ func (s *Server) compareRoutes() []route {
 	}
 }
 
-// compareTests are what each side runs, in order, named for the side.
-func compareTests(side, tier string, volunteer bool) []api.TestSpec {
-	p := strings.ToLower(side) + "-"
-	bench := api.TestSpec{Name: p + "bench", Builtin: "bench", TimeoutSec: 30 * 60}
+// compareBenchSet is the Benchmark set a Compare runs, read when it is
+// asked: the current set, or the newest while no set is current, as the
+// bench builtins take it.
+var compareBenchSet = bench.Set
+
+// compareList is the tier's list of the job's Benchmark set.
+func compareList(tier string) string {
 	if tier == api.TierExtended {
+		return sets.Full
+	}
+	return sets.Quick
+}
+
+// compareTests are what each side runs, in order, named for the side: the
+// bench builtin runs the metrics of the job's set's list that run on
+// Omarchy.
+func compareTests(side string, cs *api.CompareSpec, volunteer bool) []api.TestSpec {
+	p := strings.ToLower(side) + "-"
+	list := compareList(cs.Tier)
+	bench := api.TestSpec{Name: p + "bench", Builtin: "bench", TimeoutSec: 30 * 60}
+	if list == sets.Full {
 		bench = api.TestSpec{Name: p + "bench", Builtin: "bench-extended", TimeoutSec: 75 * 60}
+	}
+	if set, err := perfSet(cs.Bench); err == nil {
+		run := &api.BenchRun{Set: set.Name, List: list}
+		for _, m := range set.List(list) {
+			if m.Omarchy != nil {
+				run.Metrics = append(run.Metrics, m.ID)
+			}
+		}
+		bench.Bench = run
 	}
 	omt := omtSpec()
 	omt.Name, omt.SkipOnScreen = p+omtTest, volunteer
@@ -101,14 +129,17 @@ func (s *Server) queueCompare(p Person, req api.CompareRequest) (*api.Job, error
 	if cs.AfterSet, err = s.compareSet(cs.After); err != nil {
 		return nil, err
 	}
-	if set, err := macOSCurrentSet(); err == nil && cs.MacOS {
-		cs.Bench = set.Name
+	set, err := compareBenchSet()
+	if err != nil {
+		return nil, refuse(409, "no Benchmark set to run: %v", err)
 	}
+	cs.Bench = set.Name
 	return s.submitCompare(p, v, req.Mac, cs, "")
 }
 
-// retryCompare queues old's Compare again, as p: the same Mac, the sets as
-// old kept them (a set never changes), the same tier and flags.
+// retryCompare queues old's Compare again, as p: the same Mac, the Package
+// sets and Benchmark set as old kept them (a set never changes), the same
+// tier and flags.
 func (s *Server) retryCompare(p Person, old *api.Job) (*api.Job, error) {
 	if !p.isMaintainer() {
 		return nil, refuse(403, "a Compare is for Maintainers")
@@ -119,6 +150,13 @@ func (s *Server) retryCompare(p Person, old *api.Job) (*api.Job, error) {
 	}
 	cs := *old.Spec.Compare
 	cs.LeaseTaken = false
+	if cs.Bench == "" {
+		set, err := compareBenchSet()
+		if err != nil {
+			return nil, refuse(409, "no Benchmark set to run: %v", err)
+		}
+		cs.Bench = set.Name
+	}
 	return s.submitCompare(p, v, old.Spec.Device, cs, old.ID)
 }
 
@@ -197,7 +235,7 @@ func (r *jobRun) saveCompare(res *api.CompareResult) {
 
 func (r *jobRun) compare(ctx context.Context) (string, string) {
 	cs := r.j.Spec.Compare
-	res := &api.CompareResult{Before: cs.Before, After: cs.After, Tier: cs.Tier}
+	res := &api.CompareResult{Before: cs.Before, After: cs.After, Tier: cs.Tier, Bench: cs.Bench}
 	if cs.Hands {
 		res.Hands = &api.CompareHands{}
 	}
@@ -208,14 +246,14 @@ func (r *jobRun) compare(ctx context.Context) (string, string) {
 	res.Sides = append(res.Sides, a.side)
 	r.saveCompare(res)
 	if a.outcome != "" {
-		r.compareReport(res, false)
+		r.compareReport(res)
 		return a.outcome, "side A (" + cs.Before + "): " + a.summary
 	}
 	b := r.compareSide(ctx, api.SideB, cs.After, cs.AfterSet, res)
 	res.Sides = append(res.Sides, b.side)
 	r.saveCompare(res)
 	if b.outcome != "" && b.outcome != api.OutcomeBootFailed {
-		r.compareReport(res, true)
+		r.compareReport(res)
 		return b.outcome, "side B (" + cs.After + "): " + b.summary
 	}
 	if cs.MacOS && ctx.Err() == nil {
@@ -223,7 +261,7 @@ func (r *jobRun) compare(ctx context.Context) (string, string) {
 		res.Sides = append(res.Sides, m)
 		r.saveCompare(res)
 	}
-	r.compareReport(res, true)
+	r.compareReport(res)
 	if b.outcome != "" {
 		return b.outcome, "side B (" + cs.After + "): " + b.summary
 	}
@@ -273,7 +311,7 @@ func (r *jobRun) compareSide(ctx context.Context, label, name string, set *api.P
 		}
 		return run
 	}
-	tests := compareTests(label, r.j.Spec.Compare.Tier, v.snapshot().IsVolunteer())
+	tests := compareTests(label, r.j.Spec.Compare, v.snapshot().IsVolunteer())
 	return r.candidateSide(ctx, label, name, set, tests, func(side *api.CompareSide) (string, string) {
 		if o, why := r.compareRunTests(ctx, label, side); o != "" {
 			return o, why
@@ -473,7 +511,7 @@ func (r *jobRun) resolveSet(ctx context.Context, set *api.PackageSet) ([]api.Can
 func (r *jobRun) compareRunTests(ctx context.Context, label string, side *api.CompareSide) (string, string) {
 	v, j := r.v, r.j
 	r.state(api.JobTesting)
-	for _, t := range compareTests(label, j.Spec.Compare.Tier, v.snapshot().IsVolunteer()) {
+	for _, t := range compareTests(label, j.Spec.Compare, v.snapshot().IsVolunteer()) {
 		r.ev("test %s: running", t.Name)
 		var tr api.TestResult
 		r.testStarted, r.testLimit = r.s.now(), r.testTimeout(t)
@@ -528,53 +566,38 @@ func readFacts(path string, side *api.CompareSide) {
 	}
 }
 
-// readBench reads bench.json: a benchmark skipped or in error has no value
-// and says why in its note. A Benchmark set's entry names its metric and a
-// reason code.
+// readBench reads bench.json, by metric id: an entry with a reason code has
+// no value, and its note is the code.
 func readBench(path string) []api.BenchResult {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
 	var rs []struct {
-		api.BenchResult
 		Metric         string   `json:"metric"`
-		Unit           *string  `json:"unit"`
-		HigherIsBetter *bool    `json:"higher_is_better"`
+		Version        string   `json:"version"`
+		Value          *float64 `json:"value"`
+		Unit           string   `json:"unit"`
+		HigherIsBetter bool     `json:"higher_is_better"`
 		Spread         *float64 `json:"spread"`
-		Version        *string  `json:"version"`
+		Seconds        float64  `json:"seconds"`
+		API            *string  `json:"api"`
 		Reason         *string  `json:"reason"`
-		Skipped        string   `json:"skipped"`
-		Error          string   `json:"error"`
 	}
 	if json.Unmarshal(b, &rs) != nil {
 		return nil
 	}
 	out := make([]api.BenchResult, 0, len(rs))
 	for _, r := range rs {
-		res := r.BenchResult
-		if res.Name == "" {
-			res.Name = r.Metric
-		}
-		if r.Unit != nil {
-			res.Unit = *r.Unit
-		}
-		if r.HigherIsBetter != nil {
-			res.HigherIsBetter = *r.HigherIsBetter
-		}
+		res := api.BenchResult{Name: r.Metric, Version: r.Version, Value: r.Value, Unit: r.Unit, HigherIsBetter: r.HigherIsBetter, Seconds: r.Seconds}
 		if r.Spread != nil {
 			res.Spread = *r.Spread
 		}
-		if r.Version != nil {
-			res.Version = *r.Version
+		if r.API != nil {
+			res.API = *r.API
 		}
-		switch {
-		case r.Reason != nil && *r.Reason != "":
-			res.Note = *r.Reason
-		case r.Skipped != "":
-			res.Note = "skipped: " + r.Skipped
-		case r.Error != "":
-			res.Note = "error: " + r.Error
+		if r.Reason != nil {
+			res.Value, res.Note = nil, *r.Reason
 		}
 		out = append(out, res)
 	}
@@ -750,38 +773,16 @@ func (r *jobRun) compareMacOS(ctx context.Context) api.CompareSide {
 
 // ---- the report ----
 
-// compareNoise is a benchmark's noise in percent: twice the spread of the
-// Mac's last 3 A-side values, (max - min) / mean, or the benchmark's
-// default until 3 exist.
-func compareNoise(name string, history []float64) (float64, string) {
-	if len(history) >= 3 {
-		last := history[len(history)-3:]
-		lo, hi, sum := math.Inf(1), math.Inf(-1), 0.0
-		for _, x := range last {
-			lo, hi, sum = math.Min(lo, x), math.Max(hi, x), sum+x
-		}
-		if mean := sum / 3; mean != 0 {
-			return 2 * (hi - lo) / math.Abs(mean) * 100, "last 3 A-side runs"
-		}
-	}
-	switch {
-	case strings.HasPrefix(name, "speedometer"), strings.HasPrefix(name, "motionmark"), strings.HasPrefix(name, "jetstream"):
-		return 3, "default"
-	case name == "7zip":
-		return 2, "default"
-	}
-	return 5, "default"
-}
-
-// verdict is b against a: the change in percent, and better, worse or no
-// change when the change is within the noise.
-func verdict(a, b float64, higherIsBetter bool, noise float64) (float64, string) {
+// verdict is b against a: the change in percent, and no change when the
+// change is within the metric's tolerance, in percent; else better or worse
+// by the metric's direction.
+func verdict(a, b float64, higherIsBetter bool, tolerance float64) (float64, string) {
 	if a == 0 {
 		return 0, api.VerdictNotCompared
 	}
 	d := (b - a) / math.Abs(a) * 100
 	switch {
-	case math.Abs(d) <= noise+1e-9:
+	case math.Abs(d) <= tolerance+1e-9:
 		return d, api.VerdictNoChange
 	case (d > 0) == higherIsBetter:
 		return d, api.VerdictBetter
@@ -789,127 +790,97 @@ func verdict(a, b float64, higherIsBetter bool, noise float64) (float64, string)
 	return d, api.VerdictWorse
 }
 
-// linuxName is a macOS result's name as the Linux runner names the same
-// benchmark.
-func linuxName(name string) string {
-	switch name {
-	case "geekbench6-cpu-single":
-		return "geekbench-single"
-	case "geekbench6-cpu-multi":
-		return "geekbench-multi"
-	case "video-decode":
-		return "ffmpeg-vaapi"
+// compareRows is a row per metric of the set's list, in the set's order:
+// each side's value by metric id, B and macOS each against A, judged by the
+// metric's tolerance and direction in the set. A metric a side did not run,
+// or ran with a reason code, is not compared, with the reason.
+func compareRows(set *sets.Set, list string, a, b, m *api.CompareSide) []api.CompareRow {
+	byID := func(s *api.CompareSide) map[string]api.BenchResult {
+		out := map[string]api.BenchResult{}
+		if s != nil {
+			for _, x := range s.Bench {
+				out[x.Name] = x
+			}
+		}
+		return out
 	}
-	return strings.ReplaceAll(name, "/", "-")
+	am, bm, mm := byID(a), byID(b), byID(m)
+	var rows []api.CompareRow
+	for _, mt := range set.List(list) {
+		row := api.CompareRow{Name: mt.ID, Unit: mt.Unit, HigherIsBetter: mt.HigherIsBetter(), Tolerance: mt.Tolerance, Verdict: api.VerdictNotCompared}
+		ax, aok := am[mt.ID]
+		bx, bok := bm[mt.ID]
+		row.A, row.B, row.VersionA, row.VersionB = ax.Value, bx.Value, ax.Version, bx.Version
+		if mt.Omarchy == nil {
+			row.Note = "macOS only"
+		} else {
+			var notes []string
+			for _, s := range []struct {
+				side string
+				x    api.BenchResult
+				ran  bool
+			}{{api.SideA, ax, aok}, {api.SideB, bx, bok}} {
+				switch {
+				case !s.ran:
+					notes = append(notes, s.side+" did not run it")
+				case s.x.Value == nil:
+					notes = append(notes, s.side+": "+cmpOr(s.x.Note, "no value"))
+				}
+			}
+			if len(notes) == 0 {
+				d, v := verdict(*row.A, *row.B, row.HigherIsBetter, row.Tolerance)
+				if row.Verdict = v; v == api.VerdictNotCompared {
+					notes = append(notes, "A is 0")
+				} else {
+					row.Delta = &d
+				}
+			}
+			row.Note = strings.Join(notes, "; ")
+		}
+		if m != nil && mt.MacOS != nil {
+			mx, ok := mm[mt.ID]
+			row.MacOS, row.MacOSVerdict = mx.Value, api.VerdictNotCompared
+			var notes []string
+			if mt.APIDiffers {
+				notes = append(notes, "API differs: "+apiName(mt.Omarchy)+" on Omarchy, "+apiName(mt.MacOS)+" on macOS")
+			}
+			switch {
+			case !ok:
+				notes = append(notes, "macOS did not run it")
+			case mx.Value == nil:
+				notes = append(notes, cmpOr(mx.Note, "no value"))
+			case row.A == nil:
+				notes = append(notes, "A has no value")
+			default:
+				if d, v := verdict(*row.A, *mx.Value, row.HigherIsBetter, row.Tolerance); v != api.VerdictNotCompared {
+					row.MacOSDelta, row.MacOSVerdict = &d, v
+				}
+			}
+			row.MacOSNote = strings.Join(notes, "; ")
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
-// compareReport fills in the rows and the checks from the sides, and adds
-// A's values to the Mac's history when A ran (learn).
-func (r *jobRun) compareReport(res *api.CompareResult, learn bool) {
+func apiName(s *sets.Side) string {
+	if s == nil || s.API == "" {
+		return "-"
+	}
+	return s.API
+}
+
+// compareReport fills in the rows, by the job's Benchmark set, and the
+// checks from the sides.
+func (r *jobRun) compareReport(res *api.CompareResult) {
 	a, b, m := res.Side(api.SideA), res.Side(api.SideB), res.Side(api.SideMacOS)
 	if a == nil {
 		return
 	}
-	mac := r.j.Spec.Device
-	if learn {
-		vals := map[string]float64{}
-		for _, x := range a.Bench {
-			if x.Value != nil {
-				vals[x.Name] = *x.Value
-			}
-		}
-		r.s.addNoise(mac, vals)
-	}
-	history := r.s.noiseOf(mac)
-	byName := func(rs []api.BenchResult, macOS bool) map[string]api.BenchResult {
-		out := map[string]api.BenchResult{}
-		for _, x := range rs {
-			n := x.Name
-			if macOS {
-				n = linuxName(n)
-			}
-			out[n] = x
-		}
-		return out
-	}
-	var names []string
-	add := func(rs []api.BenchResult, macOS bool) {
-		for _, x := range rs {
-			n := x.Name
-			if macOS {
-				n = linuxName(n)
-			}
-			if !slices.Contains(names, n) {
-				names = append(names, n)
-			}
-		}
-	}
-	var bb, mb []api.BenchResult
-	if b != nil {
-		bb = b.Bench
-	}
-	if m != nil {
-		mb = m.Bench
-	}
-	add(a.Bench, false)
-	add(bb, false)
-	add(mb, true)
-	am, bm, mm := byName(a.Bench, false), byName(bb, false), byName(mb, true)
 	res.Rows = nil
-	for _, n := range names {
-		row := api.CompareRow{Name: n, Verdict: api.VerdictNotCompared}
-		row.Noise, row.NoiseFrom = compareNoise(n, history[n])
-		ax, aok := am[n]
-		bx, bok := bm[n]
-		for _, x := range []api.BenchResult{bx, ax} {
-			if x.Unit != "" {
-				row.Unit, row.HigherIsBetter = x.Unit, x.HigherIsBetter
-			}
-		}
-		row.A, row.B, row.VersionA, row.VersionB = ax.Value, bx.Value, ax.Version, bx.Version
-		var notes []string
-		switch {
-		case !aok && !bok:
-			notes = append(notes, "macOS only")
-		case !bok:
-			notes = append(notes, "B did not run it")
-		case !aok:
-			notes = append(notes, "A did not run it")
-		}
-		for side, x := range map[string]api.BenchResult{"A": ax, "B": bx} {
-			if x.Note != "" {
-				notes = append(notes, side+": "+x.Note)
-			}
-		}
-		slices.Sort(notes)
-		switch {
-		case row.A == nil || row.B == nil:
-		case ax.Version != bx.Version:
-			notes = append(notes, "versions differ: A "+ax.Version+", B "+bx.Version)
-		default:
-			d, v := verdict(*row.A, *row.B, row.HigherIsBetter, row.Noise)
-			row.Verdict = v
-			if v != api.VerdictNotCompared {
-				row.Delta = &d
-			}
-		}
-		row.Note = strings.Join(notes, "; ")
-		if mx, ok := mm[n]; ok {
-			row.MacOS = mx.Value
-			switch {
-			case mx.Value == nil:
-				row.MacOSNote = mx.Note
-			case mx.API != "":
-				row.MacOSNote, row.MacOSVerdict = "macOS runs it on "+mx.API+": not like for like", api.VerdictNotCompared
-			case row.A != nil:
-				d, v := verdict(*row.A, *mx.Value, row.HigherIsBetter, row.Noise)
-				row.MacOSDelta, row.MacOSVerdict = &d, v
-			}
-			if row.Unit == "" {
-				row.Unit, row.HigherIsBetter = mx.Unit, mx.HigherIsBetter
-			}
-		}
-		res.Rows = append(res.Rows, row)
+	cs := r.j.Spec.Compare
+	if set, err := perfSet(cs.Bench); err == nil {
+		res.Rows = compareRows(set, compareList(cs.Tier), a, b, m)
 	}
 	res.Checks, res.Regressed, res.Fixed = nil, 0, 0
 	if b == nil || a.OMT == nil || b.OMT == nil {
@@ -953,54 +924,6 @@ func (r *jobRun) compareReport(res *api.CompareResult, learn bool) {
 var candidateFails = map[string]string{
 	"system.snapshots": "it runs from @lab-candidate, a snapshot of @, in which /.snapshots (a subvolume inside @) is an empty directory",
 	"boot.chain":       "it boots its kernel as a one-shot UKI from the ESP, not the /boot/vmlinuz-* the installed boot chain names",
-}
-
-// ---- the Mac's noise: its A-side values, kept in compare-noise.json ----
-
-var noiseMu sync.Mutex
-
-const noiseKept = 10
-
-func (s *Server) noisePath() string { return filepath.Join(s.cfg.DataDir, "compare-noise.json") }
-
-func (s *Server) readNoise() map[string]map[string][]float64 {
-	all := map[string]map[string][]float64{}
-	if b, err := os.ReadFile(s.noisePath()); err == nil {
-		json.Unmarshal(b, &all)
-	}
-	return all
-}
-
-// noiseOf is the Mac's A-side values of each benchmark, oldest first.
-func (s *Server) noiseOf(mac string) map[string][]float64 {
-	noiseMu.Lock()
-	defer noiseMu.Unlock()
-	if m := s.readNoise()[mac]; m != nil {
-		return m
-	}
-	return map[string][]float64{}
-}
-
-func (s *Server) addNoise(mac string, vals map[string]float64) {
-	noiseMu.Lock()
-	defer noiseMu.Unlock()
-	all := s.readNoise()
-	m := all[mac]
-	if m == nil {
-		m = map[string][]float64{}
-		all[mac] = m
-	}
-	for n, x := range vals {
-		h := append(m[n], x)
-		if len(h) > noiseKept {
-			h = h[len(h)-noiseKept:]
-		}
-		m[n] = h
-	}
-	b, _ := json.MarshalIndent(all, "", "  ")
-	if err := writeFileAtomic(s.noisePath(), b); err != nil {
-		s.log.Printf("compare noise: %v", err)
-	}
 }
 
 // ---- publishing ----

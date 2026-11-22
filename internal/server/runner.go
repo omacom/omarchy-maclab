@@ -1085,7 +1085,7 @@ func errText(msg string) string {
 // tests are the tests a job runs on its Lab boot.
 func (r *jobRun) tests() []api.TestSpec {
 	if c := r.j.Spec.Compare; c != nil {
-		return compareTests(api.SideB, c.Tier, false)
+		return compareTests(api.SideB, c, false)
 	}
 	if p := r.j.Spec.Performance; p != nil {
 		return perfTests(p, 0)

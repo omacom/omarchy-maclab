@@ -88,9 +88,9 @@ func TestACompareJobPageSaysWhatTheCompareIs(t *testing.T) {
 	}
 }
 
-// Retry of a Compare queues the same Compare: the same Mac, sets, tier and
-// flags, as whoever asks, under a Lease labd takes for them. Only a
-// Maintainer is offered it.
+// Retry of a Compare queues the same Compare: the same Mac, Package sets,
+// Benchmark set (not the one current now), tier and flags, as whoever asks,
+// under a Lease labd takes for them. Only a Maintainer is offered it.
 func TestRetryOfACompareQueuesTheSameCompare(t *testing.T) {
 	l := leaseLab(t)
 	l.lrMac("m1-pro", "j316s", nil)
@@ -98,7 +98,7 @@ func TestRetryOfACompareQueuesTheSameCompare(t *testing.T) {
 	before, after := l.pcSets()
 	at := l.s.now().Add(-time.Hour)
 	old := l.pcCompare("j-cmp", at, api.CompareSpec{Before: "7.2", After: "kernel-aurora16", BeforeSet: before, AfterSet: after,
-		Tier: api.TierExtended, Hands: true, LeaseTaken: true}, func(j *api.Job) {
+		Tier: api.TierExtended, Hands: true, Bench: "bench-0", LeaseTaken: true}, func(j *api.Job) {
 		published := at.Add(30 * time.Minute)
 		j.Result.Compare.Published, j.Result.Compare.PublishedBy = &published, "ravi"
 	})
@@ -120,7 +120,7 @@ func TestRetryOfACompareQueuesTheSameCompare(t *testing.T) {
 	if cs == nil || j.RetryOf != old.ID || j.AccountID != maintainerID || j.Spec.Device != "m1-pro" || j.Spec.Holder != compareHolder {
 		t.Fatalf("the retry: %+v", j)
 	}
-	if cs.Before != "7.2" || cs.After != "kernel-aurora16" || cs.Tier != api.TierExtended || !cs.Hands || cs.MacOS ||
+	if cs.Before != "7.2" || cs.After != "kernel-aurora16" || cs.Tier != api.TierExtended || !cs.Hands || cs.MacOS || cs.Bench != "bench-0" ||
 		cs.BeforeSet == nil || cs.BeforeSet.Name != "7.2" || cs.AfterSet == nil || cs.AfterSet.Name != "kernel-aurora16" {
 		t.Errorf("the retry's Compare: %+v", cs)
 	}
