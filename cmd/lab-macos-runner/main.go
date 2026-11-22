@@ -19,9 +19,15 @@ import (
 const usage = `lab-macos-runner: the macOS side of Omarchy Mac Lab's macOS runs
 
   sudo lab-macos-runner enroll --server <Lab address> --token-stdin [--gui-user you]
-                          enroll this Mac's runner once, with the line lab macos enroll <mac> prints
-  lab-macos-runner boot   what the LaunchDaemon runs at boot: with a macOS run queued for this Mac,
-                          run it, upload the results and reboot back to Omarchy; else nothing
+                          enroll this Mac's runner once, with the line lab macos enroll <mac>
+                          or Set up macOS on My Macs gives
+  sudo lab-macos-runner setup
+                          asks, at the Mac, whether to turn FileVault off and whether to log you
+                          in automatically, so that a macOS run needs nobody; changes nothing
+                          without your yes
+  lab-macos-runner boot   what the LaunchDaemon runs at boot: tells the lab whether this boot
+                          reached the desktop with nobody typing; with a macOS run queued for this
+                          Mac, runs it, uploads the results and reboots back to Omarchy
   lab-macos-runner version
 `
 
@@ -48,12 +54,30 @@ func main() {
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err = macosrunner.Enroll(ctx, *server, strings.TrimSpace(line), *gui, *config); err == nil {
 			fmt.Printf("this Mac's macOS runner is enrolled; it runs at every boot (%s)\n", *config)
+			fmt.Println("Next, so that a macOS run needs nobody here: sudo lab-macos-runner setup")
 		}
+	case "setup":
+		fs.Parse(os.Args[2:])
+		if os.Geteuid() != 0 {
+			err = fmt.Errorf("run it with sudo: sudo lab-macos-runner setup")
+			break
+		}
+		var tty *os.File
+		if tty, err = os.OpenFile("/dev/tty", os.O_RDWR, 0); err != nil {
+			err = fmt.Errorf("setup asks its questions on the terminal, and there is none: %w", err)
+			break
+		}
+		defer tty.Close()
+		s := &macosrunner.Setup{In: tty, Out: tty, User: os.Getenv("SUDO_USER")}
+		err = s.Run(ctx)
 	case "boot":
 		fs.Parse(os.Args[2:])
 		var cfg macosrunner.Config
 		if cfg, err = macosrunner.LoadConfig(*config); err == nil {
 			r := &macosrunner.Runner{Config: cfg, Dir: macosrunner.WorkDir, Log: log.Printf}
+			if _, aerr := r.Attendance(ctx, macosrunner.MacSeat(), macosrunner.AttendanceWait); aerr != nil {
+				log.Printf("telling the lab whether this Mac is Attended: %v", aerr)
+			}
 			err = r.Boot(ctx)
 		}
 	case "version":
