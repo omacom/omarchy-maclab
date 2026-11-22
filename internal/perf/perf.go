@@ -21,7 +21,7 @@ import (
 // Fields are the only fields a result carries, as bench.json has them.
 var Fields = []string{
 	"set", "metric", "category", "version", "value", "unit", "higher_is_better",
-	"spread", "seconds", "cool_down", "api", "capacity", "reason",
+	"spread", "seconds", "cool_down", "api", "capacity", "fill", "reason",
 }
 
 // required are the fields every result names, null where it has none; api
@@ -32,7 +32,8 @@ var required = []string{
 }
 
 // Entry is one measurement of bench.json. Value and Reason: exactly one is
-// set. Capacity is the SSD's, in GB, on every Storage value.
+// set. Capacity is the SSD's, in GB, on every Storage value; Fill is how
+// full the disk was, in percent, beside it.
 type Entry struct {
 	Set            string   `json:"set"`
 	Metric         string   `json:"metric"`
@@ -46,6 +47,7 @@ type Entry struct {
 	CoolDown       float64  `json:"cool_down"`
 	API            string   `json:"api,omitempty"`
 	Capacity       *int64   `json:"capacity,omitempty"`
+	Fill           *float64 `json:"fill,omitempty"`
 	Reason         *string  `json:"reason"`
 }
 
@@ -144,6 +146,7 @@ type Result struct {
 	Unit     string    `json:"unit"`
 	API      string    `json:"api,omitempty"`
 	Capacity *int64    `json:"capacity,omitempty"`
+	Fill     *float64  `json:"fill,omitempty"`
 	Reason   *string   `json:"reason"`
 	Seconds  float64   `json:"seconds"`
 	CoolDown float64   `json:"cool_down"`
@@ -279,6 +282,10 @@ func CheckEntry(raw json.RawMessage, set *sets.Set, side string) (Entry, error) 
 		return e, fmt.Errorf("%s: a Storage value is kept with the SSD's capacity", m.ID)
 	case e.Capacity != nil && (*e.Capacity <= 0 || *e.Capacity > 1<<20):
 		return e, fmt.Errorf("%s: capacity %d GB", m.ID, *e.Capacity)
+	case e.Fill != nil && e.Capacity == nil:
+		return e, fmt.Errorf("%s: fill is kept with a capacity only", m.ID)
+	case e.Fill != nil && (*e.Fill < 0 || *e.Fill > 100 || math.IsNaN(*e.Fill)):
+		return e, fmt.Errorf("%s: fill %v%%", m.ID, *e.Fill)
 	}
 	return e, nil
 }

@@ -19,12 +19,14 @@ const (
 	NotIdle            = "not_idle"
 	SoftwareRenderer   = "software_renderer"
 	PlaceholderFile    = "placeholder_file"
+	BatteryCharging    = "battery_charging"
 )
 
 // Reasons is every reason code.
 var Reasons = []string{
 	NoBuild, NoDriver, FellBack, NoComparableSensor, NotRun, Skipped,
 	Error, DiskTooFull, NotOnAC, NotIdle, SoftwareRenderer, PlaceholderFile,
+	BatteryCharging,
 }
 
 // KnownReason is whether r is one of the fixed reason codes.

@@ -324,25 +324,23 @@ class Case(unittest.TestCase):
 
 class CPU(Case):
     def coremarks(self):
-        self.pin("coremark", {"coremark-1.01/coremark-1": ("", 0o755), f"coremark-1.01/coremark-{CPUS}": ("", 0o755),
-                              "coremark-1.01/LICENSE.md": ("", 0o644)})
-        self.h.tools["coremark-1"] = lambda c: COREMARK
-        self.h.tools[f"coremark-{CPUS}"] = lambda c: COREMARK
+        self.pin("coremark", {"coremark-1.01/coremark": ("", 0o755), "coremark-1.01/LICENSE.md": ("", 0o644)})
+        self.h.tools["coremark"] = lambda c: COREMARK
 
     def test_coremark_one_core(self):
         self.coremarks()
         e = self.run1("coremark-single")
         self.assertEqual((e["value"], e["unit"], e["reason"], e["version"]), (177922.751872, "iterations/s", None, "1.01"))
-        self.assertEqual(self.h.argv("coremark-1")[0][1:], ["0x0", "0x0", "0x66", "0", "7", "1", "2000"])
+        self.assertEqual(self.h.argv("coremark")[0][1:], ["M1", "0x0", "0x0", "0x66", "0", "7", "1", "2000"])
 
     def test_coremark_all_cores_takes_a_thread_per_core(self):
         self.coremarks()
         e = self.run1("coremark-all")
         self.assertIsNone(e["reason"])
-        self.assertTrue(self.h.argv(f"coremark-{CPUS}"))
+        self.assertEqual(self.h.argv("coremark")[0][1], f"M{CPUS}")
 
-    def test_coremark_with_no_build_for_the_core_count(self):
-        self.pin("coremark", {"coremark-1.01/coremark-1": ("", 0o755)})
+    def test_coremark_with_no_program_in_its_archive(self):
+        self.pin("coremark", {"coremark-1.01/LICENSE.md": ("", 0o644)})
         self.assertEqual(self.run1("coremark-all")["reason"], "no_build")
 
     def test_7zip(self):
@@ -407,7 +405,7 @@ class Storage(Case):
     def test_sequential_read_on_a_filled_file(self):
         e = self.run1("fio-seq-read")
         self.assertEqual((e["value"], e["unit"], e["reason"]), (3000.0, "MB/s", None))
-        self.assertEqual(e["capacity"], {"bytes": 976773168 * 512, "fill_percent": 41.7})
+        self.assertEqual((e["capacity"], e["fill"]), (round(976773168 * 512 / 1e9), 41.7))
         (fill, _), (run, existed) = self.seen
         self.assertEqual(opt(fill, "--name"), "fill")
         self.assertEqual(opt(fill, "--size"), "8G")
@@ -434,8 +432,8 @@ class Storage(Case):
         self.h.vfs.f_bavail = 90 * 10**9 + (8 << 30)
         e = self.run1("fio-seq-read")
         self.assertEqual(e["reason"], "disk_too_full")
-        self.assertEqual(e["capacity"]["bytes"], 976773168 * 512)
-        self.assertEqual(e["capacity"]["fill_percent"], 82.0)
+        self.assertEqual(e["capacity"], round(976773168 * 512 / 1e9))
+        self.assertEqual(e["fill"], 82.0)
         self.assertFalse(self.seen)
 
     def test_the_file_goes_when_fio_fails(self):
@@ -595,19 +593,19 @@ class Power(Case):
 
     def test_all_core_load_is_the_energy_of_a_fixed_count_of_iterations(self):
         self.sensor("20000000")
-        self.pin("coremark", {f"coremark/coremark-{CPUS}": ("", 0o755)})
+        self.pin("coremark", {"coremark/coremark": ("", 0o755)})
         self.ctx.power_interval = 0.01
 
         def work(c):
             time.sleep(0.2)
             return COREMARK_SHORT
-        self.h.tools[f"coremark-{CPUS}"] = work
+        self.h.tools["coremark"] = work
         e = self.run1("power-all-core")
         self.assertIsNone(e["reason"])
         self.assertEqual(e["unit"], "J")
         self.assertAlmostEqual(e["value"], 4.0, delta=1.5)
-        c = self.h.argv(f"coremark-{CPUS}")[0]
-        self.assertEqual(int(c[4]) * CPUS, bench.POWER_COREMARK_ITERATIONS)
+        c = self.h.argv("coremark")[0]
+        self.assertEqual((c[1], int(c[5]) * CPUS), (f"M{CPUS}", bench.POWER_COREMARK_ITERATIONS))
 
     def test_playback_is_the_energy_of_every_frame_in_hardware_at_its_own_pace(self):
         self.sensor("10000000")
@@ -807,7 +805,7 @@ class Output(Case):
         self.assertEqual(code, 0)
         self.assertEqual([(r["metric"], r["value"], r["spread"], r["reason"]) for r in rows],
                          [("power-idle", 6.0, 0.25, None), ("boot-time", 9.5, None, None)])
-        self.assertEqual(rows[0]["cool_down"], {"seconds": 30, "temp_c": None})
+        self.assertEqual(rows[0]["cool_down"], 30)
         self.assertEqual(rows[0]["api"], "macsmc-hwmon")
 
     def test_a_row_that_fell_back_does_not_fail_the_run_and_an_error_does(self):
@@ -846,7 +844,7 @@ class Output(Case):
         c = bench.clean(bench.entry(self.set, m, float("nan")))
         self.assertEqual(c["reason"], "error")
         c = bench.clean(bench.entry(self.set, m, 5.0, cool={"seconds": 3, "temp_c": 40.0, "sensor": "x"}))
-        self.assertEqual((c["value"], c["cool_down"]), (5.0, {"seconds": 3, "temp_c": 40.0}))
+        self.assertEqual((c["value"], c["cool_down"]), (5.0, 3.0))
 
     def test_the_reason_codes(self):
         self.assertEqual(bench.REASONS, (

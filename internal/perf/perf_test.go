@@ -2,6 +2,8 @@ package perf
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -92,7 +94,7 @@ func TestAResultWithAFieldOutsideTheAllowlistIsRefused(t *testing.T) {
 }
 
 func TestEveryReasonCodeIsKnownAndNothingElse(t *testing.T) {
-	if len(Reasons) != 12 {
+	if len(Reasons) != 13 {
 		t.Fatalf("%d reason codes", len(Reasons))
 	}
 	for _, r := range Reasons {
@@ -138,5 +140,24 @@ func TestAnUploadCarriesOnlyAllowedConditionsAndBootedVersions(t *testing.T) {
 	}
 	if _, err := Check(ok, set, SideMacOS); err == nil {
 		t.Error("booted versions from macOS taken")
+	}
+}
+
+// The Omarchy runner writes the same reason codes, in the same order.
+func TestTheBenchRunnerHasTheSameReasonCodes(t *testing.T) {
+	src, err := os.ReadFile("../agent/tests/bench/bench.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)REASONS = \((.*?)\)`).FindSubmatch(src)
+	if m == nil {
+		t.Fatal("bench.py has no REASONS")
+	}
+	var got []string
+	for _, q := range regexp.MustCompile(`"([a-z_]+)"`).FindAllSubmatch(m[1], -1) {
+		got = append(got, string(q[1]))
+	}
+	if strings.Join(got, " ") != strings.Join(Reasons, " ") {
+		t.Errorf("bench.py's reason codes\n%v\nperf's\n%v", got, Reasons)
 	}
 }

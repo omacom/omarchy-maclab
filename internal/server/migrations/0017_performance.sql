@@ -35,6 +35,7 @@ CREATE TABLE perf_results (
   unit TEXT NOT NULL,
   api TEXT NOT NULL,
   capacity INTEGER,
+  fill REAL,
   reason TEXT,
   seconds REAL NOT NULL,
   cool_down REAL NOT NULL,

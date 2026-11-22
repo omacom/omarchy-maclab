@@ -49,7 +49,7 @@ REASONS = (
 FAILING = ("error", "software_renderer")
 
 FIELDS = ("set", "metric", "category", "version", "value", "unit", "higher_is_better", "spread",
-          "seconds", "cool_down", "api", "capacity", "reason")
+          "seconds", "cool_down", "api", "capacity", "fill", "reason")
 
 LISTS = ("quick", "full")
 SYSTEM = "omarchy"
@@ -653,14 +653,14 @@ class Value:
 # ---------------------------------------------------------------- CPU
 
 def coremark_program(ctx, threads):
-    """The lab's CoreMark build for this many threads: coremark-<threads>
-    in the archive (CoreMark fixes its thread count when it is built)."""
-    return ctx.program("coremark", f"coremark-{threads}")
+    """The lab's CoreMark build: one program for up to 64 threads, told how
+    many by its first argument, M<threads>."""
+    return ctx.program("coremark", "coremark")
 
 
 def run_coremark(ctx, threads, iterations=0):
     exe = coremark_program(ctx, threads)
-    r = ctx.run(f"coremark {threads} threads", [exe, "0x0", "0x0", "0x66", str(iterations), "7", "1", "2000"],
+    r = ctx.run(f"coremark {threads} threads", [exe, f"M{threads}", "0x0", "0x0", "0x66", str(iterations), "7", "1", "2000"],
                 timeout=1200, env=ctx.libs("coremark"))
     return _ok(r, "coremark")
 
@@ -1351,10 +1351,14 @@ def clean(e):
     if e["spread"] is not None and not _number(e["spread"]):
         e["spread"] = None
     cd = e["cool_down"]
-    e["cool_down"] = ({"seconds": cd.get("seconds"), "temp_c": cd.get("temp_c")} if isinstance(cd, dict) else None)
+    cd = cd.get("seconds") if isinstance(cd, dict) else cd
+    e["cool_down"] = float(cd) if _number(cd) else 0.0
     cap = e["capacity"]
-    e["capacity"] = ({"bytes": cap.get("bytes"), "fill_percent": cap.get("fill_percent")}
-                     if isinstance(cap, dict) else None)
+    e["capacity"] = e["fill"] = None
+    if isinstance(cap, dict) and _number(cap.get("bytes")) and cap["bytes"] > 0:
+        e["capacity"] = max(1, round(cap["bytes"] / 1e9))
+        if _number(cap.get("fill_percent")):
+            e["fill"] = cap["fill_percent"]
     return e
 
 

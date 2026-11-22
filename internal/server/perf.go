@@ -152,9 +152,9 @@ func (st *store) takePerf(id int64, c perf.Checked, now time.Time) (perf.Taken, 
 		return t, nil
 	}
 	for _, e := range c.Entries {
-		res, err := tx.Exec(`INSERT INTO perf_results(run, metric, value, spread, unit, api, capacity, reason, seconds, cool_down, taken)
-VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run, metric) DO NOTHING`,
-			id, e.Metric, e.Value, e.Spread, e.Unit, e.API, e.Capacity, e.Reason, e.Seconds, e.CoolDown, now.UnixMicro())
+		res, err := tx.Exec(`INSERT INTO perf_results(run, metric, value, spread, unit, api, capacity, fill, reason, seconds, cool_down, taken)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run, metric) DO NOTHING`,
+			id, e.Metric, e.Value, e.Spread, e.Unit, e.API, e.Capacity, e.Fill, e.Reason, e.Seconds, e.CoolDown, now.UnixMicro())
 		if err != nil {
 			return t, err
 		}
@@ -251,7 +251,7 @@ ON CONFLICT(mac, set_name, side, target, metric) `+conflict, r.Mac, r.Set, r.Sid
 	return err
 }
 
-const perfResultCols = `p.run, r.attempt, p.metric, p.value, p.spread, p.unit, p.api, p.capacity, p.reason, p.seconds, p.cool_down, p.taken`
+const perfResultCols = `p.run, r.attempt, p.metric, p.value, p.spread, p.unit, p.api, p.capacity, p.fill, p.reason, p.seconds, p.cool_down, p.taken`
 
 func scanPerfResults(rows *sql.Rows, err error) ([]perf.Result, error) {
 	if err != nil {
@@ -265,7 +265,7 @@ func scanPerfResults(rows *sql.Rows, err error) ([]perf.Result, error) {
 		var capacity sql.NullInt64
 		var reason sql.NullString
 		var taken int64
-		if err := rows.Scan(&p.Run, &p.Attempt, &p.Metric, &value, &spread, &p.Unit, &p.API, &capacity, &reason, &p.Seconds, &p.CoolDown, &taken); err != nil {
+		if err := rows.Scan(&p.Run, &p.Attempt, &p.Metric, &value, &spread, &p.Unit, &p.API, &capacity, &p.Fill, &reason, &p.Seconds, &p.CoolDown, &taken); err != nil {
 			return nil, err
 		}
 		if value.Valid {
