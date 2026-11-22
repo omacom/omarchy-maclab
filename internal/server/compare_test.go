@@ -409,7 +409,7 @@ func TestCompareWithMacOS(t *testing.T) {
 	}
 	l.sim.MacOSFor = 2 * time.Second
 	l.sim.InMacOS = func() {
-		r, body := l.as("mos_test-secret", "GET", "/api/macos/runner/poll", nil)
+		r, body := l.as("mos_test-secret", "GET", fmt.Sprintf("/api/macos/runner/poll?boot=%s&booted=%d", bootHash(1), l.s.now().Unix()), nil)
 		var poll api.MacOSPoll
 		if r.StatusCode != 200 || json.Unmarshal([]byte(body), &poll) != nil || poll.Run == nil {
 			t.Errorf("poll: %s %s", r.Status, body)

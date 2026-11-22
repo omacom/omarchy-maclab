@@ -362,6 +362,11 @@ func (s *Server) hAgentPerfResults(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hMacOSPerfResults(w http.ResponseWriter, r *http.Request) {
 	mac := r.Context().Value(macosRunnerKey{}).(string)
 	s.takePerfUpload(w, r, perf.SideMacOS, func(run perf.Run) bool { return run.Mac == mac })
+	if id, err := strconv.ParseInt(r.PathValue("run"), 10, 64); err == nil {
+		if run, err := s.store.perfRun(id); err == nil && run.Mac == mac && perf.Ended(run.State) {
+			s.macOSPerfEnded(mac, id, run.State)
+		}
+	}
 }
 
 const perfUploadMax = 1 << 20

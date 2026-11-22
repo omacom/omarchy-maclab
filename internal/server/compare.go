@@ -101,6 +101,9 @@ func (s *Server) queueCompare(p Person, req api.CompareRequest) (*api.Job, error
 	if cs.AfterSet, err = s.compareSet(cs.After); err != nil {
 		return nil, err
 	}
+	if set, err := macOSCurrentSet(); err == nil && cs.MacOS {
+		cs.Bench = set.Name
+	}
 	return s.submitCompare(p, v, req.Mac, cs, "")
 }
 
@@ -234,7 +237,9 @@ func (r *jobRun) compare(ctx context.Context) (string, string) {
 		}
 	}
 	sum := fmt.Sprintf("compared %s (A) and %s (B): %d benchmarks better, %d worse; omarchy-m-test %d regressed, %d fixed", cs.Before, cs.After, better, worse, res.Regressed, res.Fixed)
-	if m := res.Side(api.SideMacOS); m != nil && m.Boot != api.MacOSDone {
+	if m := res.Side(api.SideMacOS); m != nil && m.Boot == macOSKept {
+		sum += "; macOS: the Mac's kept macOS result"
+	} else if m != nil && m.Boot != api.MacOSDone {
 		sum += "; macOS: " + m.Error
 	}
 	return api.OutcomePass, sum
@@ -679,62 +684,45 @@ func (s *Server) handsWaiting(v *dev) string {
 
 // ---- macOS ----
 
-// compareMacOS queues the tier's macOS run, boots macOS once for it and
-// waits for its results, or for its deadline to leave the Mac Needs hands.
+// macOSKept is a Compare's macOS side taken from the Mac's kept macOS
+// result, with no boot.
+const macOSKept = "kept"
+
+// compareMacOS is the Mac's macOS result of the job's set at its current
+// macOS build when one is kept; else it queues the macOS run, boots macOS
+// once for it and waits for its results, or for its deadline to leave the
+// Mac Needs hands.
 func (r *jobRun) compareMacOS(ctx context.Context) api.CompareSide {
-	v, j := r.v, r.j
+	j := r.j
 	side := api.CompareSide{Side: api.SideMacOS, Set: "macOS"}
-	name := v.snapshot().Name
-	run, err := r.s.queueMacOSRun(name, j.Spec.Compare.Tier)
+	name := r.v.snapshot().Name
+	bench := j.Spec.Compare.Bench
+	if kept, b := r.s.keptMacOS(name, bench); kept != nil {
+		side.Boot, side.Bench = macOSKept, kept
+		r.ev("macOS: the Mac's macOS result of %s at macOS %s (%s) is kept: macOS is not booted", bench, b.Version, b.Build)
+		return side
+	}
+	run, err := r.s.compareMacOSRun(name, j.Spec.Compare.Tier, bench)
 	if err != nil {
 		side.Error = "not queued: " + err.Error()
 		return side
 	}
-	r.ev("macOS: run %s queued; booting macOS once", run.ID)
-	r.state(api.JobBooting)
-	oldBoot := v.snapshot().BootID
-	if err := v.call(ctx, api.CmdBootMacOS, j.ID, nil, 2*time.Minute, nil); err != nil {
-		side.Error = "booting macOS: " + strings.TrimPrefix(err.Error(), api.CmdBootMacOS+": ")
-		r.s.macOS().change(name, func(m *api.MacOSRun) error {
-			if m.ID != run.ID || m.State != api.MacOSQueued {
-				return errNoRun
-			}
-			m.State, m.Error = api.MacOSNeedsHands, "boot-macos-once failed: "+err.Error()
-			return nil
-		})
-		return side
-	}
-	r.state(api.JobTesting)
-	for {
-		m := r.s.macOS().run(name)
-		if m == nil || m.ID != run.ID {
-			side.Error = "the macOS run is gone"
-			return side
-		}
+	r.ev("macOS: run %s queued", run.ID)
+	m, outcome, why := r.bootMacOSFor(ctx, run)
+	if m != nil {
 		side.Boot = m.State
-		if m.State == api.MacOSDone {
-			side.Bench, side.Error = m.Results, m.Error
-			break
-		}
-		if m.State == api.MacOSNeedsHands {
-			side.Error = "the macOS runner did not report by its deadline: the Mac Needs hands (a FileVault Mac waits for its password at the screen)"
-			r.ev("macOS: %s", side.Error)
-			return side
-		}
-		select {
-		case <-ctx.Done():
-			side.Error = "canceled while macOS ran"
-			return side
-		case <-r.s.clock().After(time.Second):
+	}
+	if m != nil && m.State == api.MacOSDone {
+		side.Bench, side.Error = m.Results, m.Error
+		if m.PerfRun > 0 {
+			if res, err := r.s.store.perfAttemptResults(m.PerfRun); err == nil {
+				side.Bench = benchOf(m.Set, res)
+			}
 		}
 	}
-	r.ev("macOS: run %s done, %d results; waiting for the Mac to come back", run.ID, len(side.Bench))
-	back := func() bool { return v.aliveLocked() && v.d.BootID != oldBoot }
-	if err := v.waitFor(ctx, 3*r.boot+r.s.cfg.RebootGrace+5*time.Minute, back); err != nil {
-		side.Error = "the Mac did not come back from macOS: " + err.Error()
-		return side
+	if outcome != "" {
+		side.Error = why
 	}
-	r.ev("macOS: back on %s", v.snapshot().Kernel)
 	return side
 }
 

@@ -31,6 +31,9 @@ type CompareSpec struct {
 	Hands     bool        `json:"hands,omitempty"`
 	BeforeSet *PackageSet `json:"before_set,omitempty"` // nil for CompareCurrent
 	AfterSet  *PackageSet `json:"after_set"`
+	// Bench is the Benchmark set current when the Compare was asked: with
+	// MacOS, its macOS side is the Mac's macOS result of this set.
+	Bench string `json:"bench,omitempty"`
 	// LeaseTaken is a Lease labd took for the job, since its person held
 	// none on the Mac: it ends with the job.
 	LeaseTaken bool `json:"lease_taken,omitempty"`

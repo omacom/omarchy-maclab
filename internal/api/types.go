@@ -920,6 +920,9 @@ type JobSpec struct {
 	// Mesa makes the job a first-class Mesa test of pinned split packages.
 	// See MesaSpec for what each mode does and does not claim.
 	Mesa *MesaSpec `json:"mesa,omitempty"`
+	// MacOS makes the job a Mac's macOS run (see MacOSJobSpec).
+	MacOS *MacOSJobSpec `json:"macos,omitempty"`
+
 	// Compare makes the job a Compare: two sides on the Mac, benchmarked
 	// and checked alike (see CompareSpec).
 	Compare *CompareSpec `json:"compare,omitempty"`

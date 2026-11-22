@@ -24,6 +24,12 @@
 <form class="form-inline" method="post" action="{{href (print "/compares/" .Hands "/done")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">Done</button></form>
 </div>
 {{- end}}
+{{- if .MacOSWait}}
+<div class="fence" id="macos-at-mac">
+<p><b>The macOS run of {{.Mac.Name}} waits for a person at the Mac</b> until {{.MacOSWait}}, else it is dropped. Say so when you are at it: the lab then boots macOS once, and you type its password and log in. It comes back to Omarchy by itself.</p>
+<form class="form-inline" method="post" action="{{href (print .Path "/macos/at-mac")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">I am at the Mac</button></form>
+</div>
+{{- end}}
 <p class="flash" id="mac-changed" hidden>This Mac has changed since this page was made. <a href="">Show it as it is now</a></p>
 {{- if .Fence}}
 <div class="fence" id="live-fence">
