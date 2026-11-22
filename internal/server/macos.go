@@ -13,7 +13,7 @@ package server
 // at the screen) leaves the Mac Needs hands.
 //
 // The queue and the runners' secrets are kept in macos-runs.json in the data
-// directory; the tier's artifacts are listed in macos-bench.json beside it.
+// directory; the tier's artifacts are the newest Benchmark set's macOS files.
 
 import (
 	"context"
@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -205,34 +206,30 @@ func (s *Server) macOS() *macosRuns {
 	return s.macos
 }
 
-// macOSBench is the pinned artifacts of the tier's macOS run, from
-// macos-bench.json in the data directory: {"artifacts": [{name, sha256}],
-// "extended": [{name, sha256}]}, the second list added for Extended.
+// macOSBenchSet is the Benchmark set a macOS run takes its files from.
+var macOSBenchSet = sets.Newest
+
+// macOSBench is the pinned macOS files of the set's Quick list (default) or
+// Full list (extended), by file id; a placeholder is left out. Each must be
+// in the artifact store, where lab bench mirror puts it.
 func (s *Server) macOSBench(tier string) ([]api.MacOSArtifact, error) {
-	b, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "macos-bench.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	} else if err != nil {
+	set, err := macOSBenchSet()
+	if err != nil {
 		return nil, err
 	}
-	var f struct {
-		Artifacts []api.MacOSArtifact `json:"artifacts"`
-		Extended  []api.MacOSArtifact `json:"extended"`
-	}
-	if err := json.Unmarshal(b, &f); err != nil {
-		return nil, fmt.Errorf("macos-bench.json: %w", err)
-	}
-	out := f.Artifacts
+	list := sets.Quick
 	if tier == api.TierExtended {
-		out = append(out, f.Extended...)
+		list = sets.Full
 	}
-	for _, a := range out {
-		if !reSHA.MatchString(a.SHA256) {
-			return nil, fmt.Errorf("macos-bench.json: %s: bad sha256", a.Name)
+	var out []api.MacOSArtifact
+	for _, f := range set.FilesFor(sets.MacOS, set.List(list)) {
+		if !f.Pinned() {
+			continue
 		}
-		if _, err := os.Stat(s.artifactPath(a.SHA256)); err != nil {
-			return nil, fmt.Errorf("macos-bench.json: %s (%s) is not in the artifact store", a.Name, short(a.SHA256))
+		if _, err := os.Stat(s.artifactPath(f.SHA256)); err != nil {
+			return nil, fmt.Errorf("%s: the macOS file %s (%s) is not in the artifact store: lab bench mirror", set.Name, f.ID, short(f.SHA256))
 		}
+		out = append(out, api.MacOSArtifact{Name: f.ID, SHA256: f.SHA256})
 	}
 	return out, nil
 }

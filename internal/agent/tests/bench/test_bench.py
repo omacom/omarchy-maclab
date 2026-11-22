@@ -284,7 +284,7 @@ class Runner(unittest.TestCase):
             self.assertIn(name, bench.BENCHES)
 
     def test_every_needed_item_is_pinned(self):
-        m = bench.load_manifest(HERE / "benchmarks.json")
+        m = bench.load_manifest(HERE / "testdata" / "manifest.json")
         for name, b in bench.BENCHES.items():
             for item in b.needs:
                 self.assertIn(item, m, f"{name} needs {item}")
@@ -344,7 +344,7 @@ class Packages(unittest.TestCase):
         self.work = pathlib.Path(self.d.name, "work")
         self.cache.mkdir()
         self.work.mkdir()
-        self.m = bench.load_manifest(HERE / "benchmarks.json")
+        self.m = bench.load_manifest(HERE / "testdata" / "manifest.json")
         self.ctx = bench.Ctx(bench.Host(), self.m, self.cache, self.work)
 
     def tearDown(self):
@@ -418,7 +418,7 @@ class Builds(unittest.TestCase):
         self.work = pathlib.Path(self.d.name, "work")
         self.cache.mkdir()
         self.work.mkdir()
-        self.m = bench.load_manifest(HERE / "benchmarks.json")
+        self.m = bench.load_manifest(HERE / "testdata" / "manifest.json")
         self.h = self.Host()
         self.ctx = bench.Ctx(self.h, self.m, self.cache, self.work)
 
@@ -540,7 +540,7 @@ class Output(unittest.TestCase):
             h.write("sys/class/power_supply/ac/type", "Mains")
             h.write("sys/class/power_supply/ac/online", "0")
             out = pathlib.Path(d, "bench.json")
-            code = bench.main(["--tier", "default", "--manifest", str(HERE / "benchmarks.json"),
+            code = bench.main(["--tier", "default", "--manifest", str(HERE / "testdata" / "manifest.json"),
                                "--cache", d, "--work", d, "--out", str(out)], host=h, stderr=io.StringIO())
             self.assertEqual(code, 3)
             self.assertEqual(json.loads(out.read_text()), [])

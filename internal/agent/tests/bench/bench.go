@@ -1,6 +1,8 @@
-// Package bench holds the lab's benchmark runner and the manifest of what it
-// runs, pinned by sha256. lab-agent runs the runner; `lab bench mirror` puts
-// every pinned file in labd's artifact store, from where lab-agent fetches it.
+// Package bench holds the lab's benchmark runner and the files it runs,
+// pinned by sha256: the newest Benchmark set's Omarchy files (package sets)
+// and the runner's legacy items. lab-agent runs the runner; `lab bench
+// mirror` puts every pinned file in labd's artifact store, from where
+// lab-agent fetches it.
 package bench
 
 import (
@@ -8,16 +10,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
 
 //go:embed bench.py
 var Runner []byte
 
-//go:embed benchmarks.json
-var ManifestJSON []byte
-
-// Item is one pinned file: a benchmark web app, a program, a source tree or a
-// clip.
+// Item is one pinned file under the runner's name for it: a benchmark web
+// app, a program, a source tree or a clip.
 type Item struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
@@ -32,31 +33,40 @@ type Item struct {
 
 var reSHA = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Manifest is the pinned items.
-func Manifest() ([]Item, error) { return ParseManifest(ManifestJSON) }
-
-// ParseManifest reads a manifest and checks every item names a sha256.
-func ParseManifest(b []byte) ([]Item, error) {
-	var m struct {
-		Items []Item `json:"items"`
-	}
-	if err := json.Unmarshal(b, &m); err != nil {
+// Manifest is the items the runner reads: the newest set's pinned Omarchy
+// files, by their ids, and the legacy items, which win on a name both hold.
+func Manifest() ([]Item, error) {
+	s, err := sets.Newest()
+	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	for _, it := range m.Items {
-		switch {
-		case it.Name == "" || seen[it.Name]:
-			return nil, fmt.Errorf("benchmark item %q is unnamed or given twice", it.Name)
-		case !reSHA.MatchString(it.SHA256):
-			return nil, fmt.Errorf("benchmark item %s has no sha256", it.Name)
-		case it.URL == "" || it.Version == "":
-			return nil, fmt.Errorf("benchmark item %s has no url or version", it.Name)
-		}
-		seen[it.Name] = true
-	}
-	return m.Items, nil
+	return manifest(s)
 }
+
+func manifest(s *sets.Set) ([]Item, error) {
+	legacy := map[string]bool{}
+	for _, it := range legacyItems {
+		legacy[it.Name] = true
+	}
+	var out []Item
+	for _, f := range s.Files[sets.Omarchy] {
+		if f.Pinned() && !legacy[f.ID] {
+			out = append(out, Item{Name: f.ID, Version: f.Version, Kind: f.Kind, URL: f.URL, SHA256: f.SHA256, Size: f.Size,
+				Root: f.Root, Entry: f.Entry, Note: f.Note})
+		}
+	}
+	out = append(out, Legacy()...)
+	for _, it := range out {
+		if !reSHA.MatchString(it.SHA256) || it.URL == "" || it.Version == "" {
+			return nil, fmt.Errorf("benchmark item %s is not pinned", it.Name)
+		}
+	}
+	return out, nil
+}
+
+// Legacy is the runner's legacy items, which `lab bench mirror` mirrors
+// beside the sets' files.
+func Legacy() []Item { return append([]Item(nil), legacyItems...) }
 
 // JSON is the manifest the runner reads, for these items.
 func JSON(items []Item) ([]byte, error) {

@@ -62,7 +62,7 @@ func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch 
 		return fail(err)
 	}
 	runner := filepath.Join(dir, "bench.py")
-	manifest := filepath.Join(dir, "benchmarks.json")
+	manifest := filepath.Join(dir, "manifest.json")
 	items, err := benchManifest()
 	if err != nil {
 		return fail(err)
@@ -93,7 +93,7 @@ func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch 
 	for _, n := range strings.Fields(string(out)) {
 		it, ok := byName[n]
 		if !ok {
-			return fail(fmt.Errorf("the runner needs %s, which benchmarks.json does not pin", n))
+			return fail(fmt.Errorf("the runner needs %s, which nothing pins", n))
 		}
 		if err := benchFetch(ctx, fetch, it); err != nil {
 			return fail(fmt.Errorf("%s %s: %w", it.Name, it.Version, err))

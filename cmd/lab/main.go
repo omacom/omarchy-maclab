@@ -124,8 +124,8 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab oob <device>                    its cable: sighted, not sighted or no cable, and what the ports show
   lab audit <device>                  labd's copy of a Volunteer's Mac's Audit log: every Maintainer action on it
   lab upload <file> [--for <mac>]     to the artifact store, in 32 MiB parts; cut, the same command resumes
-  lab bench mirror [--from <dir>]     every pinned benchmark file, downloaded, checked against its sha256 and
-                                      put in the artifact store, where lab-agent fetches it (Maintainers)
+  lab bench mirror [--from <dir>]     every Benchmark set's pinned files, downloaded, checked against their sha256
+                                      and put in the artifact store, where the Macs fetch them (Maintainers)
   lab mcp                             MCP server on stdio, for AI agents
   lab version                         the Lab release this lab came from, and the one Omarchy Mac Lab runs
 `
