@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +22,7 @@ import (
 type perfAnswers struct {
 	mu     sync.Mutex
 	answer func(metric string, attempt int) (float64, string)
-	asked  [][]string // the metrics of each run, in order
+	sim    *agent.Sim
 }
 
 func (a *perfAnswers) set(f func(metric string, attempt int) (float64, string)) {
@@ -32,15 +31,12 @@ func (a *perfAnswers) set(f func(metric string, attempt int) (float64, string)) 
 	a.mu.Unlock()
 }
 
-func (a *perfAnswers) runs() [][]string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return slices.Clone(a.asked)
-}
+// runs are the metrics of each run the Mac's bench builtin ran, in order.
+func (a *perfAnswers) runs() [][]string { return a.sim.BenchRuns() }
 
 // perfLab is a baselined Mac with bench-1 as the Benchmark set Performance
-// runs measure with. Its bench builtin uploads, as lab-agent's does, a
-// result for each metric labd gives it to the run labd names, and ends the
+// runs measure with. Its bench builtin writes a result for each metric labd
+// gives it, and lab-agent uploads them to the run labd names and ends the
 // attempt: failed when a result is in error.
 func perfLab(t *testing.T, c labConfig, setup func(l *lab)) (*lab, *perfAnswers) {
 	t.Helper()
@@ -63,36 +59,18 @@ func perfLab(t *testing.T, c labConfig, setup func(l *lab)) (*lab, *perfAnswers)
 	perfCurrentSet = func() (*sets.Set, error) { return &unmirrored, nil }
 	t.Cleanup(func() { perfCurrentSet = old })
 	l := newLabWith(t, c)
-	a := &perfAnswers{answer: func(string, int) (float64, string) { return 100, "" }}
-	l.sim.TestFiles = func(test, kernel string) map[string][]byte {
-		if test != perfTest {
-			return nil
-		}
-		j, err := l.s.store.job(l.s.dev(l.name).snapshot().ActiveJob)
-		if err != nil || j.Result.Performance == nil {
+	a := &perfAnswers{answer: func(string, int) (float64, string) { return 100, "" }, sim: l.sim}
+	l.sim.SetBenchAnswer(func(run int64, metric string) (float64, string) {
+		att, err := l.s.store.perfRun(run)
+		if err != nil {
 			t.Errorf("the bench test ran outside a Performance run: %v", err)
-			return nil
+			return 0, perf.Error
 		}
-		run, ps := j.Result.Performance, j.Spec.Performance
 		a.mu.Lock()
-		a.asked = append(a.asked, slices.Clone(ps.Metrics))
 		answer := a.answer
 		a.mu.Unlock()
-		up := map[string]any{"state": perf.Succeeded}
-		var entries []map[string]any
-		for _, m := range ps.Metrics {
-			v, reason := answer(m, run.Attempt)
-			if reason == perf.Error {
-				up["state"] = perf.Failed
-			}
-			entries = append(entries, perfEntry(t, m, v, reason))
-		}
-		up["entries"] = entries
-		if r, body := l.as(l.secret, "POST", fmt.Sprintf("/api/agent/performance/%d/results", run.Run), up); r.StatusCode != 200 {
-			t.Errorf("the upload: %s %s", r.Status, body)
-		}
-		return nil
-	}
+		return answer(metric, att.Attempt)
+	})
 	if setup != nil {
 		setup(l)
 	}
@@ -239,6 +217,51 @@ func TestAFrozenReleaseIsMeasuredAsACandidateBoot(t *testing.T) {
 		t.Errorf("bench ran %d times", len(a.runs()))
 	}
 	l.noMorePerf(1)
+}
+
+// lab-agent runs the bench builtin on exactly the metrics labd named and
+// uploads them with the Mac's own credentials: labd takes the upload, the
+// values and conditions land as the attempt's, and the test's result says so.
+func TestLabAgentRunsAPerformanceRunsMetricsAndLabdTakesTheUpload(t *testing.T) {
+	l, a := perfLab(t, labConfig{}, nil)
+	quick := bench1(t, sets.Quick)
+	value := func(m string) float64 { return float64(10 + slices.Index(quick, m)) }
+	a.set(func(m string, attempt int) (float64, string) { return value(m), "" })
+	l.perfRelease("7.3", l.s.now(), []string{l.name})
+	j := l.nthPerfJob(1)
+	l.expect(j, api.OutcomePass)
+	if runs := a.runs(); len(runs) != 1 || !slices.Equal(runs[0], j.Spec.Performance.Metrics) {
+		t.Fatalf("bench ran %v, labd named %v", runs, j.Spec.Performance.Metrics)
+	}
+	if len(j.Result.Tests) != 1 {
+		t.Fatalf("tests %+v", j.Result.Tests)
+	}
+	tr := j.Result.Tests[0]
+	up := tr.Bench
+	if tr.Name != perfTest || !tr.Passed || up == nil || !up.Taken || up.Run != j.Result.Performance.Run ||
+		up.State != perf.Succeeded || up.Results != len(quick) || up.Tries != 1 {
+		t.Fatalf("the test's result: %+v, upload %+v", tr, up)
+	}
+	att, err := l.s.store.perfAttempts(l.name, "bench-1", perf.SideOmarchy, "7.3")
+	if err != nil || len(att) != 1 || att[0].Run.State != perf.Succeeded {
+		t.Fatalf("attempts %+v (%v)", att, err)
+	}
+	var cond map[string]any
+	if json.Unmarshal(att[0].Run.Conditions, &cond) != nil || cond["on_ac"] != true || cond["backlight_percent"] != 50.0 || cond["set"] != nil {
+		t.Errorf("conditions %s", att[0].Run.Conditions)
+	}
+	if len(att[0].Results) != len(quick) {
+		t.Errorf("%d results, want %d", len(att[0].Results), len(quick))
+	}
+	for _, r := range att[0].Results {
+		if r.Value == nil || *r.Value != value(r.Metric) {
+			t.Errorf("%s: %+v, want %v", r.Metric, r, value(r.Metric))
+		}
+	}
+	cur, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	if len(cur) != len(quick) {
+		t.Errorf("%d current values, want %d", len(cur), len(quick))
+	}
 }
 
 // Quick while a Release has no verdict, the rest of Full once it is
