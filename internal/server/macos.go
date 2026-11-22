@@ -133,13 +133,13 @@ func (m *macosRuns) run(mac string) *api.MacOSRun {
 
 var errRunWaiting = errors.New("a macOS run waits for this Mac already")
 
-func (m *macosRuns) queue(mac, tier string, arts []api.MacOSArtifact, now time.Time) (*api.MacOSRun, error) {
+func (m *macosRuns) queue(mac, tier, set string, arts []api.MacOSArtifact, now time.Time) (*api.MacOSRun, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if r := m.st.Runs[mac]; r != nil && r.State != api.MacOSDone && r.State != api.MacOSNeedsHands {
 		return nil, fmt.Errorf("%w (%s, %s)", errRunWaiting, r.ID, r.State)
 	}
-	r := &api.MacOSRun{ID: "mos-" + randHex(6), Mac: mac, Tier: tier, State: api.MacOSQueued, Artifacts: arts, Queued: now}
+	r := &api.MacOSRun{ID: "mos-" + randHex(6), Mac: mac, Tier: tier, Set: set, State: api.MacOSQueued, Artifacts: arts, Queued: now}
 	m.st.Runs[mac] = r
 	return cloneRun(r), m.saveLocked()
 }
@@ -292,11 +292,12 @@ var macOSBenchSet = sets.Newest
 
 // macOSBench is the pinned macOS files of the set's Quick list (default) or
 // Full list (extended), by file id; a placeholder is left out. Each must be
-// in the artifact store, where lab bench mirror puts it.
-func (s *Server) macOSBench(tier string) ([]api.MacOSArtifact, error) {
+// in the artifact store, where lab bench mirror puts it. The set's name goes
+// with the run, for the runner to find the list.
+func (s *Server) macOSBench(tier string) (string, []api.MacOSArtifact, error) {
 	set, err := macOSBenchSet()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	list := sets.Quick
 	if tier == api.TierExtended {
@@ -308,11 +309,11 @@ func (s *Server) macOSBench(tier string) ([]api.MacOSArtifact, error) {
 			continue
 		}
 		if _, err := os.Stat(s.artifactPath(f.SHA256)); err != nil {
-			return nil, fmt.Errorf("%s: the macOS file %s (%s) is not in the artifact store: lab bench mirror", set.Name, f.ID, short(f.SHA256))
+			return "", nil, fmt.Errorf("%s: the macOS file %s (%s) is not in the artifact store: lab bench mirror", set.Name, f.ID, short(f.SHA256))
 		}
 		out = append(out, api.MacOSArtifact{Name: f.ID, SHA256: f.SHA256})
 	}
-	return out, nil
+	return set.Name, out, nil
 }
 
 var errNoMac = errors.New("no such Mac")
@@ -329,11 +330,11 @@ func (s *Server) queueMacOSRun(mac, tier string) (*api.MacOSRun, error) {
 	if s.dev(mac) == nil {
 		return nil, fmt.Errorf("%w %q", errNoMac, mac)
 	}
-	arts, err := s.macOSBench(tier)
+	set, arts, err := s.macOSBench(tier)
 	if err != nil {
 		return nil, err
 	}
-	r, err := s.macOS().queue(mac, tier, arts, s.now())
+	r, err := s.macOS().queue(mac, tier, set, arts, s.now())
 	if err == nil {
 		s.log.Printf("macOS run %s (%s) queued for %s", r.ID, tier, mac)
 	}

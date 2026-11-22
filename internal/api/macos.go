@@ -50,9 +50,13 @@ type MacOSArtifact struct {
 
 // MacOSRun is a Mac's macOS run as labd keeps it.
 type MacOSRun struct {
-	ID        string          `json:"id"`
-	Mac       string          `json:"mac"`
-	Tier      string          `json:"tier"`
+	ID   string `json:"id"`
+	Mac  string `json:"mac"`
+	Tier string `json:"tier"`
+	Set  string `json:"set,omitempty"` // the Benchmark set whose list it runs
+	// PerfRun is the Performance run (perf_runs) the results go to, POST
+	// /api/macos/runner/performance/{PerfRun}/results; 0 is none yet.
+	PerfRun   int64           `json:"perf_run,omitempty"`
 	State     string          `json:"state"`
 	Artifacts []MacOSArtifact `json:"artifacts,omitempty"`
 	Queued    time.Time       `json:"queued"`
