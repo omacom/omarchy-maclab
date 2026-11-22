@@ -111,14 +111,14 @@ func TestReleaseWorkflow(t *testing.T) {
 	}
 }
 
-// One key, pinned in three places that must agree.
+// One key, pinned in four places that must agree.
 func TestReleaseKeyPins(t *testing.T) {
 	top := root(t)
 	signers := strings.TrimSpace(read(t, top, "release/allowed_signers"))
 	if strings.Count(signers, "\n") != 0 || !strings.HasPrefix(signers, `release@omarchy-m-testing.org namespaces="omarchy-m-test-release" ssh-ed25519 `) {
 		t.Fatalf("release/allowed_signers is not one ed25519 release key: %q", signers)
 	}
-	for _, rel := range []string{"installer/install.sh", "installer/install-lab.sh", "docs/omarchy-m-test.md"} {
+	for _, rel := range []string{"installer/install.sh", "installer/install-lab.sh", "release/macos-runner/install.sh", "docs/omarchy-m-test.md"} {
 		if !strings.Contains(read(t, top, rel), signers) {
 			t.Errorf("%s doesn't pin the key of release/allowed_signers", rel)
 		}

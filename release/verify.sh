@@ -3,8 +3,9 @@
 #
 # Checks each file against its .sig the way the install lines and Deploy do
 # (ssh-keygen -Y verify against the pinned release key), then opens the mini's
-# bundle: lab-agent's own signature, the key pinned inside lab-agent, and the
-# tag when one is named. DIR must hold the Lab release and nothing else.
+# bundle: lab-agent's own signature, the key pinned inside lab-agent, the
+# macOS runner's own signatures, and the tag when one is named. DIR must
+# hold the Lab release and nothing else.
 # ALLOWED_SIGNERS defaults to release/allowed_signers, the release key.
 set -euo pipefail
 
@@ -33,6 +34,9 @@ tar -xzf "$dir/$RELEASE_BUNDLE" -C "$t"
 verified "$signers" "$t/$RELEASE_AGENT" || fail "lab-agent doesn't match its own signature by the release key"
 grep -qaF -- "$(release_key "$signers")" "$t/$RELEASE_AGENT" || fail "lab-agent doesn't carry the release key"
 tar -xzf "$dir/$RELEASE_MACOS_RUNNER" -C "$t"
+for f in "${RELEASE_RUNNER_SIGNED[@]}"; do
+  verified "$signers" "$t/$f" || fail "the macOS runner's ${f#lab-macos-runner/} doesn't match its own signature by the release key"
+done
 macho_arm64 "$t/lab-macos-runner/bin/lab-macos-runner" || fail "the macOS runner is not a program for macOS on arm64"
 [[ -x $t/lab-macos-runner/install.sh && -f $t/lab-macos-runner/org.omarchy.maclab.macos-runner.plist ]] || fail "the macOS runner has no install.sh or LaunchDaemon plist"
 tar -xzf "$dir/$RELEASE_CONTROLLER" -C "$t"
