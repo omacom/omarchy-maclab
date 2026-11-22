@@ -331,7 +331,8 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 		}
 		fmt.Printf("The macOS runner's line for %s (one Mac, once; expires %s). Keep it private.\n\n", t.Mac, t.Expires.Format(time.DateTime))
 		fmt.Printf("In macOS on the Mac, install lab-macos-runner-darwin-arm64.tar.gz from the Lab release (sudo ./install.sh), then run:\n\n  %s\n\n", t.Line)
-		fmt.Println("A FileVault Mac needs a person at every macOS run: macOS waits for its password at the screen.")
+		fmt.Println("The Mac is Attended, a macOS run waiting for a person to type its password, until sudo lab-macos-runner setup")
+		fmt.Println("turns FileVault off and logs its user in automatically, on yes at the Mac, and a boot reaches the desktop alone.")
 		return nil
 
 	case "enroll":

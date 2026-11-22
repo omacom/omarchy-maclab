@@ -83,6 +83,30 @@ type MacOSEnrolled struct {
 	Secret string `json:"secret"`
 }
 
+// Whether a Mac's macOS needs a person at it: an Attended Mac waits for its
+// password at the screen; an Unattended Mac starts and logs in alone.
+const (
+	MacOSAttended   = "attended"
+	MacOSUnattended = "unattended"
+)
+
+// MacOSAttendance is the runner's word after a boot: whether that boot
+// reached its user's desktop with nobody typing (POST
+// /api/macos/runner/attendance).
+type MacOSAttendance struct {
+	Unattended bool `json:"unattended"`
+}
+
+// MacOSSide is a Mac's macOS side as labd keeps it (GET
+// /api/devices/{name}/macos): whether the runner of its enrollment is
+// enrolled, Attended or Unattended, and when the runner last said so.
+type MacOSSide struct {
+	Mac        string     `json:"mac"`
+	Enrolled   bool       `json:"enrolled"`
+	Attendance string     `json:"attendance"`
+	Said       *time.Time `json:"said,omitempty"`
+}
+
 // MacOSPoll is labd's answer to a runner's poll: the run to do, or none.
 type MacOSPoll struct {
 	Run *MacOSRun `json:"run"`

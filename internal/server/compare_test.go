@@ -404,7 +404,7 @@ func TestCompareWaitsForHandsUntilDone(t *testing.T) {
 func TestCompareWithMacOS(t *testing.T) {
 	l, _ := compareLab(t, nil)
 	macosBench(t, l)
-	if _, err := l.s.macOS().enrolSecret(l.name, "mos_test-secret"); err != nil {
+	if err := l.s.macOS().enrolSecret(l.name, l.s.dev(l.name).snapshot().ID, "mos_test-secret"); err != nil {
 		t.Fatal(err)
 	}
 	l.sim.MacOSFor = 2 * time.Second

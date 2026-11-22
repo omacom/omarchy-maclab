@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -191,21 +193,168 @@ func TestAMacOSRunPastItsDeadlineNeedsHands(t *testing.T) {
 	}
 }
 
-// Queued runs and enrolled runners outlive a restart of labd.
+// Queued runs and enrolled runners outlive a restart of labd. A secret kept
+// before secrets belonged to an enrollment is dropped: that runner enrolls
+// again.
 func TestMacOSRunsAreKeptInTheDataDir(t *testing.T) {
 	dir := t.TempDir()
 	m := openMacOSRuns(dir)
-	if _, err := m.enrolSecret("m2-max", "mos_x"); err != nil {
+	if err := m.enrolSecret("m2-max", "enr-1", "mos_x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.sayAttendance("mos_x", true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.queue("m2-max", api.TierDefault, nil, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	m2 := openMacOSRuns(dir)
-	if mac, ok := m2.runnerOf("mos_x"); !ok || mac != "m2-max" {
-		t.Errorf("runner lost: %q %v", mac, ok)
+	if e, ok := m2.runnerOf("mos_x"); !ok || e.Mac != "m2-max" || e.Enrollment != "enr-1" || !e.Unattended {
+		t.Errorf("runner lost: %+v %v", e, ok)
 	}
 	if r := m2.run("m2-max"); r == nil || r.State != api.MacOSQueued {
 		t.Errorf("run lost: %+v", r)
+	}
+
+	old := filepath.Join(t.TempDir(), "macos-runs.json")
+	b, _ := json.Marshal(map[string]any{"runners": map[string]string{hashSecret("mos_old"): "m2-max"},
+		"tokens": map[string]any{hashSecret("mos_enr_old"): map[string]any{"mac": "m2-max", "expires": time.Now().Add(time.Hour)}}})
+	if err := os.WriteFile(old, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m3 := openMacOSRuns(filepath.Dir(old))
+	if _, ok := m3.runnerOf("mos_old"); ok {
+		t.Error("a secret of no enrollment still works")
+	}
+	if _, ok := m3.useToken(hashSecret("mos_enr_old"), time.Now()); ok {
+		t.Error("a one-time token of no enrollment still works")
+	}
+}
+
+// The runner's secret is the Mac's enrollment's: when the Volunteer leaves,
+// it stops working at once, with its one-time tokens and its unfinished run,
+// and a Mac that Joins again under the name gets none of them.
+func TestAMacOSRunnerSecretIsRevokedWhenItsVolunteerLeaves(t *testing.T) {
+	n, _ := leavingLab(t, labConfig{})
+	secret := enrollRunner(t, n.lab)
+	_, body := n.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": n.name})
+	unused := decodeInto[api.MacOSEnrollToken](t, body).Token
+	macosBench(t, n.lab)
+	if _, err := n.s.queueMacOSRun(n.name, api.TierDefault); err != nil {
+		t.Fatal(err)
+	}
+
+	n.mustVolunteer("leave", "--yes")
+	n.leavingRequireGone(n.name)
+	macOSRunnerRevoked(t, n.lab, secret, unused)
+}
+
+// The same when a Maintainer ends the enrollment and the Mac is Retired.
+func TestAMacOSRunnerSecretIsRevokedWhenItsMacIsRetired(t *testing.T) {
+	n, grace := leavingLab(t, labConfig{})
+	secret := enrollRunner(t, n.lab)
+	_, body := n.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": n.name})
+	unused := decodeInto[api.MacOSEnrollToken](t, body).Token
+	macosBench(t, n.lab)
+	if _, err := n.s.queueMacOSRun(n.name, api.TierDefault); err != nil {
+		t.Fatal(err)
+	}
+
+	n.leavingMustEnd(grace, n.name)
+	n.leavingRequireGone(n.name)
+	macOSRunnerRevoked(t, n.lab, secret, unused)
+}
+
+func macOSRunnerRevoked(t *testing.T, l *lab, secret, unused string) {
+	t.Helper()
+	if _, ok := l.s.macOS().runnerOf(secret); ok {
+		t.Error("labd still keeps the runner's secret")
+	}
+	if r := l.s.macOS().run(l.name); r != nil {
+		t.Errorf("an unfinished run outlived the enrollment: %+v", r)
+	}
+	if resp, _ := l.as(secret, "GET", "/api/macos/runner/poll", nil); resp.StatusCode != 401 {
+		t.Errorf("the runner's secret works after the Mac left: %d", resp.StatusCode)
+	}
+	// Joined again under the same name: a new enrollment, and nothing of
+	// the old one's runner works for it.
+	if resp, body := l.enrollRaw(l.enrollToken(l.name)); resp.StatusCode != 200 {
+		t.Fatalf("enrolling again: %s %s", resp.Status, body)
+	}
+	if resp, _ := l.as(secret, "GET", "/api/macos/runner/poll", nil); resp.StatusCode != 401 {
+		t.Errorf("the old runner's secret works for the new enrollment: %d", resp.StatusCode)
+	}
+	if resp, _ := l.as(unused, "POST", "/api/macos/runner/enroll", nil); resp.StatusCode != 401 {
+		t.Errorf("the old enrollment's one-time token enrolled the new one's runner: %d", resp.StatusCode)
+	}
+	if side := l.s.macOSSide(l.name); side.Enrolled || side.Attendance != api.MacOSAttended {
+		t.Errorf("the new enrollment's macOS side: %+v", side)
+	}
+}
+
+// A one-time token belongs to the enrollment it was made for: one made just
+// before the Mac left enrolls nothing after.
+func TestAMacOSEnrollTokenIsForOneEnrollment(t *testing.T) {
+	l := newLab(t, false)
+	_, body := l.as(harnessToken, "POST", "/api/macos/enroll-tokens", map[string]string{"mac": l.name})
+	tok := decodeInto[api.MacOSEnrollToken](t, body)
+	if err := l.s.macOS().addToken(hashSecret(tok.Token+"x"), l.name, "another-enrollment", tok.Expires); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := l.as(tok.Token+"x", "POST", "/api/macos/runner/enroll", nil); resp.StatusCode != 401 {
+		t.Errorf("a token of another enrollment enrolled the runner: %d", resp.StatusCode)
+	}
+	if resp, body := l.as(tok.Token, "POST", "/api/macos/runner/enroll", nil); resp.StatusCode != 200 {
+		t.Errorf("the token of this enrollment: %d %s", resp.StatusCode, body)
+	}
+}
+
+// A Mac starts Attended. The runner says Unattended after a boot that
+// reached its user's desktop with nobody typing, and Attended after one that
+// did not; labd keeps the last word. A runner enrolled again starts over.
+func TestLabdKeepsWhetherAMacIsAttendedOrUnattended(t *testing.T) {
+	l := newLab(t, false)
+	side := func() api.MacOSSide {
+		t.Helper()
+		resp, body := l.get("GET", "/api/devices/"+l.name+"/macos")
+		if resp.StatusCode != 200 {
+			t.Fatalf("macOS side: %d %s", resp.StatusCode, body)
+		}
+		return decodeInto[api.MacOSSide](t, body)
+	}
+	if s := side(); s.Enrolled || s.Attendance != api.MacOSAttended {
+		t.Fatalf("before the runner enrolled: %+v", s)
+	}
+	secret := enrollRunner(t, l)
+	if s := side(); !s.Enrolled || s.Attendance != api.MacOSAttended || s.Said != nil {
+		t.Fatalf("a runner just enrolled: %+v", s)
+	}
+	say := func(unattended bool) {
+		t.Helper()
+		if resp, body := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: unattended}); resp.StatusCode != 200 {
+			t.Fatalf("attendance: %d %s", resp.StatusCode, body)
+		}
+	}
+	say(true)
+	if s := side(); s.Attendance != api.MacOSUnattended || s.Said == nil {
+		t.Errorf("after an unattended boot: %+v", s)
+	}
+	say(false)
+	if s := side(); s.Attendance != api.MacOSAttended {
+		t.Errorf("after a boot somebody typed at: %+v", s)
+	}
+	say(true)
+	if resp, _ := l.as("mos_wrong", "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 401 {
+		t.Errorf("attendance with a wrong secret: %d", resp.StatusCode)
+	}
+	if resp, _ := l.as("", "GET", "/api/devices/"+l.name+"/macos", nil); resp.StatusCode == 200 {
+		t.Error("the macOS side with no credential")
+	}
+	enrollRunner(t, l)
+	if s := side(); s.Attendance != api.MacOSAttended {
+		t.Errorf("a runner enrolled again: %+v", s)
+	}
+	if resp, _ := l.as(secret, "POST", "/api/macos/runner/attendance", api.MacOSAttendance{Unattended: true}); resp.StatusCode != 401 {
+		t.Errorf("the runner's earlier secret still works: %d", resp.StatusCode)
 	}
 }

@@ -17,6 +17,9 @@
 #     /privacy as labd carries them, and none of the commands that are not
 #     shipped; a reset tool that is no macOS arm64 program is refused before
 #     anything is built;
+#   - the macOS runner and its LaunchDaemon carry their own signatures, which
+#     its install.sh checks against its pinned key before it installs
+#     anything;
 #   - every file has a signature the release key verifies, a changed file or a
 #     file signed by another key is refused, and a tag that is not a Lab
 #     release's is refused before anything is built.
@@ -201,6 +204,7 @@ r="$t/runner/lab-macos-runner"
 [[ "$(<"$r/VERSION")" == "$tag" ]] || fail "the macOS runner's VERSION says $(<"$r/VERSION"), not $tag"
 cmp -s "$repo/release/macos-runner/install.sh" "$r/install.sh" && [[ -x $r/install.sh ]] || fail "the macOS runner's install.sh is missing, different or not executable"
 cmp -s "$repo/release/macos-runner/org.omarchy.maclab.macos-runner.plist" "$r/org.omarchy.maclab.macos-runner.plist" || fail "the macOS runner's LaunchDaemon plist is missing or different"
+[[ ! -e $r/bin/lab-macos-runner.sig ]] || fail "an unsigned build's macOS runner carries a signature"
 
 # The Mac lab controller: oobd and the reset tool the bundle carries, and its install.
 mkdir "$t/ctl"
@@ -234,6 +238,23 @@ tar -xzf "$t/dist/$RELEASE_BUNDLE" -C "$t/signed"
 bundle_check "$t/signed"
 verified "$t/allowed_signers" "$t/signed/$RELEASE_AGENT" || fail "lab-agent's own signature doesn't verify"
 
+# The macOS runner's install.sh installs nothing that its pinned key does not
+# verify: here, with the pin swapped for this check's key.
+mkdir "$t/runner-signed"
+tar -xzf "$t/dist/$RELEASE_MACOS_RUNNER" -C "$t/runner-signed"
+rs="$t/runner-signed/lab-macos-runner"
+for f in "${RELEASE_RUNNER_SIGNED[@]}"; do
+  verified "$t/allowed_signers" "$t/runner-signed/$f" || fail "the macOS runner's ${f#lab-macos-runner/} has no signature of its own"
+done
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a runner the release key did not sign"; fi
+real="$(release_key "$repo/release/allowed_signers")"
+sed "s|$real|$key|" "$repo/release/macos-runner/install.sh" > "$rs/install.sh"
+"$rs/install.sh" --check >/dev/null || fail "install.sh refused a runner its pinned key signed"
+cp "$rs/bin/lab-macos-runner" "$t/runner-bin" && printf 'x' >> "$rs/bin/lab-macos-runner"
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a changed runner"; fi
+cp "$t/runner-bin" "$rs/bin/lab-macos-runner" && rm "$rs/org.omarchy.maclab.macos-runner.plist.sig"
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a LaunchDaemon with no signature"; fi
+
 # Refused: the real key's pin, another tag, a changed file, a missing signature,
 # a stray file, another key, and an agent that is not the one signed.
 refused() { # refused WHY DIR [ALLOWED_SIGNERS [TAG]]
@@ -265,5 +286,13 @@ sign "$t/other" "$t/stage/$RELEASE_AGENT"
 pack "$t/stage" lab-server 0 > "$t/bad/$RELEASE_BUNDLE"
 sign "$t/key" "$t/bad/$RELEASE_BUNDLE"
 refused "an agent signed by another key" "$t/bad"
+
+# The runner's archive signed by the release key around a runner signed by another.
+rm -rf "$t/bad" "$t/stage" && cp -R "$t/dist" "$t/bad" && mkdir "$t/stage"
+tar -xzf "$t/bad/$RELEASE_MACOS_RUNNER" -C "$t/stage"
+sign "$t/other" "$t/stage/${RELEASE_RUNNER_SIGNED[0]}"
+pack "$t/stage" lab-macos-runner 0 > "$t/bad/$RELEASE_MACOS_RUNNER"
+sign "$t/key" "$t/bad/$RELEASE_MACOS_RUNNER"
+refused "a macOS runner signed by another key" "$t/bad"
 
 echo "release ok: $tag; the test tool ($(ls "$pkg"/*.py | wc -l | tr -d ' ') modules, catalogue, Asahi kernel config and $vendored vendored, test card and GPU source/data files), lab for three machines, the server bundle ($bundled builder, deploy and mini files); ${#RELEASE_FILES[@]} files signed, verified and refused when changed"

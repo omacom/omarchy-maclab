@@ -12,6 +12,12 @@ package server
 // run not reported by its deadline (a FileVault Mac waits for its password
 // at the screen) leaves the Mac Needs hands.
 //
+// A runner's secret belongs to the Mac's enrollment (Device.ID): it works
+// only while that enrollment lasts, and it is revoked when the Mac Leaves or
+// is Retired. A Mac starts Attended; the runner says it is Unattended once a
+// boot has reached its user's desktop with nobody typing (POST
+// /api/macos/runner/attendance), and Attended again when one did not.
+//
 // The queue and the runners' secrets are kept in macos-runs.json in the data
 // directory; the tier's artifacts are the newest Benchmark set's macOS files.
 
@@ -43,14 +49,28 @@ var macosDeadline = func(tier string) time.Duration {
 }
 
 type macosToken struct {
-	Mac     string    `json:"mac"`
-	Expires time.Time `json:"expires"`
+	Mac        string    `json:"mac"`
+	Enrollment string    `json:"enrollment"`
+	Expires    time.Time `json:"expires"`
+}
+
+// macosRunner is an enrolled runner: the Mac and the enrollment its secret
+// belongs to, and whether the runner said the Mac is Unattended, and when.
+type macosRunner struct {
+	Mac        string    `json:"mac"`
+	Enrollment string    `json:"enrollment"`
+	Unattended bool      `json:"unattended,omitempty"`
+	Said       time.Time `json:"said,omitempty"`
 }
 
 type macosState struct {
-	Tokens  map[string]macosToken    `json:"tokens"`  // hash of a one-time token
-	Runners map[string]string        `json:"runners"` // hash of a runner's secret -> Mac
-	Runs    map[string]*api.MacOSRun `json:"runs"`    // the Mac's latest run
+	Tokens   map[string]macosToken    `json:"tokens"`   // hash of a one-time token
+	Enrolled map[string]macosRunner   `json:"enrolled"` // hash of a runner's secret
+	Runs     map[string]*api.MacOSRun `json:"runs"`     // the Mac's latest run
+	// Runners are the secrets of before they belonged to an enrollment
+	// (hash -> Mac). They are dropped as labd opens the file: such a
+	// runner enrolls again.
+	Runners map[string]string `json:"runners,omitempty"`
 }
 
 type macosRuns struct {
@@ -68,8 +88,14 @@ func openMacOSRuns(dir string) *macosRuns {
 	if m.st.Tokens == nil {
 		m.st.Tokens = map[string]macosToken{}
 	}
-	if m.st.Runners == nil {
-		m.st.Runners = map[string]string{}
+	if m.st.Enrolled == nil {
+		m.st.Enrolled = map[string]macosRunner{}
+	}
+	m.st.Runners = nil
+	for h, t := range m.st.Tokens {
+		if t.Enrollment == "" {
+			delete(m.st.Tokens, h)
+		}
 	}
 	if m.st.Runs == nil {
 		m.st.Runs = map[string]*api.MacOSRun{}
@@ -118,56 +144,111 @@ func (m *macosRuns) queue(mac, tier string, arts []api.MacOSArtifact, now time.T
 	return cloneRun(r), m.saveLocked()
 }
 
-func (m *macosRuns) addToken(hash, mac string, exp time.Time) error {
+func (m *macosRuns) addToken(hash, mac, enrollment string, exp time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.st.Tokens[hash] = macosToken{Mac: mac, Expires: exp}
+	m.st.Tokens[hash] = macosToken{Mac: mac, Enrollment: enrollment, Expires: exp}
 	return m.saveLocked()
 }
 
-// useToken spends a one-time token and returns its Mac.
-func (m *macosRuns) useToken(hash string, now time.Time) (string, bool) {
+// useToken spends a one-time token and returns the Mac and enrollment it
+// was made for.
+func (m *macosRuns) useToken(hash string, now time.Time) (macosToken, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.st.Tokens[hash]
 	if !ok {
-		return "", false
+		return t, false
 	}
 	delete(m.st.Tokens, hash)
 	m.saveLocked()
-	return t.Mac, now.Before(t.Expires)
+	return t, now.Before(t.Expires)
 }
 
-// enrolSecret makes secret the Mac's runner secret, ending any earlier one.
-func (m *macosRuns) enrolSecret(mac, secret string) (string, error) {
+// enrolSecret makes secret the runner secret of the Mac's enrollment,
+// ending any earlier one of the Mac's. A runner enrolled again starts
+// Attended.
+func (m *macosRuns) enrolSecret(mac, enrollment, secret string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for h, v := range m.st.Runners {
-		if v == mac {
-			delete(m.st.Runners, h)
+	for h, e := range m.st.Enrolled {
+		if e.Mac == mac {
+			delete(m.st.Enrolled, h)
 		}
 	}
-	m.st.Runners[hashSecret(secret)] = mac
-	return mac, m.saveLocked()
+	m.st.Enrolled[hashSecret(secret)] = macosRunner{Mac: mac, Enrollment: enrollment}
+	return m.saveLocked()
 }
 
-// enrolled is whether the Mac's macOS runner is enrolled.
-func (m *macosRuns) enrolled(mac string) bool {
+// runnerFor is the enrolled runner of the Mac's enrollment.
+func (m *macosRuns) runnerFor(mac, enrollment string) (macosRunner, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, v := range m.st.Runners {
-		if v == mac {
-			return true
+	for _, e := range m.st.Enrolled {
+		if e.Mac == mac && e.Enrollment == enrollment {
+			return e, true
 		}
 	}
-	return false
+	return macosRunner{}, false
 }
 
-func (m *macosRuns) runnerOf(secret string) (string, bool) {
+// enrolled is whether the macOS runner of the Mac's enrollment is enrolled.
+func (m *macosRuns) enrolled(mac, enrollment string) bool {
+	_, ok := m.runnerFor(mac, enrollment)
+	return ok
+}
+
+func (m *macosRuns) runnerOf(secret string) (macosRunner, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	mac, ok := m.st.Runners[hashSecret(secret)]
-	return mac, ok
+	e, ok := m.st.Enrolled[hashSecret(secret)]
+	return e, ok
+}
+
+// sayAttendance keeps what the runner of secret said of its Mac, and
+// returns the runner as it was before.
+func (m *macosRuns) sayAttendance(secret string, unattended bool, at time.Time) (macosRunner, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h := hashSecret(secret)
+	e, ok := m.st.Enrolled[h]
+	if !ok {
+		return e, errNoRunner
+	}
+	now := e
+	now.Unattended, now.Said = unattended, at
+	m.st.Enrolled[h] = now
+	return e, m.saveLocked()
+}
+
+var errNoRunner = errors.New("no macOS runner is enrolled")
+
+// revoke ends the Mac's macOS runner as its enrollment ends: its secret and
+// one-time tokens stop working, and a run not done yet is dropped, so that a
+// Mac enrolled later under the name takes none of it. A finished run stays.
+func (m *macosRuns) revoke(mac string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for h, e := range m.st.Enrolled {
+		if e.Mac == mac {
+			delete(m.st.Enrolled, h)
+			n++
+		}
+	}
+	for h, t := range m.st.Tokens {
+		if t.Mac == mac {
+			delete(m.st.Tokens, h)
+		}
+	}
+	if r := m.st.Runs[mac]; r != nil && r.State != api.MacOSDone && r.State != api.MacOSNeedsHands {
+		delete(m.st.Runs, mac)
+	}
+	if stop := m.timers[mac]; stop != nil {
+		close(stop)
+		delete(m.timers, mac)
+	}
+	return n, m.saveLocked()
 }
 
 // change applies f to the Mac's run under the lock and saves it.
@@ -304,31 +385,62 @@ func (s *Server) macosRoutes() []route {
 		{"POST /api/macos/enroll-tokens", maintainers, s.hMacOSEnrollToken},
 		{"POST /api/devices/{name}/macos-runs", maintainers, s.hQueueMacOSRun},
 		{"GET /api/devices/{name}/macos-runs", maintainers, s.hMacOSRun},
+		{"GET /api/devices/{name}/macos", maintainers, s.hMacOSSide},
 		// The runner's own: a one-time token, then its secret.
 		{"POST /api/macos/runner/enroll", anyone, s.hMacOSRunnerEnroll},
 		{"GET /api/macos/runner/poll", anyone, s.macosRunner(s.hMacOSPoll)},
 		{"GET /api/macos/runner/artifacts/{sha}", anyone, s.macosRunner(s.hMacOSArtifact)},
 		{"POST /api/macos/runner/results", anyone, s.macosRunner(s.hMacOSResults)},
+		{"POST /api/macos/runner/attendance", anyone, s.macosRunner(s.hMacOSAttendance)},
 	}
 }
 
 type macosRunnerKey struct{}
 
-// macosRunner admits a request carrying an enrolled runner's secret.
+// enrollmentOf is the enrollment of the Mac called name, while it is in
+// the fleet.
+func (s *Server) enrollmentOf(name string) (string, bool) {
+	v := s.dev(name)
+	if v == nil || v.goneReason() != "" {
+		return "", false
+	}
+	return v.snapshot().ID, true
+}
+
+// macosRunner admits a request carrying the secret of a runner whose Mac's
+// enrollment still lasts.
 func (s *Server) macosRunner(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := bearer(r)
-		mac, ok := "", false
+		var e macosRunner
+		ok := false
 		if strings.HasPrefix(tok, "mos_") && len(tok) < 200 {
-			mac, ok = s.macOS().runnerOf(tok)
+			e, ok = s.macOS().runnerOf(tok)
+		}
+		if ok {
+			id, in := s.enrollmentOf(e.Mac)
+			ok = in && id == e.Enrollment
 		}
 		if !ok {
 			s.refuse(w, r, 401, "unknown macOS runner secret")
 			return
 		}
-		noteCaller(r, "macos-runner:"+mac)
-		h(w, r.WithContext(context.WithValue(r.Context(), macosRunnerKey{}, mac)))
+		noteCaller(r, "macos-runner:"+e.Mac)
+		h(w, r.WithContext(context.WithValue(r.Context(), macosRunnerKey{}, e.Mac)))
 	}
+}
+
+// macOSEnrollLine makes a one-time token for the runner of v's enrollment,
+// good for an hour, and the line that spends it in macOS.
+func (s *Server) macOSEnrollLine(r *http.Request, v *dev) (api.MacOSEnrollToken, error) {
+	d := v.snapshot()
+	tok := "mos_enr_" + randHex(16)
+	exp := s.now().Add(macosTokenTTL)
+	if err := s.macOS().addToken(hashSecret(tok), d.Name, d.ID, exp); err != nil {
+		return api.MacOSEnrollToken{}, err
+	}
+	line := fmt.Sprintf("echo %s | sudo /usr/local/lab/bin/lab-macos-runner enroll --server %s --token-stdin", tok, s.publicBase(r))
+	return api.MacOSEnrollToken{Mac: d.Name, Token: tok, Expires: exp, Line: line}, nil
 }
 
 func (s *Server) hMacOSEnrollToken(w http.ResponseWriter, r *http.Request) {
@@ -338,38 +450,96 @@ func (s *Server) hMacOSEnrollToken(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, 4096, &req) {
 		return
 	}
-	if s.dev(req.Mac) == nil {
+	v := s.dev(req.Mac)
+	if v == nil {
 		httpErr(w, 404, "no device %q", req.Mac)
 		return
 	}
-	tok := "mos_enr_" + randHex(16)
-	exp := s.now().Add(macosTokenTTL)
-	if err := s.macOS().addToken(hashSecret(tok), req.Mac, exp); err != nil {
+	t, err := s.macOSEnrollLine(r, v)
+	if err != nil {
 		httpErr(w, 500, "%v", err)
 		return
 	}
 	s.log.Printf("Maintainer %s made a macOS runner token for %s", maintainerName(r), req.Mac)
-	line := fmt.Sprintf("echo %s | sudo /usr/local/lab/bin/lab-macos-runner enroll --server %s --token-stdin", tok, s.publicBase(r))
-	writeJSON(w, api.MacOSEnrollToken{Mac: req.Mac, Token: tok, Expires: exp, Line: line})
+	writeJSON(w, t)
 }
 
 func (s *Server) hMacOSRunnerEnroll(w http.ResponseWriter, r *http.Request) {
 	tok := bearer(r)
-	mac, ok := "", false
+	var t macosToken
+	ok := false
 	if strings.HasPrefix(tok, "mos_enr_") && len(tok) < 200 {
-		mac, ok = s.macOS().useToken(hashSecret(tok), s.now())
+		t, ok = s.macOS().useToken(hashSecret(tok), s.now())
 	}
-	if !ok || s.dev(mac) == nil {
+	if ok {
+		id, in := s.enrollmentOf(t.Mac)
+		ok = in && id == t.Enrollment
+	}
+	if !ok {
 		s.refuse(w, r, 401, "macOS runner token unknown, used or expired")
 		return
 	}
 	secret := "mos_" + randHex(24)
-	if _, err := s.macOS().enrolSecret(mac, secret); err != nil {
+	if err := s.macOS().enrolSecret(t.Mac, t.Enrollment, secret); err != nil {
 		httpErr(w, 500, "%v", err)
 		return
 	}
-	s.log.Printf("the macOS runner of %s enrolled", mac)
-	writeJSON(w, api.MacOSEnrolled{Mac: mac, Secret: secret})
+	s.log.Printf("the macOS runner of %s enrolled", t.Mac)
+	writeJSON(w, api.MacOSEnrolled{Mac: t.Mac, Secret: secret})
+}
+
+// hMacOSAttendance is the runner saying, after a boot, whether it reached
+// its user's desktop with nobody typing: Unattended, or Attended again.
+func (s *Server) hMacOSAttendance(w http.ResponseWriter, r *http.Request) {
+	mac := r.Context().Value(macosRunnerKey{}).(string)
+	var a api.MacOSAttendance
+	if !decodeBody(w, r, 4096, &a) {
+		return
+	}
+	before, err := s.macOS().sayAttendance(bearer(r), a.Unattended, s.now())
+	if err != nil {
+		httpErr(w, 500, "%v", err)
+		return
+	}
+	if before.Unattended != a.Unattended || before.Said.IsZero() {
+		s.log.Printf("%s: an %s Mac in macOS, its runner says", mac, attendanceWord(a.Unattended))
+	}
+	writeJSON(w, s.macOSSide(mac))
+}
+
+func attendanceWord(unattended bool) string {
+	if unattended {
+		return api.MacOSUnattended
+	}
+	return api.MacOSAttended
+}
+
+// macOSSide is the macOS side of the Mac as labd keeps it: whether its
+// enrollment's runner is enrolled, and whether the Mac is Attended or
+// Unattended. A Mac is Attended until its runner says otherwise.
+func (s *Server) macOSSide(mac string) api.MacOSSide {
+	side := api.MacOSSide{Mac: mac, Attendance: api.MacOSAttended}
+	id, in := s.enrollmentOf(mac)
+	if !in {
+		return side
+	}
+	e, ok := s.macOS().runnerFor(mac, id)
+	side.Enrolled = ok
+	side.Attendance = attendanceWord(ok && e.Unattended)
+	if ok && !e.Said.IsZero() {
+		said := e.Said
+		side.Said = &said
+	}
+	return side
+}
+
+func (s *Server) hMacOSSide(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if s.dev(name) == nil {
+		httpErr(w, 404, "no device %q", name)
+		return
+	}
+	writeJSON(w, s.macOSSide(name))
 }
 
 func (s *Server) hQueueMacOSRun(w http.ResponseWriter, r *http.Request) {

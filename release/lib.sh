@@ -11,6 +11,9 @@ RELEASE_MACOS_RUNNER="lab-macos-runner-darwin-arm64.tar.gz"
 RELEASE_CONTROLLER="lab-controller-darwin-arm64.tar.gz"
 RELEASE_FILES=(omarchy-m-test.tar.gz VERSION lab-darwin-arm64 lab-linux-arm64 lab-linux-amd64 "$RELEASE_BUNDLE" "$RELEASE_MACOS_RUNNER" "$RELEASE_CONTROLLER")
 RELEASE_AGENT="lab-server/bin/lab-agent-linux-arm64"
+# What the macOS runner's install.sh checks against its own signature before
+# it installs anything.
+RELEASE_RUNNER_SIGNED=(lab-macos-runner/bin/lab-macos-runner lab-macos-runner/org.omarchy.maclab.macos-runner.plist)
 RELEASE_TAG='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
 
 # GNU install and tar: Homebrew keeps them out of PATH on macOS.

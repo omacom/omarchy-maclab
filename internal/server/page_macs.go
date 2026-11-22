@@ -96,6 +96,10 @@ func (s *Server) pMacs(w http.ResponseWriter, r *http.Request) {
 // renderMacs writes Macs; with a refusal, it is said above the table under
 // its own status.
 func (s *Server) renderMacs(w http.ResponseWriter, r *http.Request, show string, refused error) {
+	s.renderMacsWith(w, r, show, refused, nil)
+}
+
+func (s *Server) renderMacsWith(w http.ResponseWriter, r *http.Request, show string, refused error, lines map[string]*macOSLine) {
 	p := leaser(r)
 	data := macsData{Show: show, Maintainer: p.isMaintainer()}
 	page := web.Page{Title: "Macs", Nav: "macs"}
@@ -108,6 +112,7 @@ func (s *Server) renderMacs(w http.ResponseWriter, r *http.Request, show string,
 			s.pageFailed(w, err)
 			return
 		}
+		mine.show(lines)
 		data.Mine = mine
 		page.Data = data
 		s.render(w, r, "macs", page)
