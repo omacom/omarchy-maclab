@@ -525,3 +525,17 @@ func TestABootLoaderSetNeedsASightingFromTheStart(t *testing.T) {
 		t.Errorf("a set at the Mac's own m1n1: %d %s", code, body)
 	}
 }
+
+// The runner of a Benchmark set writes metric ids and reason codes.
+func TestCompareReadsABenchmarkSetsEntries(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bench.json")
+	os.WriteFile(p, []byte(`[{"set":"bench-1","metric":"7zip","category":"CPU","version":"26.06","value":50450,"unit":"MIPS","higher_is_better":true,"spread":null,"seconds":60,"cool_down":null,"api":null,"capacity":null,"reason":null},
+{"set":"bench-1","metric":"clpeak-fp32","category":"GPU","version":"3.0.5","value":null,"unit":"GFLOPS","higher_is_better":true,"spread":null,"seconds":2,"cool_down":{"seconds":0,"temp_c":41.0},"api":"Rusticl","capacity":null,"reason":"fell_back"}]`), 0o644)
+	rs := readBench(p)
+	if len(rs) != 2 || rs[0].Name != "7zip" || rs[0].Value == nil || *rs[0].Value != 50450 || rs[0].Note != "" {
+		t.Fatalf("read %+v", rs)
+	}
+	if rs[1].Name != "clpeak-fp32" || rs[1].Value != nil || rs[1].Note != "fell_back" || rs[1].API != "Rusticl" {
+		t.Errorf("read %+v", rs[1])
+	}
+}
