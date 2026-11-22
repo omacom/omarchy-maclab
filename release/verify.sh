@@ -4,8 +4,9 @@
 # Checks each file against its .sig the way the install lines and Deploy do
 # (ssh-keygen -Y verify against the pinned release key), then opens the mini's
 # bundle: lab-agent's own signature, the key pinned inside lab-agent, the
-# macOS runner's own signatures, and the tag when one is named. DIR must
-# hold the Lab release and nothing else.
+# macOS runner's own signatures, and the tag when one is named; each
+# benchmark archive holds its program, built for its system. DIR must hold
+# the Lab release and nothing else.
 # ALLOWED_SIGNERS defaults to release/allowed_signers, the release key.
 set -euo pipefail
 
@@ -42,6 +43,17 @@ macho_arm64 "$t/lab-macos-runner/bin/lab-macos-runner" || fail "the macOS runner
 tar -xzf "$dir/$RELEASE_CONTROLLER" -C "$t"
 for f in bin/oobd install VERSION; do
   [[ -s $t/lab-controller/$f ]] || fail "$RELEASE_CONTROLLER has no $f"
+done
+for a in "${RELEASE_FILES[@]}"; do
+  [[ $a =~ ^bench-(.+)-(darwin|linux)-arm64\.tar\.gz$ ]] || continue
+  p="${BASH_REMATCH[1]}" sys="${BASH_REMATCH[2]}"
+  rm -rf "$t/bench" && mkdir "$t/bench"
+  tar -xzf "$dir/$a" -C "$t/bench"
+  b="$t/bench/bench-$p"
+  if [[ $sys == darwin ]]; then macho_arm64 "$b/bin/$p" || fail "$a holds no program for macOS on arm64"; fi
+  if [[ $sys == linux ]]; then elf_arm64 "$b/bin/$p" || fail "$a holds no program for Linux on arm64"; fi
+  [[ -x $b/bin/$p && -s $b/BUILD.json ]] || fail "$a has no executable bin/$p or no BUILD.json"
+  [[ -z $tag || "$(<"$b/VERSION")" == "$tag" ]] || fail "$a is $(<"$b/VERSION"), not $tag"
 done
 if [[ -n $tag ]]; then
   [[ "$(<"$t/lab-macos-runner/VERSION")" == "$tag" ]] || fail "the macOS runner is $(<"$t/lab-macos-runner/VERSION"), not $tag"

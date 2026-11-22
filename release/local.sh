@@ -3,9 +3,14 @@
 #
 # Does what .github/workflows/release.yml does (build every file, sign
 # lab-agent and then every file, verify as the install lines and Deploy do),
-# with one difference: the key is made here in a temporary folder and thrown
-# away. Nothing is tagged, nothing leaves this machine and the release key is
-# never read.
+# with two differences. The key is made here in a temporary folder and
+# thrown away: nothing is tagged, nothing leaves this machine and the release
+# key is never read. And the benchmark programs are built only where they
+# can be (release/bench.sh fetches their pinned sources): the macOS ones on
+# a Mac on Apple silicon with Xcode (mlx-bench also needs the Metal
+# toolchain; clpeak and mlx-bench, CMake), the Omarchy ones on arm64 Linux
+# with clang, CMake and libOpenCL. Each archive this machine cannot build is
+# left out, with its reason; LAB_RELEASE_WITHOUT names more to leave out.
 #
 #   dist/release/TAG/                  the Lab release: every file and its .sig
 #   dist/release/TAG.allowed_signers   the public half of the key that signed
@@ -27,6 +32,55 @@ tag="$1"
 
 t="$(mktemp -d)"
 trap 'rm -rf "$t"' EXIT
+
+# cannot SYSTEM PROGRAM: why this machine cannot build PROGRAM for SYSTEM;
+# nothing when it can.
+cannot() {
+  case "$1-$(uname -s)-$(uname -m)" in
+    darwin-Darwin-arm64)
+      xcodebuild -version >/dev/null 2>&1 || { echo "no Xcode here"; return; }
+      if [[ $2 == mlx-bench ]] && ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+        echo "no Metal toolchain here (Xcode 26: xcodebuild -downloadComponent MetalToolchain)"
+        return
+      fi ;;
+    linux-Linux-aarch64 | linux-Linux-arm64)
+      command -v "${CC:-clang}" >/dev/null || { echo "no ${CC:-clang} here"; return; }
+      if [[ $2 == clpeak ]] && ! ls /usr/lib/aarch64-linux-gnu/libOpenCL.so /usr/lib/libOpenCL.so /usr/lib64/libOpenCL.so >/dev/null 2>&1; then
+        echo "no libOpenCL.so here"
+        return
+      fi ;;
+    darwin-*) echo "it is built on macOS on Apple silicon"; return ;;
+    linux-*) echo "it is built on arm64 Linux"; return ;;
+  esac
+  if [[ $2 == clpeak || $2 == mlx-bench ]] && ! command -v cmake >/dev/null; then echo "no cmake here"; fi
+}
+
+without=()
+for f in ${LAB_RELEASE_WITHOUT:-}; do without+=("$f"); done
+built=0
+for system in darwin linux; do
+  if [[ $system == darwin ]]; then progs=("${RELEASE_BENCH_DARWIN[@]}"); else progs=("${RELEASE_BENCH_LINUX[@]}"); fi
+  here=()
+  for p in "${progs[@]}"; do
+    a="bench-$p-$system-arm64.tar.gz"
+    [[ " ${without[*]-} " != *" $a "* ]] || continue
+    why="$(cannot "$system" "$p")"
+    if [[ -n $why ]]; then
+      echo "release/local.sh: leaving out $a: $why" >&2
+      without+=("$a")
+    else
+      here+=("$p")
+    fi
+  done
+  if (( ${#here[@]} )); then
+    "$repo/release/bench.sh" "$system" "$t/bench/$system-arm64" "${here[@]}"
+    built=1
+  fi
+done
+export LAB_RELEASE_WITHOUT="${without[*]-}"
+release_without
+if (( built )); then export BENCH_PROGRAMS="$t/bench"; fi
+
 ssh-keygen -q -t ed25519 -N '' -C "throwaway key for a local $tag" -f "$t/key"
 printf '%s namespaces="%s" %s\n' "$RELEASE_SIGNER" "$RELEASE_NAMESPACE" "$(cut -d' ' -f1,2 "$t/key.pub")" > "$t/allowed_signers"
 
@@ -45,4 +99,5 @@ echo
 echo "A local $tag, signed with a throwaway key:"
 (cd "$out/$tag" && for f in "${RELEASE_FILES[@]}"; do printf '  %10s  %s\n' "$(wc -c < "$f" | tr -d ' ')" "$f"; done)
 echo "in $out/$tag, each with its .sig"
+[[ -z $LAB_RELEASE_WITHOUT ]] || echo "left out: $LAB_RELEASE_WITHOUT"
 echo "pin: $out/$tag.allowed_signers"
