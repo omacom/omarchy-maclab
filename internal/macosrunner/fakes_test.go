@@ -314,19 +314,24 @@ echo "7-Zip (z) 26.06 (arm64) : /Users/alice"
 echo "Tot:             977   4554  44515"
 `
 	fakeClpeak = `echo "clpeak $*" >> "$FAKE_TOOLS_LOG"
+[ "$*" = "--opencl --global-memory-bandwidth --single-precision-compute" ] || { echo "clpeak: unknown option '$1'"; exit 255; }
 cat <<EOF
-Platform: ${FAKE_CL_PLATFORM:-Apple}
-  Device: ${FAKE_CL_DEVICE:-Apple M2 Max}
-    Driver version  : 1.2 1.0 (Macintosh)
+Backend: OpenCL
+  Platform 0: ${FAKE_CL_PLATFORM:-Apple}
+    Device 0: ${FAKE_CL_DEVICE:-Apple M2 Max}
+      Driver version   : 1.2 1.0
+      Compute units    : 40
+      Clock frequency  : 1000 MHz
 
-    Global memory bandwidth (GBPS)
-      float   : 300.5
-      float2  : 350.25
-      float4  : 340
+      Single-precision compute
+        float    : 980.5 GFLOPS
+        float2   : 13.5 TFLOPS
+        float4   : 12.1 TFLOPS
 
-    Single-precision compute (GFLOPS)
-      float   : 12000
-      float2  : 13500.75
+      Global memory bandwidth
+        float    : 300 GB/s
+        float2   : 350 GB/s
+        float4   : 340 GB/s
 
 EOF
 `

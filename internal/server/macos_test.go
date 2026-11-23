@@ -29,7 +29,7 @@ func TestAMacOSRunIsRefusedWhenItsSetsFilesAreNotMirrored(t *testing.T) {
 			{ID: "not-built", Version: "1", Kind: "tarball", SHA256: sets.Placeholder},
 			{ID: "not-mirrored", Version: "1", Kind: "tarball", SHA256: strings.Repeat("ab", 32)},
 		}}}
-	if _, err := l.s.openMacOSSide(l.name, "e1", set, macosBuild{}); err == nil || !strings.Contains(err.Error(), "not-mirrored") || !strings.Contains(err.Error(), "lab bench mirror") {
+	if _, err := l.s.openMacOSSide(l.name, "e1", set, macosBuild{}, nil); err == nil || !strings.Contains(err.Error(), "not-mirrored") || !strings.Contains(err.Error(), "lab bench mirror") {
 		t.Fatalf("err %v", err)
 	}
 	if arts, err := l.s.macOSFiles(set, sets.Quick); err != nil || len(arts) != 1 || arts[0].SHA256 != sha {

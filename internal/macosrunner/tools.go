@@ -124,11 +124,15 @@ func sevenZip(s *session, ctx context.Context) map[string]outcome {
 // --- GPU: clpeak on Apple's OpenCL
 
 var (
-	reCLPlatform = regexp.MustCompile(`(?m)^\s*Platform: (.+)$`)
-	reCLDevice   = regexp.MustCompile(`(?m)^\s*Device: (.+)$`)
+	reCLPlatform = regexp.MustCompile(`(?m)^\s*Platform \d+: (.+)$`)
+	reCLDevice   = regexp.MustCompile(`(?m)^\s*Device \d+: (.+)$`)
 	reCLSoftware = regexp.MustCompile(`(?i)\bcpu\b|llvmpipe|pocl|swiftshader|software`)
-	reCLValue    = regexp.MustCompile(`^\s+\w+\s*:\s*([0-9.]+)`)
+	reCLValue    = regexp.MustCompile(`^\s+\w+\s*:\s*([0-9.]+) ([MGT])(?:FLOPS|B/s)\s*$`)
+	reCLNone     = regexp.MustCompile(`(?i)no platforms|CL_PLATFORM_NOT_FOUND|clGetPlatformIDs \(-1001\)`)
 )
+
+// clScale is the unit clpeak gives a value, in GFLOPS or GB/s.
+var clScale = map[string]float64{"M": 1e-3, "G": 1, "T": 1e3}
 
 // clpeakSection is the best value of a clpeak section, such as "Global
 // memory bandwidth" or "Single-precision compute".
@@ -143,7 +147,7 @@ func clpeakSection(out, head string) (float64, bool) {
 		if m == nil {
 			break
 		}
-		best, found = math.Max(best, num(m[1])), true
+		best, found = math.Max(best, num(m[1])*clScale[m[2]]), true
 	}
 	return best, found
 }
@@ -156,11 +160,13 @@ func clpeak(s *session, ctx context.Context) map[string]outcome {
 	if err != nil {
 		return all(ids, because(Error))
 	}
-	out, _, err := s.tool(ctx, 15*time.Minute, exe, "--global-bandwidth", "--compute-sp")
+	out, _, err := s.tool(ctx, 15*time.Minute, exe, "--opencl", "--global-memory-bandwidth", "--single-precision-compute")
 	p, d := reCLPlatform.FindStringSubmatch(out), reCLDevice.FindStringSubmatch(out)
 	switch {
-	case p == nil:
+	case reCLNone.MatchString(out):
 		return all(ids, because(NoDriver))
+	case p == nil:
+		return all(ids, because(Error))
 	case !strings.Contains(p[1], "Apple") || d == nil || reCLSoftware.MatchString(d[1]):
 		return all(ids, because(FellBack))
 	case err != nil:

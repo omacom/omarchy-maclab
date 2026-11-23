@@ -5,8 +5,9 @@ package server
 // or in parts, and ends it with succeeded or failed. Each attempt is kept
 // with every result it uploaded. The current value per Mac, set, metric and
 // Release (or macOS build) is the newest succeeded attempt's; a failed
-// attempt only fills a metric that has none, so a failed rerun keeps the old
-// values.
+// attempt only fills a metric that has no value, so a failed rerun keeps the
+// old values. Values and attempts are an enrollment's: a Mac enrolled under
+// a name used before has none.
 
 import (
 	"database/sql"
@@ -248,13 +249,15 @@ func endPerfRunTx(tx *sql.Tx, r perf.Run, state string, now time.Time) error {
 	case perf.Succeeded:
 		conflict = `DO UPDATE SET result=excluded.result`
 	case perf.Failed:
-		conflict = `DO NOTHING`
+		conflict = `DO UPDATE SET result=excluded.result
+WHERE (SELECT value FROM perf_results WHERE id=perf_current.result) IS NULL
+AND (SELECT value FROM perf_results WHERE id=excluded.result) IS NOT NULL`
 	default:
 		return nil
 	}
-	_, err := tx.Exec(`INSERT INTO perf_current(mac, set_name, side, target, metric, result)
-SELECT ?, ?, ?, ?, metric, id FROM perf_results WHERE run=? ORDER BY id
-ON CONFLICT(mac, set_name, side, target, metric) `+conflict, r.Mac, r.Set, r.Side, r.Target(), r.ID)
+	_, err := tx.Exec(`INSERT INTO perf_current(mac, enrollment, set_name, side, target, metric, result)
+SELECT ?, ?, ?, ?, ?, metric, id FROM perf_results WHERE run=? ORDER BY id
+ON CONFLICT(mac, enrollment, set_name, side, target, metric) `+conflict, r.Mac, r.Enrollment, r.Set, r.Side, r.Target(), r.ID)
 	return err
 }
 
@@ -293,22 +296,22 @@ func scanPerfResults(rows *sql.Rows, err error) ([]perf.Result, error) {
 	return out, rows.Err()
 }
 
-func (st *store) perfCurrentOf(mac, set, side, target string) ([]perf.Result, error) {
+func (st *store) perfCurrentOf(mac, enrollment, set, side, target string) ([]perf.Result, error) {
 	return scanPerfResults(st.db.Query(`SELECT `+perfResultCols+` FROM perf_current c
 JOIN perf_results p ON p.id = c.result JOIN perf_runs r ON r.id = p.run
-WHERE c.mac=? AND c.set_name=? AND c.side=? AND c.target=? ORDER BY c.metric`, mac, set, side, target))
+WHERE c.mac=? AND c.enrollment=? AND c.set_name=? AND c.side=? AND c.target=? ORDER BY c.metric`, mac, enrollment, set, side, target))
 }
 
-// perfCurrent is the Mac's current Omarchy values of the set for the
+// perfCurrent is the enrollment's current Omarchy values of the set for the
 // Release, one per metric.
-func (st *store) perfCurrent(mac, set, release string) ([]perf.Result, error) {
-	return st.perfCurrentOf(mac, set, perf.SideOmarchy, release)
+func (st *store) perfCurrent(mac, enrollment, set, release string) ([]perf.Result, error) {
+	return st.perfCurrentOf(mac, enrollment, set, perf.SideOmarchy, release)
 }
 
-// perfCurrentMacOS is the Mac's macOS result of the set at the macOS build,
-// one value per metric.
-func (st *store) perfCurrentMacOS(mac, set, build string) ([]perf.Result, error) {
-	return st.perfCurrentOf(mac, set, perf.SideMacOS, build)
+// perfCurrentMacOS is the enrollment's macOS result of the set at the macOS
+// build, one value per metric.
+func (st *store) perfCurrentMacOS(mac, enrollment, set, build string) ([]perf.Result, error) {
+	return st.perfCurrentOf(mac, enrollment, set, perf.SideMacOS, build)
 }
 
 // perfAttempts is every attempt of the Mac's runs of the set on side at
@@ -368,7 +371,8 @@ func (s *Server) hAgentPerfResults(w http.ResponseWriter, r *http.Request) {
 // hMacOSPerfResults takes the macOS runner's results of this Mac's macOS run.
 func (s *Server) hMacOSPerfResults(w http.ResponseWriter, r *http.Request) {
 	mac := r.Context().Value(macosRunnerKey{}).(string)
-	s.takePerfUpload(w, r, perf.SideMacOS, func(run perf.Run) bool { return run.Mac == mac })
+	enrollment, _ := s.enrollmentOf(mac)
+	s.takePerfUpload(w, r, perf.SideMacOS, func(run perf.Run) bool { return run.Mac == mac && run.Enrollment == enrollment })
 	if id, err := strconv.ParseInt(r.PathValue("run"), 10, 64); err == nil {
 		if run, err := s.store.perfRun(id); err == nil && run.Mac == mac && perf.Ended(run.State) {
 			s.macOSPerfEnded(mac, id, run.State)

@@ -5,7 +5,9 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -74,24 +76,29 @@ CLPEAK_1 = """Platform: rusticl
 """
 
 CLPEAK_3 = """Backend: OpenCL
-  Device 0: Apple M2 Max (G14C B1)
-    Driver version   : 26.2.99
+  Platform 0: rusticl
+    Device 0: Apple M2 Max (G14C B1)
+      Driver version   : 26.2.99
+      Compute units    : 38
+      Clock frequency  : 1000 MHz
 
-    Global memory bandwidth
-      float    : 312.4 GB/s
-      float16  : 330.1 GB/s
+      Single-precision compute
+        float    : 9.45 TFLOPS
+        float2   : 10.2 TFLOPS
+        float4   : 980.5 GFLOPS
 
-    Single-precision compute
-      float    : 9.45 TFLOPS
-      float2   : 10.2 TFLOPS
-      float4   : 980.5 GFLOPS
+      Global memory bandwidth
+        float    : 312.4 GB/s
+        float16  : 330.1 GB/s
 
 """
 
 CLPEAK_LLVMPIPE = """Backend: OpenCL
-  Device 0: llvmpipe (LLVM 19.1.7, 128 bits)
-    Single-precision compute
-      float    : 90.1 GFLOPS
+  Platform 0: rusticl
+    Device 0: llvmpipe (LLVM 19.1.7, 128 bits)
+
+      Single-precision compute
+        float    : 90.1 GFLOPS
 """
 
 STREAM = """-------------------------------------------------------------
@@ -370,7 +377,7 @@ class GPU(Case):
         self.assertEqual((bw["value"], bw["unit"], bw["api"]), (330.1, "GB/s", "Rusticl"))
         self.assertEqual((fp["value"], fp["unit"]), (10200.0, "GFLOPS"))
         (a, env, gui), (b, _, _) = [r for r in self.h.ran if r[0][0].endswith("clpeak")]
-        self.assertEqual(a[1:], ["--opencl", "--global-bandwidth"])
+        self.assertEqual(a[1:], ["--opencl", "--global-memory-bandwidth"])
         self.assertEqual(b[1:], ["--opencl", "--single-precision-compute"])
         self.assertEqual(env["RUSTICL_ENABLE"], "asahi")
         self.assertIn("clpeak/lib", env["LD_LIBRARY_PATH"])
@@ -556,8 +563,32 @@ class AI(Case):
         self.h.tools["python3"] = lambda c: '{"status": "ok", "tflops": 3.21}\n'
         e = self.run1("mlx-matmul-fp16")
         self.assertEqual((e["value"], e["unit"], e["reason"]), (3.21, "TFLOPS", None))
+        self.assertEqual(self.h.argv("python3")[-1][-3:], ["4096", "5", "50"])
         self.h.tools["python3"] = lambda c: '{"status": "fell_back", "tflops": 0.1}\n'
         self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], "fell_back")
+
+    def test_mlx_synchronises_after_every_product_as_mlx_bench_does(self):
+        stub = pathlib.Path(tempfile.mkdtemp()) / "mlx"
+        self.addCleanup(shutil.rmtree, stub.parent)
+        stub.mkdir()
+        (stub / "__init__.py").write_text("")
+        (stub / "core.py").write_text("""import sys
+gpu, float16 = "gpu", "float16"
+class A:
+    def astype(self, t): return self
+    def __matmul__(self, o): return "product"
+class random:
+    normal = staticmethod(lambda shape: A())
+def is_available(d): return True
+def set_default_device(d): pass
+def default_device(): return "Device(gpu, 0)"
+def eval(*a): sys.stderr.write("E" if a == ("product",) else "e")
+def synchronize(): sys.stderr.write("S")
+""")
+        r = subprocess.run([sys.executable, "-c", bench.MLX_PROBE, "64", "2", "3"], env={**os.environ, "PYTHONPATH": str(stub.parent)},
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(r.stderr, "eS" + "ES" * 5)
+        self.assertEqual(json.loads(r.stdout)["status"], "ok")
 
 
 class Power(Case):

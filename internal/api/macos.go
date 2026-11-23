@@ -62,6 +62,8 @@ type MacOSRun struct {
 	Mac  string `json:"mac"`
 	Tier string `json:"tier"`
 	Set  string `json:"set,omitempty"` // the Benchmark set whose list it runs
+	// Metrics is the metric ids it runs, the set's order; none is its list.
+	Metrics []string `json:"metrics,omitempty"`
 	// PerfRun is the Performance run (perf_runs) the results go to, POST
 	// /api/macos/runner/performance/{PerfRun}/results; 0 is none yet.
 	PerfRun int64 `json:"perf_run,omitempty"`

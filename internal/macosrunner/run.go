@@ -19,7 +19,8 @@ import (
 )
 
 // Run runs the run's list of its Benchmark set: the Quick list for the
-// default tier, the Full list for extended. A benchmark that cannot run
+// default tier, the Full list for extended; only the run's metrics of it
+// when it names any. A benchmark that cannot run
 // says why with a reason code, and the run goes on; the error returned is
 // one that stopped the whole run. The upload is kept beside the private log
 // as bench.json and bench-conditions.json.
@@ -36,7 +37,7 @@ func (r *Runner) Run(ctx context.Context, run *api.MacOSRun) (Upload, error) {
 	up.set = set.Name
 	var metrics []sets.Metric
 	for _, m := range set.List(up.list) {
-		if m.MacOS != nil {
+		if m.MacOS != nil && (len(run.Metrics) == 0 || slices.Contains(run.Metrics, m.ID)) {
 			metrics = append(metrics, m)
 		}
 	}

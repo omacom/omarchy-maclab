@@ -237,7 +237,7 @@ func TestTheFullListMeasuresEveryMacOSMetric(t *testing.T) {
 	}
 	want := map[string]float64{
 		"coremark-single": 10000.5, "coremark-all": 120000.5, "7zip": 44515, "motionmark": 950.25,
-		"clpeak-global-bandwidth": 350.25, "clpeak-fp32": 13500.75,
+		"clpeak-global-bandwidth": 350, "clpeak-fp32": 13500,
 		"fio-seq-read": 3000, "fio-seq-write": 2000, "fio-rand-read-4k": 500, "fio-rand-write-4k": 300,
 		"stream-triad": 121, "stream-copy": 110.001, "speedometer": 400.5, "jetstream": 260.75,
 		"decode-h264-1080p": 300, "neural-engine-mobilenet-v1": 2500.5,
@@ -265,7 +265,7 @@ func TestTheFullListMeasuresEveryMacOSMetric(t *testing.T) {
 	}
 	ran := b.ran()
 	for _, w := range []string{
-		"coremark M12 0x0 0x0 0x66 0 7 1 2000\n", "coremark M12 0x0 0x0 0x66 333334 7 1 2000\n", "7zz b", "clpeak --global-bandwidth --compute-sp",
+		"coremark M12 0x0 0x0 0x66 0 7 1 2000\n", "coremark M12 0x0 0x0 0x66 333334 7 1 2000\n", "7zz b", "clpeak --opencl --global-memory-bandwidth --single-precision-compute",
 		"--size=8g --rw=write --bs=1m --direct=1 --ioengine=psync --iodepth=1 --refill_buffers --end_fsync=1",
 		"--direct=1 --ioengine=psync --output-format=json --rw=randread --bs=4k --numjobs=32 --iodepth=1 --size=256m --offset_increment=256m --time_based --runtime=30 --group_reporting",
 		"-p 512 -n 128 -ngl 999", "-p 0 -n 128 -ngl 0", "-re -hwaccel videotoolbox",
@@ -276,6 +276,25 @@ func TestTheFullListMeasuresEveryMacOSMetric(t *testing.T) {
 	}
 	if n := strings.Count(ran, "--name=fill"); n != 1 {
 		t.Errorf("Storage's file was filled %d times", n)
+	}
+}
+
+func TestARunThatNamesMetricsMeasuresThemAlone(t *testing.T) {
+	b := newBench(t)
+	h := newFakeHost()
+	run := startedRun(h, "mos-3", api.TierExtended)
+	run.Metrics = []string{"clpeak-fp32", "7zip"}
+	lab := newFakeLab(t, run, b.files)
+	r, _ := newRunner(t, lab, h, b)
+	if err := r.Boot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	m := byMetric(lab.got.Entries)
+	if len(lab.got.Entries) != 2 || val(m["clpeak-fp32"]) != 13500 || val(m["7zip"]) != 44515 {
+		t.Errorf("uploaded %+v", lab.got.Entries)
+	}
+	if ran := b.ran(); strings.Contains(ran, "coremark") || strings.Contains(ran, "--rw=") {
+		t.Errorf("ran more than was asked:\n%s", ran)
 	}
 }
 

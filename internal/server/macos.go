@@ -677,7 +677,7 @@ func (s *Server) hMacOSStarted(w http.ResponseWriter, r *http.Request) {
 // run started to macosStartWindow after, as the runner has it too.
 const (
 	macosClockSkew   = 2 * time.Minute
-	macosStartWindow = 15 * time.Minute
+	macosStartWindow = 5 * time.Minute
 )
 
 var reBootSession = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -687,7 +687,7 @@ var reBootSession = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // and ?booted=, when it began, in Unix seconds). A started run is handed
 // only to a boot that began after labd started it, and is bound to the
 // first such boot: no other boot gets it, and a person's own boot gets
-// nothing.
+// nothing. A Mac that comes back to Omarchy first ends it (macOSNotTaken).
 func (s *Server) hMacOSPoll(w http.ResponseWriter, r *http.Request) {
 	mac := r.Context().Value(macosRunnerKey{}).(string)
 	if id, ok := s.enrollmentOf(mac); ok {

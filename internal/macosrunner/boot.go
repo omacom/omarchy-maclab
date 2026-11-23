@@ -26,11 +26,12 @@ import (
 //
 // Any other boot is a person's own: the runner tells labd the macOS build,
 // as every boot does, and leaves the session alone. A one-shot that never
-// reached macOS leaves a started run behind; the next macOS boot a person
-// makes is later than the window, or is a boot the run was not taken by.
+// reached macOS leaves a started run behind; labd cancels it when the Mac
+// comes back to Omarchy, and the next macOS boot a person makes is later
+// than the window, or is a boot the run was not taken by.
 const (
 	clockSkew   = 2 * time.Minute
-	startWindow = 15 * time.Minute
+	startWindow = 5 * time.Minute
 )
 
 // BootFacts is what every boot tells labd: the macOS build, and which boot

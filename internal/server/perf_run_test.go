@@ -197,7 +197,7 @@ func TestAFrozenReleaseIsMeasuredAsACandidateBoot(t *testing.T) {
 	if err != nil || len(att) != 1 || att[0].Run.Booted["libane"] != "0.2.0-1" || !slices.Equal(att[0].Run.Metrics, ps.Metrics) {
 		t.Fatalf("attempts %+v (%v)", att, err)
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 	if len(cur) != len(ps.Metrics) {
 		t.Errorf("%d current values, want %d", len(cur), len(ps.Metrics))
 	}
@@ -258,7 +258,7 @@ func TestLabAgentRunsAPerformanceRunsMetricsAndLabdTakesTheUpload(t *testing.T) 
 			t.Errorf("%s: %+v, want %v", r.Metric, r, value(r.Metric))
 		}
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 	if len(cur) != len(quick) {
 		t.Errorf("%d current values, want %d", len(cur), len(quick))
 	}
@@ -320,7 +320,7 @@ func TestAFailedBenchmarkRunsOnceMoreAlone(t *testing.T) {
 	if runs := a.runs(); len(runs) != 3 || !slices.Equal(runs[1], []string{"fio-seq-read"}) || !slices.Equal(runs[2], []string{"stream-triad"}) {
 		t.Fatalf("runs %v", runs)
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 	for _, c := range cur {
 		switch c.Metric {
 		case "fio-seq-read":
@@ -342,7 +342,7 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 	l.perfRelease("7.3", l.s.now(), []string{l.name})
 	l.expect(l.nthPerfJob(1), api.OutcomePass)
 	l.noMorePerf(1)
-	before, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	before, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 
 	m := l.member("grace")
 	if r, body := l.as(m.Token, "POST", "/api/perf/rerun", api.PerfRerunRequest{Mac: l.name, Release: "7.3"}); r.StatusCode != 403 {
@@ -366,7 +366,7 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 	if !j.UnderLease || !j.Spec.Performance.Rerun || !j.Spec.Performance.LeaseTaken {
 		t.Errorf("the rerun: under a Lease %v, %+v", j.UnderLease, j.Spec.Performance)
 	}
-	after, _ := l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	after, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 	for i := range after {
 		if after[i].Run != before[i].Run || *after[i].Value != 100 {
 			t.Errorf("%s: %+v, was %+v", after[i].Metric, after[i], before[i])
@@ -386,7 +386,7 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 		t.Fatalf("rerun: %s %s", r.Status, body)
 	}
 	l.expect(l.wait(decodeInto[api.Job](t, body).ID, 90*time.Second), api.OutcomePass)
-	after, _ = l.s.store.perfCurrent(l.name, "bench-1", "7.3")
+	after, _ = l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
 	for _, c := range after {
 		if *c.Value != 60 || c.Attempt != 3 {
 			t.Errorf("a rerun that succeeds replaces the values: %+v", c)

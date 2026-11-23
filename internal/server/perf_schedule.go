@@ -136,7 +136,7 @@ func (s *Server) perfWanted(v *dev, bench *sets.Set, rels []*perfRelease) *api.J
 		if releaseSupports(pr.rel, d) != nil {
 			continue
 		}
-		metrics, err := s.perfMissing(d.Name, bench, pr.rel.Name, pr.list)
+		metrics, err := s.perfMissing(d, bench, pr.rel.Name, pr.list)
 		if err != nil || len(metrics) == 0 {
 			continue
 		}
@@ -168,8 +168,8 @@ func (s *Server) perfNote(what string, err error) {
 // the set's order: every metric with no result yet; with none left, the
 // first that failed or was skipped for a passing reason, alone, since a run
 // with an error replaces no value. Neither once two attempts asked for it.
-func (s *Server) perfMissing(mac string, bench *sets.Set, release, list string) ([]string, error) {
-	cur, tries, err := s.store.perfTries(mac, bench.Name, release)
+func (s *Server) perfMissing(d api.Device, bench *sets.Set, release, list string) ([]string, error) {
+	cur, tries, err := s.store.perfTries(d.Name, d.ID, bench.Name, release)
 	if err != nil {
 		return nil, err
 	}

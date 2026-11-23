@@ -351,10 +351,13 @@ func (s *Server) firstBaselineEnded(v *dev, job, outcome string) {
 // heartbeat records a check-in. Commands are handed out separately by deliver.
 func (v *dev) heartbeat(ci api.Checkin) {
 	defer v.s.decideTerms(v) // after the unlock below
-	published := false
+	name, published, rebooted := "", false, false
 	defer func() {
 		if published {
 			v.s.publishPerf()
+		}
+		if rebooted {
+			v.s.macOSNotTaken(name)
 		}
 	}()
 	// When the check-in came, not when it got the lock: one from the old
@@ -366,7 +369,7 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	if v.heard.After(now) {
 		now = v.heard
 	}
-	rebooted := v.d.BootID != "" && ci.BootID != v.d.BootID
+	name, rebooted = v.d.Name, v.d.BootID != "" && ci.BootID != v.d.BootID
 	if v.d.BootID == "" {
 		if err := v.s.store.spendTokens(v.d.Name); err != nil {
 			v.s.log.Printf("spend enrollment tokens for %s: %v", v.d.Name, err)

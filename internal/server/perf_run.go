@@ -393,13 +393,13 @@ func (st *store) perfResultsOf(run int64) ([]perf.Result, error) {
 JOIN perf_runs r ON r.id = p.run WHERE p.run=? ORDER BY p.id`, run))
 }
 
-// perfTries is, for the Mac's Omarchy runs of the set on the Release, each
+// perfTries is, for the enrollment's Omarchy runs of the set on the Release, each
 // metric's current reason ("" for a value), and how many attempts that
 // ended asked for it.
-func (st *store) perfTries(mac, set, release string) (map[string]string, map[string]int, error) {
+func (st *store) perfTries(mac, enrollment, set, release string) (map[string]string, map[string]int, error) {
 	cur := map[string]string{}
 	rows, err := st.db.Query(`SELECT p.metric, coalesce(p.reason, '') FROM perf_current c JOIN perf_results p ON p.id = c.result
-WHERE c.mac=? AND c.set_name=? AND c.side=? AND c.target=?`, mac, set, perf.SideOmarchy, release)
+WHERE c.mac=? AND c.enrollment=? AND c.set_name=? AND c.side=? AND c.target=?`, mac, enrollment, set, perf.SideOmarchy, release)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -416,8 +416,8 @@ WHERE c.mac=? AND c.set_name=? AND c.side=? AND c.target=?`, mac, set, perf.Side
 		return nil, nil, err
 	}
 	tries := map[string]int{}
-	rows, err = st.db.Query(`SELECT metrics FROM perf_runs WHERE mac=? AND set_name=? AND side=? AND release_version=? AND state IN (?, ?)`,
-		mac, set, perf.SideOmarchy, release, perf.Succeeded, perf.Failed)
+	rows, err = st.db.Query(`SELECT metrics FROM perf_runs WHERE mac=? AND enrollment=? AND set_name=? AND side=? AND release_version=? AND state IN (?, ?)`,
+		mac, enrollment, set, perf.SideOmarchy, release, perf.Succeeded, perf.Failed)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1161,29 +1161,32 @@ except Exception:
 if not ok:
     print(json.dumps({"status": "no_build"})); sys.exit(0)
 mx.set_default_device(mx.gpu)
-n, reps = int(sys.argv[1]), int(sys.argv[2])
+n, warmup, reps = (int(a) for a in sys.argv[1:4])
 a = mx.random.normal((n, n)).astype(mx.float16)
 b = mx.random.normal((n, n)).astype(mx.float16)
 mx.eval(a, b)
-for _ in range(3):
-    mx.eval(a @ b)
 mx.synchronize()
+def step():
+    mx.eval(a @ b)
+    mx.synchronize()
+for _ in range(warmup):
+    step()
 t = time.perf_counter()
 for _ in range(reps):
-    mx.eval(a @ b)
-mx.synchronize()
+    step()
 dt = time.perf_counter() - t
 gpu = "gpu" in str(mx.default_device()).lower()
 print(json.dumps({"status": "ok" if gpu else "fell_back", "tflops": 2 * n ** 3 * reps / dt / 1e12}))
 """
-MLX_SIZE, MLX_REPS = 4096, 50
+# As tools/bench-macos/mlx-bench times it, so both systems time the same work.
+MLX_SIZE, MLX_WARMUP, MLX_REPS = 4096, 5, 50
 
 
 def mlx(ctx, m):
     py = ctx.host.which("python3")
     if not py:
         raise Reason("no_build", "no python3")
-    r = _ok(ctx.run("mlx", [py, "-c", MLX_PROBE, str(MLX_SIZE), str(MLX_REPS)], timeout=900), "mlx")
+    r = _ok(ctx.run("mlx", [py, "-c", MLX_PROBE, str(MLX_SIZE), str(MLX_WARMUP), str(MLX_REPS)], timeout=900), "mlx")
     got = parse_mlx(r.out)
     if got.get("status") in ("no_build", "fell_back"):
         raise Reason(got["status"])
@@ -1298,7 +1301,7 @@ METRICS = {
     "coremark-all": coremark(None),
     "7zip": seven_zip,
     "motionmark": browser("motionmark"),
-    "clpeak-global-bandwidth": clpeak("--global-bandwidth", parse_clpeak_bandwidth),
+    "clpeak-global-bandwidth": clpeak("--global-memory-bandwidth", parse_clpeak_bandwidth),
     "clpeak-fp32": clpeak("--single-precision-compute", parse_clpeak_fp32),
     "fio-seq-read": fio,
     "fio-seq-write": fio,

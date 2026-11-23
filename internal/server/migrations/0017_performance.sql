@@ -43,15 +43,17 @@ CREATE TABLE perf_results (
   UNIQUE (run, metric)
 ) STRICT;
 
--- The one current result per Mac, set, side, Release or macOS build
--- (target) and metric. An attempt that succeeds replaces it; one that fails
--- only fills a metric that has none.
+-- The one current result per Mac, enrollment, set, side, Release or macOS
+-- build (target) and metric: a Mac enrolled under a name used before starts
+-- with none. An attempt that succeeds replaces it; one that fails only fills
+-- a metric that has no result, or puts a value where there is none.
 CREATE TABLE perf_current (
   mac TEXT NOT NULL,
+  enrollment TEXT NOT NULL,
   set_name TEXT NOT NULL,
   side TEXT NOT NULL,
   target TEXT NOT NULL,
   metric TEXT NOT NULL,
   result INTEGER NOT NULL REFERENCES perf_results(id),
-  PRIMARY KEY (mac, set_name, side, target, metric)
+  PRIMARY KEY (mac, enrollment, set_name, side, target, metric)
 ) STRICT;

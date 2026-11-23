@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,19 +39,19 @@ func init() {
 // macosScheduled labels the macOS runs labd queues itself.
 const macosScheduled = "maclab-macos"
 
-// macOSTriesMax is how many attempts at one set and build may fail or be
-// left needs_hands before labd queues no more of them.
+// macOSTriesMax is how many attempts at one set and build labd queues: the
+// first, and one more for what failed or was skipped for a passing reason.
 const macOSTriesMax = 2
 
 var errNoMacOSWait = errors.New("no macOS run of this Mac waits for a person")
 
 // queueMacOSSide queues the Mac's macOS run when it has no macOS result for
-// the current set at the build its runner last reported, and none is
-// queued: its attempt is opened (perf_runs, side macos) and the run carries
-// it. It answers nil, nil when nothing is missing or the run cannot be
-// queued yet: no runner enrolled, no build reported, an attempt waiting,
-// two attempts that failed, or a run dropped for nobody at the Mac, until
-// the Mac's next Omarchy side has ended.
+// the current set at the build its runner last reported, or one with a
+// benchmark to run once more, and none is queued: its attempt is opened
+// (perf_runs, side macos) and the run carries it. It answers nil, nil when
+// nothing is missing or the run cannot be queued yet: no runner enrolled, no
+// build reported, an attempt waiting, two attempts made, or a run dropped
+// for nobody at the Mac, until the Mac's next Omarchy side has ended.
 func (s *Server) queueMacOSSide(mac string) (*api.MacOSRun, error) {
 	set, err := currentMacOSSet()
 	if err != nil {
@@ -71,8 +72,18 @@ func (s *Server) queueMacOSSideOf(mac string, set *sets.Set) (*api.MacOSRun, err
 	if !ok {
 		return nil, nil
 	}
-	if kept, err := s.store.perfCurrentMacOS(mac, set.Name, b.Build); err != nil || len(kept) > 0 {
+	kept, err := s.store.perfCurrentMacOS(mac, enrollment, set.Name, b.Build)
+	if err != nil {
 		return nil, err
+	}
+	var again []string
+	for _, p := range kept {
+		if p.Reason != nil && perf.RunAgain(*p.Reason) {
+			again = append(again, p.Metric)
+		}
+	}
+	if len(kept) > 0 && len(again) == 0 {
+		return nil, nil
 	}
 	if last := s.macOS().run(mac); last != nil {
 		if !api.MacOSEnded(last.State) {
@@ -88,23 +99,24 @@ func (s *Server) queueMacOSSideOf(mac string, set *sets.Set) (*api.MacOSRun, err
 			}
 		}
 	}
-	if n, err := s.store.macOSTries(mac, set.Name, b.Build); err != nil || n >= macOSTriesMax {
+	if n, err := s.store.macOSTries(mac, enrollment, set.Name, b.Build); err != nil || n >= macOSTriesMax {
 		return nil, err
 	}
-	return s.openMacOSSide(mac, enrollment, set, b)
+	return s.openMacOSSide(mac, enrollment, set, b, again)
 }
 
 // openMacOSSide opens an attempt at the Mac's macOS result of the set at
-// build b, and queues its run. nil, nil when a run of the Mac waits already, or an attempt of
+// build b, of those metrics alone (none is the whole Full list), and queues
+// its run. nil, nil when a run of the Mac waits already, or an attempt of
 // the set and build is running.
-func (s *Server) openMacOSSide(mac, enrollment string, set *sets.Set, b macosBuild) (*api.MacOSRun, error) {
+func (s *Server) openMacOSSide(mac, enrollment string, set *sets.Set, b macosBuild, metrics []string) (*api.MacOSRun, error) {
 	arts, err := s.macOSFiles(set, sets.Full)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now()
 	pr, err := s.store.openPerfRun(perf.Run{Mac: mac, Enrollment: enrollment, Set: set.Name, Side: perf.SideMacOS,
-		MacOSVersion: b.Version, MacOSBuild: b.Build, List: sets.Full}, now)
+		MacOSVersion: b.Version, MacOSBuild: b.Build, List: sets.Full, Metrics: metrics}, now)
 	if errors.Is(err, errPerfRunning) {
 		return nil, nil
 	}
@@ -112,7 +124,7 @@ func (s *Server) openMacOSSide(mac, enrollment string, set *sets.Set, b macosBui
 		return nil, err
 	}
 	run, err := s.macOS().queueRun(&api.MacOSRun{Mac: mac, Tier: api.TierExtended, Set: set.Name, PerfRun: pr.ID,
-		Version: b.Version, Build: b.Build, Artifacts: arts}, now)
+		Version: b.Version, Build: b.Build, Metrics: metrics, Artifacts: arts}, now)
 	if err != nil {
 		s.store.endPerfRun(pr.ID, perf.Cancelled, now)
 		if errors.Is(err, errRunWaiting) {
@@ -432,6 +444,10 @@ func (r *jobRun) bootMacOSFor(ctx context.Context, run *api.MacOSRun) (m *api.Ma
 			r.ev("macOS: %s", why)
 			return m, api.OutcomeLostContact, why
 		case api.MacOSCancelled, api.MacOSDropped:
+			if m.Error != "" {
+				r.ev("macOS: run %s is %s: %s", m.ID, m.State, m.Error)
+				return m, api.OutcomeInfra, "macOS run " + m.ID + ": " + m.Error
+			}
 			return m, api.OutcomeCanceled, "macOS run " + m.ID + " " + m.State
 		default:
 			select {
@@ -452,6 +468,26 @@ func (r *jobRun) bootMacOSFor(ctx context.Context, run *api.MacOSRun) (m *api.Ma
 	}
 	r.ev("macOS: back on %s", v.snapshot().Kernel)
 	return m, "", ""
+}
+
+// macOSNotTaken is the Mac back in Omarchy on a new boot: a started run that
+// no macOS boot took never will be, so it is cancelled, and a person's own
+// macOS boot that follows is handed nothing.
+func (s *Server) macOSNotTaken(mac string) {
+	now := s.now()
+	run, err := s.macOS().change(mac, func(m *api.MacOSRun) error {
+		if m.State != api.MacOSStarted || m.Boot != "" {
+			return errNoRun
+		}
+		m.State, m.Done, m.Error = api.MacOSCancelled, &now, "the Mac came back to Omarchy and no macOS boot took the run"
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	s.macOS().stopTimer(mac)
+	s.endMacOSPerfRun(run, perf.Cancelled)
+	s.log.Printf("%s: macOS run %s cancelled: %s", mac, run.ID, run.Error)
 }
 
 // cancelMacOSStart cancels the run whose start failed, while it is still
@@ -485,8 +521,8 @@ func (s *Server) keptMacOS(mac, setName string) ([]api.BenchResult, macosBuild) 
 	if !ok {
 		return nil, b
 	}
-	kept, err := s.store.perfCurrentMacOS(mac, setName, b.Build)
-	if err != nil || len(kept) == 0 {
+	kept, err := s.store.perfCurrentMacOS(mac, enrollment, setName, b.Build)
+	if err != nil || !slices.ContainsFunc(kept, func(p perf.Result) bool { return p.Value != nil }) {
 		return nil, b
 	}
 	return benchOf(setName, kept), b
@@ -540,7 +576,7 @@ func (s *Server) compareMacOSRun(mac, setName string) (*api.MacOSRun, error) {
 	if !ok {
 		return nil, fmt.Errorf("%s's macOS runner has not reported its macOS build, as it does at enrollment and at every macOS boot", mac)
 	}
-	run, err := s.openMacOSSide(mac, enrollment, set, b)
+	run, err := s.openMacOSSide(mac, enrollment, set, b, nil)
 	if err == nil && run == nil {
 		err = errors.New("another macOS run of this Mac is queued or running")
 	}
@@ -572,11 +608,11 @@ func (st *store) omarchySidesEnded(mac string, t time.Time) (int, error) {
 	return n, err
 }
 
-// macOSTries is how many of the Mac's macOS attempts at the set and build
-// failed or were left needs_hands.
-func (st *store) macOSTries(mac, set, build string) (int, error) {
+// macOSTries is how many of the enrollment's macOS attempts at the set and
+// build ended, or were left needs_hands; a cancelled one is none.
+func (st *store) macOSTries(mac, enrollment, set, build string) (int, error) {
 	var n int
-	err := st.db.QueryRow(`SELECT count(*) FROM perf_runs WHERE mac=? AND set_name=? AND side=? AND macos_build=? AND state IN (?, ?)`,
-		mac, set, perf.SideMacOS, build, perf.Failed, perf.NeedsHands).Scan(&n)
+	err := st.db.QueryRow(`SELECT count(*) FROM perf_runs WHERE mac=? AND enrollment=? AND set_name=? AND side=? AND macos_build=? AND state IN (?, ?, ?)`,
+		mac, enrollment, set, perf.SideMacOS, build, perf.Succeeded, perf.Failed, perf.NeedsHands).Scan(&n)
 	return n, err
 }

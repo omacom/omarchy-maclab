@@ -231,6 +231,79 @@ func TestAStartedRunIsHandedOnlyToTheLabsOwnBoot(t *testing.T) {
 	}
 }
 
+// A macOS run whose one-shot comes back to Omarchy with no macOS boot having
+// taken it is cancelled, so the person's own macOS boot right after is
+// handed nothing.
+func TestAMacOSRunNoBootTookEndsWhenTheMacIsBackInOmarchy(t *testing.T) {
+	l := newLab(t, false)
+	macOSResultSet(t, l)
+	l.holdFromScheduler()
+	secret := enrollRunner(t, l)
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
+	run := l.s.macOS().run(l.name)
+	resp, body := l.as(l.secret, "POST", "/api/agent/macos-started", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("started: %d %s", resp.StatusCode, body)
+	}
+	started := *decodeInto[api.MacOSRun](t, body).Started
+	l.stopAgent()
+	v := l.s.dev(l.name)
+	d := v.snapshot()
+	v.heartbeat(api.Checkin{BootID: d.BootID, Kernel: d.Kernel, Cmdline: d.Cmdline})
+	if r := l.s.macOS().run(l.name); r.State != api.MacOSStarted {
+		t.Fatalf("a check-in from the boot that started it: %+v", r)
+	}
+	v.heartbeat(api.Checkin{BootID: "the-next-boot", Kernel: d.Kernel, Cmdline: d.Cmdline})
+	if r := l.s.macOS().run(l.name); r.ID != run.ID || r.State != api.MacOSCancelled || r.Error == "" {
+		t.Fatalf("back in Omarchy: %+v", r)
+	}
+	if pr := l.perfRunOf(run.PerfRun); pr.State != perf.Cancelled {
+		t.Errorf("its attempt: %+v", pr)
+	}
+	if got := pollAs(t, l, secret, bootHash(3), started.Add(time.Minute), ""); got != nil {
+		t.Errorf("the person's own boot was handed %+v", got)
+	}
+}
+
+// A macOS attempt that failed, as of a busy Mac, is made once more, of the
+// benchmarks that failed or were skipped in passing alone.
+func TestAFailedMacOSResultIsMeasuredOnceMore(t *testing.T) {
+	l := newLab(t, false)
+	macOSResultSet(t, l)
+	l.holdFromScheduler()
+	secret := enrollRunner(t, l)
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
+	enrollment := l.s.dev(l.name).snapshot().ID
+	ended := func(run *api.MacOSRun, c perf.Checked) {
+		t.Helper()
+		take(t, l.s.store, run.PerfRun, c)
+		if _, err := l.s.macOS().change(l.name, func(m *api.MacOSRun) error { m.State = api.MacOSDone; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := l.s.macOS().run(l.name)
+	if len(first.Metrics) != 0 {
+		t.Fatalf("the first run measures %v, want its whole list", first.Metrics)
+	}
+	ended(first, perfChecked(t, perf.SideMacOS, perf.Failed, perfEntry(t, "coremark-single", 30000, ""),
+		perfEntry(t, "stream-triad", 0, perf.NotIdle), perfEntry(t, "speedometer", 0, perf.FellBack)))
+	second, err := l.s.queueMacOSSide(l.name)
+	if err != nil || second == nil || second.ID == first.ID || !slices.Equal(second.Metrics, []string{"stream-triad"}) {
+		t.Fatalf("the second run: %+v (%v)", second, err)
+	}
+	if pr := l.perfRunOf(second.PerfRun); !slices.Equal(pr.Metrics, second.Metrics) {
+		t.Errorf("its attempt: %+v", pr)
+	}
+	ended(second, perfChecked(t, perf.SideMacOS, perf.Failed, perfEntry(t, "stream-triad", 0, perf.Error)))
+	if third, err := l.s.queueMacOSSide(l.name); err != nil || third != nil {
+		t.Fatalf("a third run: %+v (%v)", third, err)
+	}
+	got, _ := l.s.store.perfCurrentMacOS(l.name, enrollment, "bench-1", testMacOSBuild)
+	if c := current(t, got, "coremark-single"); c != "30000@1" {
+		t.Errorf("the first attempt's value: %s", c)
+	}
+}
+
 // A started run must report within 60 minutes, else it is needs_hands and
 // the Mac Needs hands; results that come late are still taken, and the run
 // is done.
@@ -278,7 +351,7 @@ func TestAMacOSRunPastItsHourNeedsHandsAndItsLateResultsAreTaken(t *testing.T) {
 	if r := l.s.macOS().run(l.name); r.State != api.MacOSDone {
 		t.Errorf("the run after its late results: %+v", r)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, "bench-1", testMacOSBuild); len(kept) != 1 || *kept[0].Value != 31000 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 1 || *kept[0].Value != 31000 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 }
@@ -302,6 +375,11 @@ func TestAnAttendedMacsRunBootsMacOSOnlyOnceAPersonIsAtTheMac(t *testing.T) {
 		t.Fatalf("told: %+v", run)
 	}
 	l.s.macOSWanted(v)
+	// The scheduler runs here too, and may be the one telling: it marks the
+	// run told, then writes the line.
+	for deadline := time.Now().Add(10 * time.Second); len(macOSDueLines(t, l)) == 0 && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if lines := macOSDueLines(t, l); len(lines) != 1 || !strings.Contains(lines[0], "sim-mac") || !strings.Contains(lines[0], "person at the Mac") {
 		t.Fatalf("the Lab group was told: %q", lines)
 	}
@@ -348,7 +426,7 @@ func TestAnAttendedMacsRunBootsMacOSOnlyOnceAPersonIsAtTheMac(t *testing.T) {
 	if r := l.s.macOS().run(l.name); r.State != api.MacOSDone {
 		t.Errorf("run: %+v", r)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, "bench-1", testMacOSBuild); len(kept) != 2 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 2 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.Kernel == agent.SimKnownGood })
@@ -614,7 +692,7 @@ func TestACompareWithNoKeptMacOSResultMeasuresOneAndKeepsIt(t *testing.T) {
 	if pr := l.perfRunOf(run.PerfRun); pr.Side != perf.SideMacOS || pr.Set != "bench-1" || pr.MacOSBuild != testMacOSBuild || pr.State != perf.Succeeded || pr.Attempt != macOSTriesMax+1 {
 		t.Errorf("its attempt: %+v", pr)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, "bench-1", testMacOSBuild); len(kept) != 2 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 2 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.ActiveJob == "" })
