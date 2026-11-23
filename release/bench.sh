@@ -29,7 +29,9 @@
 #             stream.c takes its size at compile time only. No OpenMP:
 #             Apple's clang has none, so one thread on both systems.
 #   clpeak    the OpenCL backend alone, against the system's OpenCL.
-#   fio       --disable-optimizations (no -O3, no -march=native), then -O2.
+#   fio       --disable-optimizations (no -O3, no -march=native), then -O2;
+#             --disable-shm, as macOS allows too little System V shared memory
+#             for 32 workers: they are threads (--thread).
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -231,9 +233,9 @@ build_fio() {
   local s cflags="-O2 -mmacosx-version-min=$MACOS_MIN"
   fetch fio
   s="$(src fio)"
-  (cd "$s" && ./configure --cc="$CC" --disable-optimizations --extra-cflags="$cflags" >&2 && make -j "$jobs" fio >&2)
+  (cd "$s" && ./configure --cc="$CC" --disable-optimizations --disable-shm --extra-cflags="$cflags" >&2 && make -j "$jobs" fio >&2)
   install -m 0755 "$s/fio" "$dest/bin/fio"
-  finish fio "--disable-optimizations --extra-cflags=$cflags" "$s/COPYING" "$s/MORAL-LICENSE"
+  finish fio "--disable-optimizations --disable-shm --extra-cflags=$cflags" "$s/COPYING" "$s/MORAL-LICENSE"
 }
 
 build_ane_bench() {

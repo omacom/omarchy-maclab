@@ -266,8 +266,8 @@ func TestTheFullListMeasuresEveryMacOSMetric(t *testing.T) {
 	ran := b.ran()
 	for _, w := range []string{
 		"coremark M12 0x0 0x0 0x66 0 7 1 2000\n", "coremark M12 0x0 0x0 0x66 333334 7 1 2000\n", "7zz b", "clpeak --opencl --global-memory-bandwidth --single-precision-compute",
-		"--size=8g --rw=write --bs=1m --direct=1 --ioengine=psync --iodepth=1 --refill_buffers --end_fsync=1",
-		"--direct=1 --ioengine=psync --output-format=json --rw=randread --bs=4k --numjobs=32 --iodepth=1 --size=256m --offset_increment=256m --time_based --runtime=30 --group_reporting",
+		"--size=8g --rw=write --bs=1m --direct=1 --ioengine=psync --thread --iodepth=1 --refill_buffers --end_fsync=1",
+		"--direct=1 --ioengine=psync --thread --output-format=json --rw=randread --bs=4k --numjobs=32 --iodepth=1 --size=256m --offset_increment=256m --time_based --runtime=30 --norandommap --randrepeat=0 --group_reporting",
 		"-p 512 -n 128 -ngl 999", "-p 0 -n 128 -ngl 0", "-re -hwaccel videotoolbox",
 	} {
 		if !strings.Contains(ran, w) {

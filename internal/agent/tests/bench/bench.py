@@ -963,7 +963,7 @@ def cached_bytes(ctx, path):
 
 def fio_args(exe, path, s, out):
     a = [exe, f"--name={s['rw']}", f"--filename={path}", f"--rw={s['rw']}", f"--bs={s['bs']}",
-         f"--direct={1 if s.get('direct', True) else 0}", f"--ioengine={s.get('ioengine', 'psync')}",
+         f"--direct={1 if s.get('direct', True) else 0}", f"--ioengine={s.get('ioengine', 'psync')}", "--thread",
          f"--iodepth={s.get('iodepth', 1)}", "--output-format=json", f"--output={out}"]
     if "write" in s["rw"]:
         a.append("--refill_buffers")
@@ -980,7 +980,7 @@ def fio_args(exe, path, s, out):
 
 def fill_args(exe, path, size, out):
     return [exe, "--name=fill", f"--filename={path}", "--rw=write", "--bs=1M", f"--size={size}", "--direct=1",
-            "--ioengine=psync", "--iodepth=1", "--refill_buffers", "--output-format=json", f"--output={out}"]
+            "--ioengine=psync", "--thread", "--iodepth=1", "--refill_buffers", "--output-format=json", f"--output={out}"]
 
 
 def fio(ctx, m):

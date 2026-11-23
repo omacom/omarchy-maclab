@@ -241,7 +241,7 @@ func fioFill(s *session, ctx context.Context) Reason {
 		return st.why
 	}
 	if _, _, err := s.tool(ctx, 30*time.Minute, exe, "--name=fill", "--filename="+st.file, "--size=8g",
-		"--rw=write", "--bs=1m", "--direct=1", "--ioengine=psync", "--iodepth=1", "--refill_buffers", "--end_fsync=1", "--output-format=json"); err != nil {
+		"--rw=write", "--bs=1m", "--direct=1", "--ioengine=psync", "--thread", "--iodepth=1", "--refill_buffers", "--end_fsync=1", "--output-format=json"); err != nil {
 		st.why = Error
 	}
 	return st.why
@@ -253,12 +253,13 @@ func (s *session) fioCleanup() {
 	}
 }
 
-// fioArgs are each Storage metric's job, as the set's settings say.
+// fioArgs are each Storage metric's job, as the set's settings say and as
+// Omarchy runs it.
 var fioArgs = map[string][]string{
 	"fio-seq-read":      {"--rw=read", "--bs=1m", "--size=8g"},
-	"fio-seq-write":     {"--rw=write", "--bs=1m", "--size=8g"},
-	"fio-rand-read-4k":  {"--rw=randread", "--bs=4k", "--numjobs=32", "--iodepth=1", "--size=256m", "--offset_increment=256m", "--time_based", "--runtime=30", "--group_reporting"},
-	"fio-rand-write-4k": {"--rw=randwrite", "--bs=4k", "--numjobs=32", "--iodepth=1", "--size=256m", "--offset_increment=256m", "--time_based", "--runtime=30", "--group_reporting"},
+	"fio-seq-write":     {"--rw=write", "--bs=1m", "--size=8g", "--refill_buffers"},
+	"fio-rand-read-4k":  {"--rw=randread", "--bs=4k", "--numjobs=32", "--iodepth=1", "--size=256m", "--offset_increment=256m", "--time_based", "--runtime=30", "--norandommap", "--randrepeat=0", "--group_reporting"},
+	"fio-rand-write-4k": {"--rw=randwrite", "--bs=4k", "--numjobs=32", "--iodepth=1", "--size=256m", "--offset_increment=256m", "--time_based", "--runtime=30", "--norandommap", "--randrepeat=0", "--group_reporting", "--refill_buffers"},
 }
 
 type fioSide struct {
@@ -289,7 +290,7 @@ func (s *session) fioRun(ctx context.Context, metric string) outcome {
 	if err != nil {
 		return because(Error)
 	}
-	args := append([]string{"--name=" + metric, "--filename=" + s.fio.file, "--direct=1", "--ioengine=psync", "--output-format=json"}, fioArgs[metric]...)
+	args := append([]string{"--name=" + metric, "--filename=" + s.fio.file, "--direct=1", "--ioengine=psync", "--thread", "--output-format=json"}, fioArgs[metric]...)
 	out, stderr, err := s.tool(ctx, 15*time.Minute, exe, args...)
 	var j fioJSON
 	if err != nil || json.Unmarshal([]byte(out), &j) != nil || len(j.Jobs) == 0 {

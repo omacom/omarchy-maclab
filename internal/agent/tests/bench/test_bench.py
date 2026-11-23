@@ -432,6 +432,7 @@ class Storage(Case):
         for k, v in want.items():
             self.assertEqual(opt(run, k), v, k)
         self.assertIn("--time_based", run)
+        self.assertIn("--thread", run)
         self.assertIn("--group_reporting", run)
         self.assertEqual(32 * bench.size_bytes("256M"), bench.size_bytes("8G"))
 
