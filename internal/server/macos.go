@@ -716,7 +716,8 @@ func (s *Server) hMacOSPoll(w http.ResponseWriter, r *http.Request) {
 		}
 		m.Boot, m.State = boot, api.MacOSRunning
 		if reMacOSBuild.MatchString(build) && reMacOSVersion.MatchString(version) && build != m.Build && m.Build != "" {
-			m.Version, m.Build, retarget = version, build, true
+			// The metrics it was to run once more are the other build's.
+			m.Version, m.Build, m.Metrics, retarget = version, build, nil, true
 		}
 		return nil
 	})

@@ -586,9 +586,9 @@ func (s *Server) compareMacOSRun(mac, setName string) (*api.MacOSRun, error) {
 // ---- the store ----
 
 // retargetMacOSPerfRun has a running macOS attempt measure the build of the
-// boot that took it: the next attempt at that build.
+// boot that took it: the next attempt at that build, of the whole list.
 func (st *store) retargetMacOSPerfRun(id int64, version, build string) error {
-	_, err := st.db.Exec(`UPDATE perf_runs SET macos_version=?, macos_build=?,
+	_, err := st.db.Exec(`UPDATE perf_runs SET macos_version=?, macos_build=?, metrics='[]',
 attempt=(SELECT coalesce(max(o.attempt), 0) + 1 FROM perf_runs o WHERE o.mac=perf_runs.mac AND o.set_name=perf_runs.set_name
   AND o.side=perf_runs.side AND o.release_version='' AND o.macos_build=?)
 WHERE id=? AND side=? AND state=? AND macos_build<>?`, version, build, build, id, perf.SideMacOS, perf.Running, build)

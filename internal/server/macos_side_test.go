@@ -304,6 +304,38 @@ func TestAFailedMacOSResultIsMeasuredOnceMore(t *testing.T) {
 	}
 }
 
+// A run of the benchmarks to measure once more, taken by a boot of an
+// updated macOS, measures that build's whole list.
+func TestARunOnceMoreOnAnUpdatedMacOSMeasuresItsWholeList(t *testing.T) {
+	l := newLab(t, false)
+	macOSResultSet(t, l)
+	l.holdFromScheduler()
+	secret := enrollRunner(t, l)
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
+	first := l.s.macOS().run(l.name)
+	take(t, l.s.store, first.PerfRun, perfChecked(t, perf.SideMacOS, perf.Failed,
+		perfEntry(t, "coremark-single", 30000, ""), perfEntry(t, "stream-triad", 0, perf.NotIdle)))
+	if _, err := l.s.macOS().change(l.name, func(m *api.MacOSRun) error { m.State = api.MacOSDone; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	again, err := l.s.queueMacOSSide(l.name)
+	if err != nil || again == nil || len(again.Metrics) != 1 {
+		t.Fatalf("the run once more: %+v (%v)", again, err)
+	}
+	resp, body := l.as(l.secret, "POST", "/api/agent/macos-started", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("started: %d %s", resp.StatusCode, body)
+	}
+	started := *decodeInto[api.MacOSRun](t, body).Started
+	got := pollAs(t, l, secret, bootHash(4), started.Add(time.Minute), "27D5")
+	if got == nil || got.Build != "27D5" || len(got.Metrics) != 0 {
+		t.Fatalf("the updated macOS was handed %+v", got)
+	}
+	if pr := l.perfRunOf(got.PerfRun); pr.MacOSBuild != "27D5" || len(pr.Metrics) != 0 {
+		t.Errorf("its attempt: %+v", pr)
+	}
+}
+
 // A started run must report within 60 minutes, else it is needs_hands and
 // the Mac Needs hands; results that come late are still taken, and the run
 // is done.
