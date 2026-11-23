@@ -1,0 +1,622 @@
+{
+  "set": "bench-1",
+  "schema": 1,
+  "decisions": [
+    "The table in section 22 of the spec, \"What runs\", in page order; (Q) is \"list\": \"quick\", and the Full list is every metric.",
+    "Tolerances are Compare's defaults before this set: 3% for the browser benchmarks, 2% for 7-Zip, 5% for the rest.",
+    "The web benchmarks, Chrome for Testing for Omarchy, 7-Zip for Omarchy and the H.264 clip are the files the lab pinned before this set, at the same sha256.",
+    "A file the lab builds itself (\"lab_built\") holds the placeholder until a Lab release publishes it; every other unpinned file and version holds it until the set is timed on the slowest Lab-owned Mac. A set holding a placeholder is never the current set.",
+    "llama.cpp's prompt and generation counts are llama-bench's own defaults, 512 and 128 tokens."
+  ],
+  "metrics": [
+    {
+      "id": "coremark-single",
+      "name": "CoreMark, one core",
+      "category": "CPU",
+      "version": "1.01",
+      "settings": {"threads": 1, "compiler": "clang -O2"},
+      "unit": "iterations/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "quick",
+      "omarchy": {"files": ["coremark"]},
+      "macos": {"files": ["coremark"]}
+    },
+    {
+      "id": "coremark-all",
+      "name": "CoreMark, all cores",
+      "category": "CPU",
+      "version": "1.01",
+      "settings": {"threads": "one per core", "compiler": "clang -O2"},
+      "unit": "iterations/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["coremark"]},
+      "macos": {"files": ["coremark"]}
+    },
+    {
+      "id": "7zip",
+      "name": "7-Zip",
+      "category": "CPU",
+      "version": "26.06",
+      "settings": {"command": "7zz b"},
+      "unit": "MIPS",
+      "direction": "higher",
+      "tolerance": 2,
+      "list": "full",
+      "omarchy": {"files": ["7zip"]},
+      "macos": {"files": ["7zip"]}
+    },
+    {
+      "id": "motionmark",
+      "name": "MotionMark",
+      "category": "GPU",
+      "version": "1.3",
+      "settings": {"browser": "Chrome for Testing", "width": 1920, "height": 1080, "device_pixel_ratio": 2, "refresh_hz": 60, "headless": true},
+      "unit": "score",
+      "direction": "higher",
+      "tolerance": 3,
+      "list": "quick",
+      "omarchy": {"files": ["chrome", "motionmark"]},
+      "macos": {"files": ["chrome", "motionmark"]}
+    },
+    {
+      "id": "clpeak-global-bandwidth",
+      "name": "clpeak global memory bandwidth",
+      "category": "GPU",
+      "version": "3.0.5",
+      "settings": {"test": "global memory bandwidth", "compiler": "clang -O2"},
+      "unit": "GB/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"api": "Rusticl", "files": ["clpeak"]},
+      "macos": {"api": "Apple's OpenCL", "files": ["clpeak"]}
+    },
+    {
+      "id": "clpeak-fp32",
+      "name": "clpeak fp32 compute",
+      "category": "GPU",
+      "version": "3.0.5",
+      "settings": {"test": "single-precision compute", "compiler": "clang -O2"},
+      "unit": "GFLOPS",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"api": "Rusticl", "files": ["clpeak"]},
+      "macos": {"api": "Apple's OpenCL", "files": ["clpeak"]}
+    },
+    {
+      "id": "fio-seq-read",
+      "name": "Sequential read",
+      "category": "Storage",
+      "version": "placeholder",
+      "settings": {"rw": "read", "bs": "1M", "file": "8G", "filled": true, "direct": true},
+      "unit": "MB/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "quick",
+      "omarchy": {"files": ["fio"]},
+      "macos": {"files": ["fio"]}
+    },
+    {
+      "id": "fio-seq-write",
+      "name": "Sequential write",
+      "category": "Storage",
+      "version": "placeholder",
+      "settings": {"rw": "write", "bs": "1M", "file": "8G", "filled": true, "direct": true},
+      "unit": "MB/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["fio"]},
+      "macos": {"files": ["fio"]}
+    },
+    {
+      "id": "fio-rand-read-4k",
+      "name": "Random 4K read",
+      "category": "Storage",
+      "version": "placeholder",
+      "settings": {"rw": "randread", "bs": "4k", "file": "8G", "filled": true, "direct": true, "numjobs": 32, "iodepth": 1, "ioengine": "psync", "range_per_job": "256M", "runtime_s": 30, "group_reporting": true},
+      "unit": "kIOPS",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["fio"]},
+      "macos": {"files": ["fio"]}
+    },
+    {
+      "id": "fio-rand-write-4k",
+      "name": "Random 4K write",
+      "category": "Storage",
+      "version": "placeholder",
+      "settings": {"rw": "randwrite", "bs": "4k", "file": "8G", "filled": true, "direct": true, "numjobs": 32, "iodepth": 1, "ioengine": "psync", "range_per_job": "256M", "runtime_s": 30, "group_reporting": true},
+      "unit": "kIOPS",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["fio"]},
+      "macos": {"files": ["fio"]}
+    },
+    {
+      "id": "stream-triad",
+      "name": "STREAM triad",
+      "category": "Memory",
+      "version": "5.10",
+      "settings": {"kernel": "triad", "arrays": "at least four times the largest cache", "compiler": "clang -O2"},
+      "unit": "GB/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "quick",
+      "omarchy": {"files": ["stream"]},
+      "macos": {"files": ["stream"]}
+    },
+    {
+      "id": "stream-copy",
+      "name": "STREAM copy",
+      "category": "Memory",
+      "version": "5.10",
+      "settings": {"kernel": "copy", "arrays": "at least four times the largest cache", "compiler": "clang -O2"},
+      "unit": "GB/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["stream"]},
+      "macos": {"files": ["stream"]}
+    },
+    {
+      "id": "speedometer",
+      "name": "Speedometer",
+      "category": "Web",
+      "version": "3.1",
+      "settings": {"browser": "Chrome for Testing", "width": 1920, "height": 1080, "device_pixel_ratio": 2, "headless": true},
+      "unit": "score",
+      "direction": "higher",
+      "tolerance": 3,
+      "list": "quick",
+      "omarchy": {"files": ["chrome", "speedometer"]},
+      "macos": {"files": ["chrome", "speedometer"]}
+    },
+    {
+      "id": "jetstream",
+      "name": "JetStream",
+      "category": "Web",
+      "version": "2.2",
+      "settings": {"browser": "Chrome for Testing", "width": 1920, "height": 1080, "device_pixel_ratio": 2, "headless": true},
+      "unit": "score",
+      "direction": "higher",
+      "tolerance": 3,
+      "list": "full",
+      "omarchy": {"files": ["chrome", "jetstream"]},
+      "macos": {"files": ["chrome", "jetstream"]}
+    },
+    {
+      "id": "decode-h264-1080p",
+      "name": "H.264 1080p hardware decode",
+      "category": "Video",
+      "version": "bbb-1080p-10s",
+      "settings": {"codec": "h264", "decoder": "hardware", "through": "FFmpeg"},
+      "unit": "frames/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "quick",
+      "api_differs": true,
+      "omarchy": {"api": "V4L2 request", "files": ["clip-h264-1080p"]},
+      "macos": {"api": "VideoToolbox", "files": ["ffmpeg", "clip-h264-1080p"]}
+    },
+    {
+      "id": "decode-hevc-4k",
+      "name": "HEVC 4K hardware decode",
+      "category": "Video",
+      "version": "placeholder",
+      "settings": {"codec": "hevc", "decoder": "hardware", "through": "FFmpeg"},
+      "unit": "frames/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "api_differs": true,
+      "omarchy": {"api": "V4L2 request", "files": ["clip-hevc-4k"]},
+      "macos": {"api": "VideoToolbox", "files": ["ffmpeg", "clip-hevc-4k"]}
+    },
+    {
+      "id": "neural-engine-mobilenet-v1",
+      "name": "Neural engine, MobileNet v1",
+      "category": "AI",
+      "version": "placeholder",
+      "settings": {"model": "MobileNet v1", "precision": "fp16", "batch": 1},
+      "unit": "inferences/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "quick",
+      "api_differs": true,
+      "omarchy": {"api": "libane", "files": ["mobilenet-v1"]},
+      "macos": {"api": "Core ML", "files": ["ane-bench", "mobilenet-v1-coreml"]}
+    },
+    {
+      "id": "llama-prompt-gpu",
+      "name": "llama.cpp prompt, GPU",
+      "category": "AI",
+      "version": "placeholder",
+      "settings": {"model": "3B Q4_K_M", "prompt_tokens": 512, "all_layers_offloaded": true},
+      "unit": "tokens/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "api_differs": true,
+      "omarchy": {"api": "Vulkan", "files": ["llama.cpp", "llama-model"]},
+      "macos": {"api": "Metal", "files": ["llama.cpp", "llama-model"]}
+    },
+    {
+      "id": "llama-gen-gpu",
+      "name": "llama.cpp generation, GPU",
+      "category": "AI",
+      "version": "placeholder",
+      "settings": {"model": "3B Q4_K_M", "generated_tokens": 128, "all_layers_offloaded": true},
+      "unit": "tokens/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "api_differs": true,
+      "omarchy": {"api": "Vulkan", "files": ["llama.cpp", "llama-model"]},
+      "macos": {"api": "Metal", "files": ["llama.cpp", "llama-model"]}
+    },
+    {
+      "id": "llama-gen-cpu",
+      "name": "llama.cpp generation, CPU",
+      "category": "AI",
+      "version": "placeholder",
+      "settings": {"model": "3B Q4_K_M", "generated_tokens": 128, "gpu_layers": 0},
+      "unit": "tokens/s",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"files": ["llama.cpp", "llama-model"]},
+      "macos": {"files": ["llama.cpp", "llama-model"]}
+    },
+    {
+      "id": "mlx-matmul-fp16",
+      "name": "MLX fp16 matmul",
+      "category": "AI",
+      "version": "placeholder",
+      "settings": {"dtype": "float16", "device": "gpu", "synchronised": true},
+      "unit": "TFLOPS",
+      "direction": "higher",
+      "tolerance": 5,
+      "list": "full",
+      "api_differs": true,
+      "omarchy": {"api": "the Stack's MLX GPU backend", "files": []},
+      "macos": {"api": "Metal", "files": ["mlx-bench"]}
+    },
+    {
+      "id": "power-idle",
+      "name": "Idle, screen on",
+      "category": "Power",
+      "version": "1",
+      "settings": {"key": "PSTR", "sample_s": 1, "seconds": 60, "brightness": 0.5, "on_ac": true, "battery_charging": false},
+      "unit": "W",
+      "direction": "lower",
+      "tolerance": 5,
+      "list": "quick",
+      "omarchy": {"api": "macsmc-hwmon", "files": []},
+      "macos": {"api": "smc-power", "files": ["smc-power"]}
+    },
+    {
+      "id": "power-playback-1080p",
+      "name": "1080p playback, energy",
+      "category": "Power",
+      "version": "1",
+      "settings": {"key": "PSTR", "sample_s": 1, "work": "every frame of the H.264 1080p clip", "on_ac": true, "battery_charging": false},
+      "unit": "J",
+      "direction": "lower",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"api": "macsmc-hwmon", "files": ["clip-h264-1080p"]},
+      "macos": {"api": "smc-power", "files": ["smc-power", "ffmpeg", "clip-h264-1080p"]}
+    },
+    {
+      "id": "power-all-core",
+      "name": "All-core CPU load, energy",
+      "category": "Power",
+      "version": "1",
+      "settings": {"key": "PSTR", "sample_s": 1, "work": "a fixed count of CoreMark iterations, a thread per core", "on_ac": true, "battery_charging": false},
+      "unit": "J",
+      "direction": "lower",
+      "tolerance": 5,
+      "list": "full",
+      "omarchy": {"api": "macsmc-hwmon", "files": ["coremark"]},
+      "macos": {"api": "smc-power", "files": ["smc-power", "coremark"]}
+    },
+    {
+      "id": "boot-time",
+      "name": "Boot time",
+      "category": "Omarchy only",
+      "version": "1",
+      "settings": {"source": "systemd-analyze"},
+      "unit": "s",
+      "direction": "lower",
+      "tolerance": 5,
+      "list": "quick",
+      "omarchy": {"files": []}
+    }
+  ],
+  "files": {
+    "omarchy": [
+      {
+        "id": "coremark",
+        "version": "1.01",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "EEMBC CoreMark built by the release workflow's arm64 Linux runner"
+      },
+      {
+        "id": "7zip",
+        "version": "26.06-1",
+        "kind": "pacman",
+        "url": "http://mirror.archlinuxarm.org/aarch64/extra/7zip-26.06-1-aarch64.pkg.tar.xz",
+        "sha256": "7cc60b39b6ae8211622a39cf232e5e65699e9c63120bf4e91fa3903109ac8c91",
+        "size": 1497888,
+        "entry": "usr/lib/7zip/7z",
+        "note": "usr/bin/7z is a wrapper that execs /usr/lib/7zip/7z, which is not there when the package is only unpacked"
+      },
+      {
+        "id": "chrome",
+        "version": "157.0.8103.78",
+        "kind": "zip",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux-arm64/chrome-linux-arm64.zip",
+        "sha256": "f354d666822a11d8fe99e923c44be77dd226fab2750c5b5947e6318818bf10f1",
+        "size": 203144198,
+        "root": "chrome-linux-arm64",
+        "entry": "chrome-linux-arm64/chrome",
+        "note": "Chrome for Testing Stable, linux-arm64"
+      },
+      {
+        "id": "motionmark",
+        "version": "1.3",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/MotionMark/tar.gz/34ad2308ee1224bae0e9a097dc702688be620fe2",
+        "sha256": "dc412dca530c2d6a63b528ed8f4b34f96676d62df6daff9c238b7ce4559b3bc8",
+        "size": 575181,
+        "root": "MotionMark-34ad2308ee1224bae0e9a097dc702688be620fe2",
+        "entry": "MotionMark/index.html",
+        "note": "tag release/MotionMark1.3"
+      },
+      {
+        "id": "clpeak",
+        "version": "3.0.5",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "built by the release workflow's arm64 Linux runner"
+      },
+      {
+        "id": "fio",
+        "version": "placeholder",
+        "kind": "pacman",
+        "sha256": "placeholder",
+        "note": "Arch Linux ARM extra"
+      },
+      {
+        "id": "stream",
+        "version": "5.10",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "built by the release workflow's arm64 Linux runner"
+      },
+      {
+        "id": "speedometer",
+        "version": "3.1",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/Speedometer/tar.gz/1386415be8fef2f6b6bbdbe1828872471c5d802a",
+        "sha256": "cfefa818d7789ed2f2b9f3f1bf608cc35e4e8241489eef47049296ce92791313",
+        "size": 12358793,
+        "root": "Speedometer-1386415be8fef2f6b6bbdbe1828872471c5d802a",
+        "entry": "index.html",
+        "note": "branch release/3.1 at 1386415be8fef2f6b6bbdbe1828872471c5d802a"
+      },
+      {
+        "id": "jetstream",
+        "version": "2.2",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/JetStream/tar.gz/332d8ee1e4d5c40d9492c56f6865e64a9525ee9f",
+        "sha256": "d81329a7558faa9f7357e2956b3dfcb3028999da1ba14b696f3626d0e30d4281",
+        "size": 12352824,
+        "root": "JetStream-332d8ee1e4d5c40d9492c56f6865e64a9525ee9f",
+        "entry": "index.html",
+        "note": "branch JetStream2.2 at 332d8ee1e4d5c40d9492c56f6865e64a9525ee9f"
+      },
+      {
+        "id": "clip-h264-1080p",
+        "version": "bbb-1080p-10s",
+        "kind": "file",
+        "url": "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4",
+        "sha256": "e131ad42621442758a3acb899bfbdfeeab0b40c7e2f7c7e66683f58a09a99aee",
+        "size": 5238714,
+        "entry": "Big_Buck_Bunny_1080_10s_5MB.mp4",
+        "note": "H.264 1920x1080 MP4, 10 s, plain file"
+      },
+      {
+        "id": "clip-hevc-4k",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "HEVC 3840x2160"
+      },
+      {
+        "id": "mobilenet-v1",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "MobileNet v1 fp16, for libane"
+      },
+      {
+        "id": "llama.cpp",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "note": "llama-bench with the Vulkan and CPU backends, arm64 Linux"
+      },
+      {
+        "id": "llama-model",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "one 3B model, Q4_K_M GGUF"
+      }
+    ],
+    "macos": [
+      {
+        "id": "coremark",
+        "version": "1.01",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "EEMBC CoreMark built by the release workflow's macOS runner"
+      },
+      {
+        "id": "7zip",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "note": "7-Zip for macOS, 7zz"
+      },
+      {
+        "id": "chrome",
+        "version": "157.0.8103.78",
+        "kind": "zip",
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/mac-arm64/chrome-mac-arm64.zip",
+        "sha256": "placeholder",
+        "root": "chrome-mac-arm64",
+        "note": "Chrome for Testing Stable, mac-arm64, the same version as Omarchy's"
+      },
+      {
+        "id": "motionmark",
+        "version": "1.3",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/MotionMark/tar.gz/34ad2308ee1224bae0e9a097dc702688be620fe2",
+        "sha256": "dc412dca530c2d6a63b528ed8f4b34f96676d62df6daff9c238b7ce4559b3bc8",
+        "size": 575181,
+        "root": "MotionMark-34ad2308ee1224bae0e9a097dc702688be620fe2",
+        "entry": "MotionMark/index.html",
+        "note": "tag release/MotionMark1.3"
+      },
+      {
+        "id": "clpeak",
+        "version": "3.0.5",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "built by the release workflow's macOS runner"
+      },
+      {
+        "id": "fio",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "built by the release workflow's macOS runner"
+      },
+      {
+        "id": "stream",
+        "version": "5.10",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "built by the release workflow's macOS runner"
+      },
+      {
+        "id": "speedometer",
+        "version": "3.1",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/Speedometer/tar.gz/1386415be8fef2f6b6bbdbe1828872471c5d802a",
+        "sha256": "cfefa818d7789ed2f2b9f3f1bf608cc35e4e8241489eef47049296ce92791313",
+        "size": 12358793,
+        "root": "Speedometer-1386415be8fef2f6b6bbdbe1828872471c5d802a",
+        "entry": "index.html",
+        "note": "branch release/3.1 at 1386415be8fef2f6b6bbdbe1828872471c5d802a"
+      },
+      {
+        "id": "jetstream",
+        "version": "2.2",
+        "kind": "web",
+        "url": "https://codeload.github.com/WebKit/JetStream/tar.gz/332d8ee1e4d5c40d9492c56f6865e64a9525ee9f",
+        "sha256": "d81329a7558faa9f7357e2956b3dfcb3028999da1ba14b696f3626d0e30d4281",
+        "size": 12352824,
+        "root": "JetStream-332d8ee1e4d5c40d9492c56f6865e64a9525ee9f",
+        "entry": "index.html",
+        "note": "branch JetStream2.2 at 332d8ee1e4d5c40d9492c56f6865e64a9525ee9f"
+      },
+      {
+        "id": "ffmpeg",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "note": "FFmpeg with VideoToolbox, macOS arm64"
+      },
+      {
+        "id": "clip-h264-1080p",
+        "version": "bbb-1080p-10s",
+        "kind": "file",
+        "url": "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_5MB.mp4",
+        "sha256": "e131ad42621442758a3acb899bfbdfeeab0b40c7e2f7c7e66683f58a09a99aee",
+        "size": 5238714,
+        "entry": "Big_Buck_Bunny_1080_10s_5MB.mp4",
+        "note": "H.264 1920x1080 MP4, 10 s, plain file"
+      },
+      {
+        "id": "clip-hevc-4k",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "HEVC 3840x2160, the same file as Omarchy's"
+      },
+      {
+        "id": "ane-bench",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "the lab's own, built by the release workflow's macOS runner"
+      },
+      {
+        "id": "mobilenet-v1-coreml",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "MobileNet v1 fp16 as a Core ML model"
+      },
+      {
+        "id": "llama.cpp",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "note": "llama-bench with the Metal and CPU backends, macOS arm64, the same release as Omarchy's"
+      },
+      {
+        "id": "llama-model",
+        "version": "placeholder",
+        "kind": "file",
+        "sha256": "placeholder",
+        "note": "the same GGUF file as Omarchy's"
+      },
+      {
+        "id": "mlx-bench",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "the lab's own, built by the release workflow's macOS runner"
+      },
+      {
+        "id": "smc-power",
+        "version": "placeholder",
+        "kind": "tarball",
+        "sha256": "placeholder",
+        "lab_built": true,
+        "note": "the lab's own, built by the release workflow's macOS runner"
+      }
+    ]
+  }
+}

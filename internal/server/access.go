@@ -31,28 +31,35 @@ func accessCut(what string) (string, string) {
 	return api.OutcomeIncomplete, "the Volunteer lowered the Mac's Access level to Qualification " + what
 }
 
-// syncAccessLocked takes the Access level and publishing opt-in a check-in
-// carried as labd's copy, and says whether they changed. Each change is an
+// syncAccessLocked takes the Access level, publishing opt-in and Performance
+// runs choice a check-in carried as labd's copy, and says whether they
+// changed. Each change is an
 // event of the Mac's record and a line for the Lab group. Lowering the level
 // ends a lease at once. Only a Volunteer's Mac has them. Caller holds v.mu.
 func (v *dev) syncAccessLocked(ci api.Checkin) bool {
 	if !v.d.IsVolunteer() || ci.AccessLevel == "" {
 		return false
 	}
-	if v.d.AccessLevel == ci.AccessLevel && v.d.Publish == ci.Publish {
+	if v.d.AccessLevel == ci.AccessLevel && v.d.Publish == ci.Publish && v.d.Performance == ci.Performance {
 		return false
 	}
 	lowered := v.d.AccessLevel == api.AccessFull && ci.AccessLevel != api.AccessFull
 	raised := v.d.AccessLevel != api.AccessFull && ci.AccessLevel == api.AccessFull
 	published := v.d.Publish != ci.Publish
+	performance := v.d.Performance != ci.Performance
 	// A Mac limited from the site was at Qualification for the lab already:
 	// lowering it on the Mac takes nothing more away.
 	cuts := lowered && !v.d.Limited
-	v.d.AccessLevel, v.d.Publish = ci.AccessLevel, ci.Publish
+	v.d.AccessLevel, v.d.Publish, v.d.Performance = ci.AccessLevel, ci.Publish, ci.Performance
+	if performance {
+		v.said(macPerformance, "its Volunteer turned Performance runs "+map[bool]string{true: "on", false: "off"}[ci.Performance])
+		v.performanceChangedLocked()
+	}
 	switch {
 	case raised:
 		v.said(macAccessLevel, "its Volunteer raised its Access level to Full")
 		v.s.labGroup.AccessLevelRaised(v.d.Name)
+		v.s.perfKick()
 	case lowered:
 		v.said(macAccessLevel, "its Volunteer lowered its Access level to Qualification")
 		v.s.labGroup.AccessLevelLowered(v.d.Name)
@@ -145,8 +152,14 @@ func (s *Server) unlimitMac(v *dev, by Person) error {
 // needsFull is why a job spec needs a Volunteer's Mac at Full, or "": a
 // Maintainer's script, as root or in the Volunteer's session.
 func needsFull(spec api.JobSpec) string {
+	if spec.MacOS != nil {
+		return "booting macOS once"
+	}
 	if spec.Compare != nil {
 		return "a Compare's Candidate boot"
+	}
+	if spec.Performance != nil {
+		return "a Performance run's Candidate boot"
 	}
 	if spec.Mesa != nil {
 		return "staged Mesa packages"

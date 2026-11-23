@@ -71,10 +71,11 @@ func macOSVolume(vs []blessVolume, named string) (blessVolume, error) {
 }
 
 // BootMacOSOnce boots the Mac into macOS for one boot, for the macOS run
-// labd has queued: it finds the macOS volume, tells labd the run starts
-// (refused, nothing changes, when none is queued), sets macOS as the next
-// boot only (asahi-bless --next) and reboots. The boot after returns to the
-// persistent default, this Linux.
+// labd has queued: it finds the macOS volume, sets it as the next boot only
+// (asahi-bless --next), and only then tells labd the run started and
+// reboots. When labd refuses (no run is queued), the next boot is put back
+// on this Linux. The boot after returns to the persistent default, this
+// Linux.
 func BootMacOSOnce(ctx context.Context, cfg *Config, o MacOSBoot) error {
 	say := o.Log
 	if say == nil {
@@ -98,9 +99,10 @@ func BootMacOSOnce(ctx context.Context, cfg *Config, o MacOSBoot) error {
 	return reboot()
 }
 
-// blessMacOSNext finds the macOS volume, has started tell labd (refused,
-// nothing changes, when no run is queued) and sets macOS as the next boot
-// only.
+// blessMacOSNext finds the macOS volume, sets it as the next boot only and,
+// only when that succeeded, has started tell labd. A start that fails
+// tells labd nothing: the run labd queued is cancelled by whoever asked
+// for the boot. A start labd refuses puts the next boot back on this Linux.
 func blessMacOSNext(ctx context.Context, o MacOSBoot, started func() error) error {
 	bless := o.Bless
 	if bless == "" {
@@ -110,15 +112,29 @@ func blessMacOSNext(ctx context.Context, o MacOSBoot, started func() error) erro
 	if err != nil {
 		return fmt.Errorf("asahi-bless --list-volumes: %w", err)
 	}
-	vol, err := macOSVolume(parseVolumes(string(out)), o.Volume)
+	vs := parseVolumes(string(out))
+	vol, err := macOSVolume(vs, o.Volume)
 	if err != nil {
 		return err
 	}
-	if err := started(); err != nil {
+	next := func(v blessVolume) error {
+		if b, err := exec.CommandContext(ctx, bless, "--next", "--set-boot", v.Index, "--yes").CombinedOutput(); err != nil {
+			return fmt.Errorf("asahi-bless --next --set-boot %s: %v: %s", v.Index, err, strings.TrimSpace(string(b)))
+		}
+		return nil
+	}
+	if err := next(vol); err != nil {
 		return err
 	}
-	if b, err := exec.CommandContext(ctx, bless, "--next", "--set-boot", vol.Index, "--yes").CombinedOutput(); err != nil {
-		return fmt.Errorf("asahi-bless --next --set-boot %s: %v: %s", vol.Index, err, strings.TrimSpace(string(b)))
+	if err := started(); err != nil {
+		for _, v := range vs {
+			if v.Default {
+				if uerr := next(v); uerr != nil {
+					return fmt.Errorf("%w; and the next boot is still macOS: %v", err, uerr)
+				}
+			}
+		}
+		return err
 	}
 	return nil
 }

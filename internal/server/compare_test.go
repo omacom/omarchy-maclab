@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent"
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
+	"github.com/omacom/omarchy-maclab/internal/perf"
 )
 
 // candidateKernel is the release the simulated Mac boots for a set whose
@@ -34,10 +36,12 @@ func compareLab(t *testing.T, mod func(*labConfig)) (*lab, string) {
 		mod(&c)
 	}
 	l := newLabWith(t, c)
+	l.sim.SetBenchAnswer(func(_ int64, metric string) (float64, string) {
+		_, kernel, _ := l.sim.Identity()
+		return simBench(kernel, metric)
+	})
 	l.sim.TestFiles = func(test, kernel string) map[string][]byte {
 		switch {
-		case strings.HasSuffix(test, "-bench"):
-			return map[string][]byte{"bench.json": simBench(kernel)}
 		case strings.HasSuffix(test, "-facts"):
 			units := []string{}
 			if kernel == candidateKernel {
@@ -61,27 +65,40 @@ func compareLab(t *testing.T, mod func(*labConfig)) (*lab, string) {
 	return l, mesa
 }
 
-// simBench is a default-tier bench.json: on the candidate kernel
-// Speedometer is 25% faster, 7-Zip 1% (within its 2% noise), glmark2 20%
-// slower, and boot time (lower is better) 10% shorter.
-func simBench(kernel string) []byte {
+// simBench is what the simulated bench runner measures of bench-1's Quick
+// list on the kernel: on the candidate kernel Speedometer is 25% faster
+// (beyond its 3%), CoreMark 4% (within its 5%), MotionMark 4% slower (beyond
+// its 3%), idle power 10% lower and boot time 10% longer (lower is better
+// for both); STREAM fell back on it, and the Neural engine has no driver on
+// either.
+func simBench(kernel, metric string) (float64, string) {
 	cand := kernel == candidateKernel
-	pick := func(a, b float64) float64 {
+	pick := func(a, b float64) (float64, string) {
 		if cand {
-			return b
+			return b, ""
 		}
-		return a
+		return a, ""
 	}
-	rs := []map[string]any{
-		{"name": "speedometer-chrome", "version": "3.1", "value": pick(20, 25), "unit": "score", "higher_is_better": true, "spread": 0.4, "seconds": 120},
-		{"name": "motionmark-chrome", "version": "1.3", "value": pick(1000, 1010), "unit": "score", "higher_is_better": true, "spread": nil, "seconds": 100},
-		{"name": "7zip", "version": "26.06-1", "value": pick(100, 101), "unit": "MIPS", "higher_is_better": true, "spread": nil, "seconds": 60},
-		{"name": "glmark2", "version": "2023.01-2", "value": pick(5000, 4000), "unit": "score", "higher_is_better": true, "spread": nil, "seconds": 40},
-		{"name": "vkmark", "version": "1:2025.01-2", "value": nil, "unit": nil, "higher_is_better": nil, "spread": nil, "seconds": 0, "skipped": "no Vulkan device"},
-		{"name": "boot", "version": "systemd", "value": pick(10, 9), "unit": "s", "higher_is_better": false, "spread": nil, "seconds": 0},
+	switch metric {
+	case "speedometer":
+		return pick(20, 25)
+	case "coremark-single":
+		return pick(100, 104)
+	case "motionmark":
+		return pick(1000, 960)
+	case "power-idle":
+		return pick(10, 9)
+	case "boot-time":
+		return pick(10, 11)
+	case "stream-triad":
+		if cand {
+			return 0, perf.FellBack
+		}
+		return 100, ""
+	case "neural-engine-mobilenet-v1":
+		return 0, perf.NoDriver
 	}
-	b, _ := json.Marshal(rs)
-	return b
+	return 100, ""
 }
 
 func (l *lab) compare(token string, req api.CompareRequest) (int, *api.Job, string) {
@@ -152,21 +169,57 @@ func TestCompareCurrentAgainstASet(t *testing.T) {
 		t.Errorf("B's failed units: %v", b.FailedUnits)
 	}
 
-	sp := rowOf(t, res, "speedometer-chrome")
-	if !near(sp.A, 20) || !near(sp.B, 25) || !near(sp.Delta, 25) || sp.Verdict != api.VerdictBetter || sp.Noise != 3 || sp.NoiseFrom != "default" {
+	if j.Spec.Compare.Bench != "bench-1" || res.Bench != "bench-1" {
+		t.Errorf("the job's Benchmark set: %q, the report's %q", j.Spec.Compare.Bench, res.Bench)
+	}
+	set, _ := sets.Load("bench-1")
+	var ids []string
+	for _, r := range res.Rows {
+		ids = append(ids, r.Name)
+	}
+	var quick []string
+	for _, m := range set.List(sets.Quick) {
+		quick = append(quick, m.ID)
+	}
+	if !slices.Equal(ids, quick) {
+		t.Errorf("rows %v, want bench-1's Quick list %v", ids, quick)
+	}
+	sp := rowOf(t, res, "speedometer")
+	if !near(sp.A, 20) || !near(sp.B, 25) || !near(sp.Delta, 25) || sp.Verdict != api.VerdictBetter || sp.Tolerance != 3 {
 		t.Errorf("Speedometer: %+v", sp)
 	}
-	if z := rowOf(t, res, "7zip"); !near(z.Delta, 1) || z.Verdict != api.VerdictNoChange || z.Noise != 2 {
-		t.Errorf("7-Zip: %+v", z)
+	if c := rowOf(t, res, "coremark-single"); !near(c.Delta, 4) || c.Verdict != api.VerdictNoChange || c.Tolerance != 5 {
+		t.Errorf("CoreMark, within its tolerance: %+v", c)
 	}
-	if g := rowOf(t, res, "glmark2"); !near(g.Delta, -20) || g.Verdict != api.VerdictWorse || g.Noise != 5 {
-		t.Errorf("glmark2: %+v", g)
+	if m := rowOf(t, res, "motionmark"); !near(m.Delta, -4) || m.Verdict != api.VerdictWorse || m.Tolerance != 3 {
+		t.Errorf("MotionMark, beyond its tolerance: %+v", m)
 	}
-	if bt := rowOf(t, res, "boot"); !near(bt.Delta, -10) || bt.Verdict != api.VerdictBetter {
+	if p := rowOf(t, res, "power-idle"); !near(p.Delta, -10) || p.Verdict != api.VerdictBetter || p.HigherIsBetter {
+		t.Errorf("idle power, lower is better: %+v", p)
+	}
+	if bt := rowOf(t, res, "boot-time"); !near(bt.Delta, 10) || bt.Verdict != api.VerdictWorse {
 		t.Errorf("boot time, lower is better: %+v", bt)
 	}
-	if vk := rowOf(t, res, "vkmark"); vk.Verdict != api.VerdictNotCompared || !strings.Contains(vk.Note, "no Vulkan device") {
-		t.Errorf("a skipped benchmark: %+v", vk)
+	if st := rowOf(t, res, "stream-triad"); st.Verdict != api.VerdictNotCompared || st.Delta != nil || !near(st.A, 100) || st.Note != "B: "+perf.FellBack {
+		t.Errorf("a benchmark that fell back on B: %+v", st)
+	}
+	if ne := rowOf(t, res, "neural-engine-mobilenet-v1"); ne.Verdict != api.VerdictNotCompared || ne.Note != "A: no_driver; B: no_driver" {
+		t.Errorf("a benchmark with no driver: %+v", ne)
+	}
+	tests := l.sim.BenchRuns()
+	var omarchy []string
+	for _, m := range set.List(sets.Quick) {
+		if m.Omarchy != nil {
+			omarchy = append(omarchy, m.ID)
+		}
+	}
+	if len(tests) != 2 || !slices.Equal(tests[0], omarchy) || !slices.Equal(tests[1], omarchy) {
+		t.Errorf("each side ran %v, want bench-1's Quick list on Omarchy %v", tests, omarchy)
+	}
+	for _, tr := range j.Result.Tests {
+		if strings.HasSuffix(tr.Name, "-bench") && (tr.Bench != nil || tr.Error != "") {
+			t.Errorf("%s uploaded to a Performance run or failed: %+v", tr.Name, tr)
+		}
 	}
 
 	var wifi *api.CompareCheck
@@ -258,7 +311,7 @@ func TestACompareIsPrivateUntilPublished(t *testing.T) {
 		t.Errorf("an M team member reads a published Compare: %s", r.Status)
 	}
 	r, page := l.as("", "GET", "/compares/"+j.ID, nil)
-	if r.StatusCode != 200 || !strings.Contains(page, "speedometer-chrome") || !strings.Contains(page, "25.0%") || !strings.Contains(page, "better") {
+	if r.StatusCode != 200 || !strings.Contains(page, "speedometer") || !strings.Contains(page, "25.0%") || !strings.Contains(page, "better") {
 		t.Errorf("public page: %s\n%s", r.Status, page)
 	}
 }
@@ -285,7 +338,7 @@ func TestACandidateThatIsNotConfirmedIsBootFailed(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(l.s.jobDir(j.ID), "candidate-b", "journal.txt")); err != nil || !strings.Contains(string(b), "gdm: no session") {
 		t.Errorf("the candidate's journal is not kept with the job: %q %v", b, err)
 	}
-	if sp := rowOf(t, j.Result.Compare, "speedometer-chrome"); sp.Verdict != api.VerdictNotCompared || sp.B != nil {
+	if sp := rowOf(t, j.Result.Compare, "speedometer"); sp.Verdict != api.VerdictNotCompared || sp.B != nil || sp.Note != "B did not run it" {
 		t.Errorf("a row with no B: %+v", sp)
 	}
 	d := l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady })
@@ -399,102 +452,137 @@ func TestCompareWaitsForHandsUntilDone(t *testing.T) {
 	}
 }
 
-// --macos adds the same tier run in macOS, where the macOS runner uploads
-// it: its values sit beside A's, compared where the API is the same.
+// --macos with no macOS result kept boots macOS once for the Mac's macOS
+// run of the job's set: its values sit beside A's by metric id, compared
+// against A by the metric's tolerance, "API differs" marked and compared.
 func TestCompareWithMacOS(t *testing.T) {
 	l, _ := compareLab(t, nil)
-	if _, err := l.s.macOS().enrolSecret(l.name, "mos_test-secret"); err != nil {
-		t.Fatal(err)
-	}
+	macOSResultSet(t, l)
+	secret := enrollRunner(t, l)
+	// An Attended Mac: the scheduler waits for a person, and the Compare
+	// takes the run it queued.
+	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	l.sim.MacOSFor = 2 * time.Second
 	l.sim.InMacOS = func() {
-		r, body := l.as("mos_test-secret", "GET", "/api/macos/runner/poll", nil)
-		var poll api.MacOSPoll
-		if r.StatusCode != 200 || json.Unmarshal([]byte(body), &poll) != nil || poll.Run == nil {
-			t.Errorf("poll: %s %s", r.Status, body)
+		run := pollAs(t, l, secret, bootHash(9), l.s.now(), "")
+		if run == nil {
+			t.Error("the lab's boot was handed no run")
 			return
 		}
-		v := func(f float64) *float64 { return &f }
-		up := api.MacOSResults{RunID: poll.Run.ID, Results: []api.BenchResult{
-			{Name: "speedometer/chrome", Version: "3.1", Value: v(30), Unit: "score", HigherIsBetter: true},
-			{Name: "7zip", Version: "26.06", Value: v(90), Unit: "MIPS", HigherIsBetter: true},
-			{Name: "glmark2", Note: api.NoMacOSEquivalent},
-		}}
-		if r, body := l.as("mos_test-secret", "POST", "/api/macos/runner/results", up); r.StatusCode != 200 {
-			t.Errorf("results: %s %s", r.Status, body)
+		up := macOSUpload(t, perf.Succeeded, map[string]float64{"speedometer": 30, "coremark-single": 102, "decode-h264-1080p": 150})
+		up["entries"] = append(up["entries"].([]map[string]any), perfEntry(t, "motionmark", 0, perf.NoBuild))
+		if r, body := l.as(secret, "POST", fmt.Sprintf("/api/macos/runner/performance/%d/results", run.PerfRun), up); r.StatusCode != 200 {
+			t.Errorf("results: %d %s", r.StatusCode, body)
 		}
 	}
 	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
 	l.expect(j, api.OutcomePass)
 	res := j.Result.Compare
-	if m := res.Side(api.SideMacOS); m == nil || m.Boot != api.MacOSDone || len(m.Bench) != 3 {
+	if m := res.Side(api.SideMacOS); m == nil || m.Boot != api.MacOSDone || len(m.Bench) != 4 {
 		t.Fatalf("macOS: %+v", m)
 	}
-	if sp := rowOf(t, res, "speedometer-chrome"); !near(sp.MacOS, 30) || !near(sp.MacOSDelta, 50) || sp.MacOSVerdict != api.VerdictBetter {
+	if sp := rowOf(t, res, "speedometer"); !near(sp.MacOS, 30) || !near(sp.MacOSDelta, 50) || sp.MacOSVerdict != api.VerdictBetter || sp.MacOSNote != "" {
 		t.Errorf("Speedometer in macOS: %+v", sp)
 	}
-	if g := rowOf(t, res, "glmark2"); g.MacOS != nil || g.MacOSNote != api.NoMacOSEquivalent {
-		t.Errorf("glmark2 in macOS: %+v", g)
+	if c := rowOf(t, res, "coremark-single"); !near(c.MacOSDelta, 2) || c.MacOSVerdict != api.VerdictNoChange {
+		t.Errorf("CoreMark in macOS: %+v", c)
+	}
+	if d := rowOf(t, res, "decode-h264-1080p"); !near(d.MacOSDelta, 50) || d.MacOSVerdict != api.VerdictBetter ||
+		d.MacOSNote != "API differs: V4L2 request on Omarchy, VideoToolbox on macOS" {
+		t.Errorf("H.264 decode in macOS: %+v", d)
+	}
+	if m := rowOf(t, res, "motionmark"); m.MacOS != nil || m.MacOSVerdict != api.VerdictNotCompared || m.MacOSNote != perf.NoBuild {
+		t.Errorf("MotionMark in macOS: %+v", m)
+	}
+	if p := rowOf(t, res, "power-idle"); p.MacOSVerdict != api.VerdictNotCompared || p.MacOSNote != "macOS did not run it" {
+		t.Errorf("idle power in macOS: %+v", p)
+	}
+	if b := rowOf(t, res, "boot-time"); b.MacOSVerdict != "" || b.MacOS != nil {
+		t.Errorf("boot time, Omarchy only, in macOS: %+v", b)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.Kernel == agent.SimKnownGood })
 }
 
-// Noise is twice the spread of the Mac's last 3 A-side runs of a
-// benchmark, and its default until 3 exist.
-func TestCompareNoise(t *testing.T) {
-	for _, c := range []struct {
-		name    string
-		history []float64
-		noise   float64
-		from    string
-	}{
-		{"speedometer-chrome", nil, 3, "default"},
-		{"jetstream-chrome", []float64{1, 2}, 3, "default"},
-		{"7zip", nil, 2, "default"},
-		{"vkmark", nil, 5, "default"},
-		{"geekbench-single", nil, 5, "default"},
-		{"speedometer-chrome", []float64{50, 90, 100, 110}, 40, "last 3 A-side runs"},
-		{"7zip", []float64{100, 100, 100}, 0, "last 3 A-side runs"},
-	} {
-		n, from := compareNoise(c.name, c.history)
-		if math.Abs(n-c.noise) > 0.01 || from != c.from {
-			t.Errorf("%s %v: %.2f%% from %s, want %.2f%% from %s", c.name, c.history, n, from, c.noise, c.from)
+// A change within the metric's tolerance in the set is no change; beyond
+// it, better or worse by the set's direction, lower better where it says
+// so: the direction is the set's, whatever a side's entry says.
+func TestCompareVerdictsByTheSetsTolerance(t *testing.T) {
+	set := &sets.Set{Name: "bench-9", N: 9, Metrics: []sets.Metric{
+		{ID: "cpu", Unit: "score", Direction: "higher", Tolerance: 2, List: sets.Quick, Omarchy: &sets.Side{}, MacOS: &sets.Side{}},
+		{ID: "watts", Unit: "W", Direction: "lower", Tolerance: 5, List: sets.Quick, Omarchy: &sets.Side{}, MacOS: &sets.Side{}},
+		{ID: "gpu", Unit: "score", Direction: "higher", Tolerance: 3, List: sets.Full, Omarchy: &sets.Side{}},
+	}}
+	v := func(f float64) *float64 { return &f }
+	side := func(name string, vals map[string]float64) *api.CompareSide {
+		s := &api.CompareSide{Side: name}
+		for id, x := range vals {
+			s.Bench = append(s.Bench, api.BenchResult{Name: id, Value: v(x), HigherIsBetter: true})
 		}
+		return s
 	}
 	for _, c := range []struct {
+		metric string
 		a, b   float64
-		higher bool
-		noise  float64
 		want   string
 	}{
-		{100, 103, true, 2, api.VerdictBetter},
-		{100, 102, true, 2, api.VerdictNoChange},
-		{100, 97, true, 2, api.VerdictWorse},
-		{10, 9, false, 5, api.VerdictBetter},
-		{10, 11, false, 5, api.VerdictWorse},
+		{"cpu", 100, 102, api.VerdictNoChange},
+		{"cpu", 100, 98, api.VerdictNoChange},
+		{"cpu", 100, 103, api.VerdictBetter},
+		{"cpu", 100, 97, api.VerdictWorse},
+		{"watts", 10, 10.5, api.VerdictNoChange},
+		{"watts", 10, 9, api.VerdictBetter},
+		{"watts", 10, 11, api.VerdictWorse},
 	} {
-		d, got := verdict(c.a, c.b, c.higher, c.noise)
-		if got != c.want {
-			t.Errorf("%v→%v (higher better %v, noise %v): %s (%.1f%%), want %s", c.a, c.b, c.higher, c.noise, got, d, c.want)
+		rows := compareRows(set, sets.Quick, side("A", map[string]float64{c.metric: c.a}), side("B", map[string]float64{c.metric: c.b}), nil)
+		var r *api.CompareRow
+		for i := range rows {
+			if rows[i].Name == c.metric {
+				r = &rows[i]
+			}
 		}
+		if len(rows) != 2 || r == nil {
+			t.Fatalf("rows %+v, want the Quick list's two", rows)
+		}
+		if r.Verdict != c.want || r.Delta == nil || r.Tolerance != set.Metrics[slices.IndexFunc(set.Metrics, func(m sets.Metric) bool { return m.ID == c.metric })].Tolerance {
+			t.Errorf("%s %v→%v: %+v, want %s", c.metric, c.a, c.b, r, c.want)
+		}
+	}
+	if _, got := verdict(0, 5, true, 2); got != api.VerdictNotCompared {
+		t.Errorf("against 0: %s", got)
 	}
 }
 
-// Each Compare's A values add to the Mac's history, so the fourth Compare
-// on a Mac judges by its own noise.
-func TestCompareNoiseLearnsFromEarlierCompares(t *testing.T) {
-	l, _ := compareLab(t, nil)
-	for i := 0; i < 3; i++ {
-		l.s.addNoise(l.name, map[string]float64{"speedometer-chrome": 20 + float64(i)})
+// A metric a side did not run, or ran with a reason code, is not compared,
+// with the reason.
+func TestCompareRowsNotComparedSayWhy(t *testing.T) {
+	set, err := sets.Load("bench-1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3"})
-	sp := rowOf(t, j.Result.Compare, "speedometer-chrome")
-	// history 21, 22 and this run's 20: spread 2/21, twice it 19.05%
-	if sp.NoiseFrom != "last 3 A-side runs" || math.Abs(sp.Noise-19.05) > 0.01 || sp.Verdict != api.VerdictBetter {
-		t.Errorf("Speedometer: %+v", sp)
+	v := func(f float64) *float64 { return &f }
+	a := &api.CompareSide{Side: api.SideA, Bench: []api.BenchResult{
+		{Name: "speedometer", Value: v(20)}, {Name: "motionmark", Value: v(1000)}, {Name: "stream-triad", Note: perf.DiskTooFull},
+	}}
+	b := &api.CompareSide{Side: api.SideB, Bench: []api.BenchResult{
+		{Name: "speedometer", Note: perf.SoftwareRenderer}, {Name: "stream-triad", Value: v(90)},
+	}}
+	rows := compareRows(set, sets.Quick, a, b, nil)
+	byID := map[string]api.CompareRow{}
+	for _, r := range rows {
+		byID[r.Name] = r
+		if r.Verdict != api.VerdictNotCompared || r.Delta != nil || r.MacOSVerdict != "" {
+			t.Errorf("%s: %+v", r.Name, r)
+		}
 	}
-	if fmt.Sprint(l.s.noiseOf(l.name)["speedometer-chrome"]) != "[20 21 22 20]" {
-		t.Errorf("history %v", l.s.noiseOf(l.name))
+	for id, want := range map[string]string{
+		"speedometer":     "B: software_renderer",
+		"motionmark":      "B did not run it",
+		"stream-triad":    "A: disk_too_full",
+		"coremark-single": "A did not run it; B did not run it",
+	} {
+		if byID[id].Note != want {
+			t.Errorf("%s: note %q, want %q", id, byID[id].Note, want)
+		}
 	}
 }
 
@@ -522,5 +610,19 @@ func TestABootLoaderSetNeedsASightingFromTheStart(t *testing.T) {
 	}
 	if code, _, body := l.compare(harnessToken, api.CompareRequest{Before: "current", After: "own-m1n1"}); code != 200 {
 		t.Errorf("a set at the Mac's own m1n1: %d %s", code, body)
+	}
+}
+
+// The runner of a Benchmark set writes metric ids and reason codes.
+func TestCompareReadsABenchmarkSetsEntries(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bench.json")
+	os.WriteFile(p, []byte(`[{"set":"bench-1","metric":"7zip","category":"CPU","version":"26.06","value":50450,"unit":"MIPS","higher_is_better":true,"spread":null,"seconds":60,"cool_down":null,"api":null,"capacity":null,"reason":null},
+{"set":"bench-1","metric":"clpeak-fp32","category":"GPU","version":"3.0.5","value":null,"unit":"GFLOPS","higher_is_better":true,"spread":null,"seconds":2,"cool_down":{"seconds":0,"temp_c":41.0},"api":"Rusticl","capacity":null,"reason":"fell_back"}]`), 0o644)
+	rs := readBench(p)
+	if len(rs) != 2 || rs[0].Name != "7zip" || rs[0].Value == nil || *rs[0].Value != 50450 || rs[0].Note != "" {
+		t.Fatalf("read %+v", rs)
+	}
+	if rs[1].Name != "clpeak-fp32" || rs[1].Value != nil || rs[1].Note != "fell_back" || rs[1].API != "Rusticl" {
+		t.Errorf("read %+v", rs[1])
 	}
 }

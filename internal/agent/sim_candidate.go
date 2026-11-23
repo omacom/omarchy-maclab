@@ -140,7 +140,12 @@ func (s *Sim) StageCandidate(ctx context.Context, job string, a api.CandidateSta
 	base := s.cmdline
 	s.mu.Unlock()
 	cmdline := testCmdline(base+" rootflags=subvol="+api.CandidateSubvolume, api.StageArgs{BootTimeoutSec: a.BootTimeoutSec, WatchdogOpenTimeoutSec: a.WatchdogOpenTimeoutSec}, job)
-	e := simEntry{krel: krel, behavior: behavior, cmdline: cmdline}
+	e := simEntry{krel: krel, behavior: behavior, cmdline: cmdline, stack: map[string]string{}}
+	for _, p := range a.Set.Packages {
+		if api.StackPackage(p.Name) {
+			e.stack[p.Name] = p.Version
+		}
+	}
 	if behavior == "ok" || behavior == "unconfirmed" || behavior == "skipped" {
 		e.behavior = "candidate-" + behavior
 	}
@@ -191,15 +196,25 @@ func (s *Sim) CleanupCandidate(ctx context.Context, job string, keep bool) error
 	return nil
 }
 
-// BootMacOS is boot-macos-once on the simulated Mac: labd is told, and the
-// next boot is macOS, for MacOSFor, then the Mac is back on its own system.
+// BootMacOS is boot-macos-once on the simulated Mac: the next boot is
+// macOS, for MacOSFor, then the Mac is back on its own system; labd is told
+// once it is set, and a refusal puts the next boot back.
 func (s *Sim) BootMacOS(ctx context.Context, started func() error) error {
+	s.mu.Lock()
+	fails := s.BlessFails
+	if fails == nil {
+		s.macOSNext = true
+	}
+	s.mu.Unlock()
+	if fails != nil {
+		return fails
+	}
 	if err := started(); err != nil {
+		s.mu.Lock()
+		s.macOSNext = false
+		s.mu.Unlock()
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.macOSNext = true
 	return nil
 }
 

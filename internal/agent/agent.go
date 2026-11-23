@@ -128,6 +128,7 @@ type Agent struct {
 	factsRevision     uint64
 	sentFactsRevision uint64
 	lastFacts         time.Time
+	factsBoot         string          // the boot the last facts sent were of
 	after             []afterAck      // actions to run once pending results reach labd
 	forgotten         map[string]bool // after's commands labd said it gave up on
 	contacted         string          // the Lab boot whose contact with labd is on record
@@ -470,7 +471,9 @@ func (a *Agent) poll(ctx context.Context) error {
 		SnapshotEligible: a.sys.SnapshotEligible() == nil, AgentStart: a.runID}
 	a.mu.Lock()
 	factsRevision := a.factsRevision
-	refreshFacts := a.lastFacts.IsZero() || a.sentFactsRevision != factsRevision || a.clock().Now().Sub(a.lastFacts) >= time.Minute
+	// A new boot is new facts: a candidate boot's stack is its set's.
+	refreshFacts := a.lastFacts.IsZero() || a.sentFactsRevision != factsRevision || a.clock().Now().Sub(a.lastFacts) >= time.Minute ||
+		a.factsBoot != bootID
 	for id := range a.running {
 		ci.Running = append(ci.Running, id)
 	}
@@ -497,7 +500,7 @@ func (a *Agent) poll(ctx context.Context) error {
 		if ac, err := loadAccess(a.workDir()); err != nil {
 			a.log.Printf("Access level: %v", err) // labd keeps its last copy; the agent reads it as Qualification
 		} else {
-			ci.AccessLevel, ci.Publish = ac.Level, ac.Publish
+			ci.AccessLevel, ci.Publish, ci.Performance = ac.Level, ac.Publish, ac.Performance
 		}
 	}
 	if refreshFacts {
@@ -536,6 +539,7 @@ func (a *Agent) poll(ctx context.Context) error {
 		// only the revision sent, so that refresh is not lost.
 		a.sentFactsRevision = factsRevision
 		a.lastFacts = a.clock().Now()
+		a.factsBoot = bootID
 	}
 	a.mu.Unlock()
 	if resp.Window != nil && a.volunteer() {
@@ -1022,6 +1026,9 @@ func (a *Agent) exec(ctx context.Context, c api.Command) (any, *afterAck, error)
 		}
 		res := a.sys.RunTest(ctx, c.JobID, t, budgetFetch(fetch, 1+len(t.Payload), func() { a.startBudget(tr) }), a.quiet, dir)
 		a.endTest(tr)
+		if t.Bench != nil && t.Bench.Run > 0 && isBench(t.Builtin) {
+			benchUploaded(&res, a.benchUpload(ctx, t.Bench, dir))
+		}
 		res.Files = a.uploadDir(ctx, c.JobID, "test-"+t.Name, dir)
 		return res, nil, nil
 	case api.CmdInstall:

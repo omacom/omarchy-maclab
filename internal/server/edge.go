@@ -65,11 +65,11 @@ const (
 // never be kept, as /status, stays out of both.
 var (
 	keptPaths = []string{
-		"/", "/matrix", "/models", "/features", "/gaps", "/aurora", "/benchmarks", "/candidates", "/reports", "/data", "/install", "/install/lab", "/terms", "/privacy",
+		"/", "/matrix", "/models", "/features", "/gaps", "/aurora", "/performance", "/candidates", "/reports", "/data", "/install", "/install/lab", "/terms", "/privacy",
 		"/api/v1/reports", "/api/v1/reports.json", "/api/v1/reports.csv", "/api/v1/checks", "/api/v1/checks.csv",
-		"/api/v1/matrix", "/api/v1/matrix.json", "/api/v1/benchmarks", "/api/v1/benchmarks.json", "/api/v1/aurora", "/api/v1/aurora.json",
+		"/api/v1/matrix", "/api/v1/matrix.json", "/api/v1/benchmarks", "/api/v1/benchmarks.json", "/api/v1/aurora", "/api/v1/aurora.json", "/api/v1/performance.json",
 	}
-	keptUnder = []string{"/models/", "/features/", "/candidates/", "/reports/"}
+	keptUnder = []string{"/models/", "/features/", "/performance/", "/candidates/", "/reports/"}
 )
 
 const neverKeptEnd = "/deletion"

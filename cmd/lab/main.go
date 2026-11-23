@@ -51,6 +51,8 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
                                       Volunteer's Mac is never sent one: its Volunteer runs sudo lab-agent update
   lab macos enroll <mac>              a Mac's macOS runner (Maintainers): prints the one-time line to run in macOS on
                                       the Mac, after its install.sh, good for 1 hour; then labd's macOS runs reach it
+  lab macos at-mac <mac>              you are at the Attended Mac whose macOS run waits for a person: labd boots
+                                      macOS, and you type its password and log in
   lab baseline <device>               prove the one-shot boot works; required once per Mac
   lab build <github-url> --device <mac> | --config <file>   build a kernel from a repo, branch, commit or PR URL (reused if built before)
   lab package <recipe-dir> [--commit <github-url>] [--pkgrel 11.14] [-o dir]
@@ -63,8 +65,9 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab set list | lab set show <name>  the Package sets, and one set's packages with each file's sha256
   lab compare <mac> --before <set|current> --after <set> [--macos] [--tier default|extended] [--hands] [--no-wait]
                                       a Compare (Maintainers): A (the known-good system or a set) and B (a set, as a
-                                      Candidate boot) run the same benchmarks and omarchy-m-test; per benchmark
-                                      better, worse or no change against the Mac's noise. Private until published
+                                      Candidate boot) run the current Benchmark set's Quick (default) or Full
+                                      (extended) list and omarchy-m-test; per metric better, worse or no change by
+                                      its tolerance in the set. Private until published
   lab compare done|publish|show <job> a person is done at the Mac; publish the report; print it
   lab exec <device> <command...>      run a command on a Mac as root, through lab-agent. It needs your own Lease on
                                       the Mac, a Maintainer's too. The command's text is kept in the Exec record
@@ -124,8 +127,12 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab oob <device>                    its cable: sighted, not sighted or no cable, and what the ports show
   lab audit <device>                  labd's copy of a Volunteer's Mac's Audit log: every Maintainer action on it
   lab upload <file> [--for <mac>]     to the artifact store, in 32 MiB parts; cut, the same command resumes
-  lab bench mirror [--from <dir>]     every pinned benchmark file, downloaded, checked against its sha256 and
-                                      put in the artifact store, where lab-agent fetches it (Maintainers)
+  lab perf rerun <mac> <release> [--no-wait]
+                                      run the Mac's Performance run of a Release again, under your Lease (taken for
+                                      you when you hold none): its values replace the last only if it succeeds.
+                                      A Maintainer, or the Mac's Lease holder
+  lab bench mirror [--from <dir>]     every Benchmark set's pinned files, downloaded, checked against their sha256
+                                      and put in the artifact store, where the Macs fetch them (Maintainers)
   lab mcp                             MCP server on stdio, for AI agents
   lab version                         the Lab release this lab came from, and the one Omarchy Mac Lab runs
 `
@@ -140,7 +147,7 @@ var (
 		"boot-test", "login", "builder", "status", "enroll", "remove", "device", "baseline", "build", "package",
 		"builds", "build-log", "build-get", "exec", "run", "crashtest", "pack", "jobs", "job", "wait", "cancel",
 		"logs", "gate", "exclude", "retry", "publish", "lease", "release", "installed", "reset", "oob", "audit",
-		"upload", "agent-update", "macos", "controller", "mcp", "version", "set", "compare", "bench",
+		"upload", "agent-update", "macos", "controller", "mcp", "version", "set", "compare", "bench", "perf",
 	}
 	atHome = []string{"boot-test", "login", "pack", "mcp", "version"}
 )
@@ -322,8 +329,16 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 
 	case "macos":
 		pos := parse(fs, args)
+		if len(pos) == 2 && pos[0] == "at-mac" {
+			run, err := c.MacOSAtMac(ctx, pos[1])
+			if err != nil {
+				return err
+			}
+			fmt.Println(atMacWords(pos[1], run))
+			return nil
+		}
 		if len(pos) != 2 || pos[0] != "enroll" {
-			return fmt.Errorf("usage: lab macos enroll <mac>")
+			return fmt.Errorf("usage: lab macos enroll <mac> | lab macos at-mac <mac>")
 		}
 		t, err := c.MacOSEnrollToken(ctx, pos[1])
 		if err != nil {
@@ -331,7 +346,8 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 		}
 		fmt.Printf("The macOS runner's line for %s (one Mac, once; expires %s). Keep it private.\n\n", t.Mac, t.Expires.Format(time.DateTime))
 		fmt.Printf("In macOS on the Mac, install lab-macos-runner-darwin-arm64.tar.gz from the Lab release (sudo ./install.sh), then run:\n\n  %s\n\n", t.Line)
-		fmt.Println("A FileVault Mac needs a person at every macOS run: macOS waits for its password at the screen.")
+		fmt.Println("The Mac is Attended, a macOS run waiting for a person to type its password, until sudo lab-macos-runner setup")
+		fmt.Println("turns FileVault off and logs its user in automatically, on yes at the Mac, and a boot reaches the desktop alone.")
 		return nil
 
 	case "enroll":
@@ -599,6 +615,9 @@ func dispatch(ctx context.Context, c *client.Client, cmd string, args []string) 
 
 	case "bench":
 		return benchCmd(ctx, c, args)
+
+	case "perf":
+		return perfCmd(ctx, c, args)
 
 	case "builds":
 		l, err := c.Builds(ctx, 20)

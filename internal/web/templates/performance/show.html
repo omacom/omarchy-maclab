@@ -1,0 +1,90 @@
+{{define "main"}}{{with .Data}}<p class="crumb"><a href="{{.BackHref}}">Performance</a> / <a href="{{.ModelHref}}">{{.Name}}</a> / {{.Cores}}</p>
+<h1>{{.Name}}</h1>
+<p class="subtitle mono">{{.Board}} · {{.Cores}}{{with .Chip}} · {{.}}{{end}}</p>
+
+<div class="perf-facts">
+<div class="perf-fact"><span class="perf-fact-label">Macs</span><span>{{.Kinds}}{{if .VolunteerHeadline}} <span class="badge badge-volunteer">Volunteer only</span>{{end}}</span>{{if .VolunteersHidden}}<span class="dim">Volunteers' Macs hidden</span>{{end}}</div>
+<div class="perf-fact"><span class="perf-fact-label">SSD sizes</span><span>{{or .SSD "–"}}</span></div>
+<div class="perf-fact"><span class="perf-fact-label">macOS result</span>{{with .Comparison}}<span><span class="mono">macOS {{.Version}}</span> <span class="dim">build {{.Build}}</span></span><span class="dim">measured {{.Measured}} · {{.Macs}}</span>{{else}}<span class="dim">none yet: its Macs wait for their macOS run</span>{{end}}
+{{range .Older}}<span class="dim">{{.Macs}} on macOS {{.Version}} ({{.Build}}), shown apart: {{.Note}}</span>{{end}}</div>
+<div class="perf-fact perf-fact-picker">{{template "perf_picker" .Picker}}</div>
+</div>
+{{template "perf_legend"}}
+
+{{if .Comparison}}{{if .Measured}}<section class="perf-summary" aria-labelledby="perf-summary-title">
+<h2 class="perf-section-label" id="perf-summary-title">{{.Release.Kernel}} against {{.MacOS}} · overall {{template "perf_figure" .Overall}}{{with .Overall.Trend}} <span class="dim">{{.}}</span>{{end}}</h2>
+<div class="perf-tiles">
+{{range .Tiles}}<a class="perf-tile" href="#{{.ID}}">
+<span class="perf-tile-name">{{.Name}}</span>
+<span class="perf-tile-figure">{{template "perf_figure" .Figure}}{{with .Figure.Trend}} <span class="dim perf-trend">{{.}}</span>{{end}}</span>
+{{template "perf_bar" .Figure}}
+<span class="dim">{{if .Worst}}{{.Worst}}{{else}}{{.Coverage}}{{end}}</span>
+</a>
+{{end}}</div>
+</section>
+
+<section class="card">
+<h2 class="card-title">biggest gaps</h2>
+<p class="dim">Worst first, {{.Release.Kernel}} against {{.MacOS}}, beyond each benchmark's tolerance.{{with .TrendFrom}} The trend runs from {{.}}, for the same Macs.{{end}}</p>
+{{if .Gaps}}{{template "perf_gaps" .Gaps}}{{if .MoreGaps}}<p class="dim">and {{.MoreGaps}} more in the sections below.</p>{{end}}{{else}}<p class="dim">No row is beyond its tolerance under {{.MacOS}}.</p>
+{{end}}</section>
+{{else if .Release}}<div class="empty"><p>Not measured on {{.Release.Kernel}} yet.</p></div>
+{{end}}
+
+{{$page := .}}{{range .Sections}}<details class="card perf-category" id="{{.ID}}"{{if .Open}} open{{end}}>
+<summary class="perf-category-head">
+<span class="perf-category-name">{{.Name}}</span>
+{{if .Figure.Has}}{{template "perf_figure" .Figure}} <span class="dim">{{.Of}}</span>{{end}}
+<span class="dim perf-category-count">{{.Count}}{{with .Coverage}} · {{.}}{{end}}{{with .Excluded}} · {{.}}{{end}}</span>
+</summary>
+<div class="scroll perf-box"><table class="list perf-table perf-metrics">
+<thead><tr><th scope="col">Benchmark</th><th scope="col" class="perf-macos-head"><span class="mono">{{$page.MacOS}}</span><span class="row-meta">measured {{$page.Comparison.Measured}}</span></th>
+{{range $page.Columns}}<th scope="col" class="perf-release-head{{if .Current}} perf-current{{end}}"><span class="mono">{{.Kernel}}</span>{{if .NoVerdict}} <span class="badge badge-no-verdict">no verdict yet</span>{{end}}<span class="row-meta">{{.Macs}}</span>{{with .Differs}}<span class="row-meta perf-flag">{{.}}</span>{{end}}{{with .Changed}}<span class="row-meta perf-flag">{{.}}</span>{{end}}</th>
+{{end}}</tr></thead>
+<tbody>
+{{range .Lines}}{{if .Group}}<tr class="perf-group"><th scope="rowgroup" colspan="{{$page.Span}}">{{.Group}}</th></tr>
+{{end}}<tr class="perf-metric">
+<td><span class="perf-metric-name">{{.Name}}</span><span class="row-meta">{{.Unit}}</span>{{with .API}}<span class="badge badge-api">{{.}}</span>{{end}}{{with .Volunteer}}
+<button class="model-toggle" type="button" data-volunteer-line aria-controls="{{.ID}}" aria-expanded="true" hidden>{{.Label}}</button>{{end}}</td>
+<td class="perf-macos mono">{{.MacOS}}</td>
+{{range .Cells}}<td class="perf-cell{{if .Current}} perf-current{{end}}">{{if .Reason}}<span class="perf-reason">{{.Reason}}</span>{{else}}<span class="mono">{{.Value}}</span> {{template "perf_figure" .Figure}}{{with .Figure.Trend}}<span class="row-meta perf-trend">{{.}}</span>{{end}}{{end}}</td>
+{{end}}</tr>
+{{with .Volunteer}}<tr class="perf-volunteer-line" id="{{.ID}}">
+<td><span class="badge badge-volunteer">Volunteer</span> <span class="dim">{{.Label}} · not in the headline</span></td>
+<td class="perf-macos mono">{{.MacOS}}</td>
+{{range .Cells}}<td class="perf-cell{{if .Current}} perf-current{{end}}">{{if .Reason}}<span class="perf-reason">{{.Reason}}</span>{{else}}<span class="mono">{{.Value}}</span> {{template "perf_figure" .Figure}}{{end}}</td>
+{{end}}</tr>
+{{end}}{{end}}</tbody>
+</table></div>
+{{if $page.OlderHref}}<p><a class="button button-small button-plain" href="{{$page.OlderHref}}">Show older</a></p>
+{{else if $page.FewerHref}}<p><a class="button button-small button-plain" href="{{$page.FewerHref}}">Show fewer</a></p>
+{{end}}</details>
+{{end}}
+
+{{if .Stacks}}<details class="card perf-category" id="stacks">
+<summary class="perf-category-head"><span class="perf-category-name">Stacks</span> <span class="dim">what each column booted, by package</span></summary>
+<div class="scroll perf-box"><table class="list perf-table">
+<thead><tr><th scope="col">Release</th>{{range .Packages}}<th scope="col" class="mono">{{.}}</th>{{end}}</tr></thead>
+<tbody>
+{{range .Stacks}}<tr><td class="mono">{{.Kernel}}</td>{{range .Versions}}<td class="mono">{{.}}</td>{{end}}</tr>
+{{end}}</tbody>
+</table></div>
+</details>
+{{end}}
+
+{{if .OmarchyOnly}}<section class="card" id="omarchy-only">
+<h2 class="card-title">Omarchy only</h2>
+<p class="dim">No like-for-like macOS figure: tracked from Release to Release.</p>
+<div class="scroll perf-box"><table class="list perf-table">
+<thead><tr><th scope="col">Benchmark</th>{{range $page.Columns}}<th scope="col" class="perf-release-head{{if .Current}} perf-current{{end}}"><span class="mono">{{.Kernel}}</span>{{if .NoVerdict}} <span class="badge badge-no-verdict">no verdict yet</span>{{end}}</th>{{end}}</tr></thead>
+<tbody>
+{{range .OmarchyOnly}}<tr><td><span class="perf-metric-name">{{.Name}}</span><span class="row-meta">{{.Unit}}</span></td>
+{{range .Cells}}<td class="perf-cell{{if .Current}} perf-current{{end}}"><span class="mono">{{.Value}}</span>{{with .Change}}<span class="row-meta">{{.}}</span>{{end}}</td>{{end}}</tr>
+{{end}}</tbody>
+</table></div>
+</section>
+{{end}}{{end}}
+
+<p class="dim">Each Mac is paired with its own macOS result; a cell is the median of those ratios over the headline Macs, with the median values beside it. A change within a benchmark's tolerance is grey. Power is macOS's draw over Omarchy's. Storage is compared only at one SSD size. A row marked API differs reaches the hardware through another API on each system: shown, read with care.</p>
+<p class="dim"><a href="{{.DataHref}}">performance.json</a> (CC0).</p>
+{{end}}{{end}}

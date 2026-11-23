@@ -12,15 +12,16 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/client"
 )
 
 const benchUsage = "lab bench mirror [--from <dir>]"
 
-// benchCmd is `lab bench mirror`: every pinned benchmark file, downloaded
-// here, checked against its sha256 and put in labd's artifact store, from
-// where lab-agent fetches it. A Mac never reaches the internet for one.
+// benchCmd is `lab bench mirror`: every Benchmark set's pinned files,
+// downloaded here, checked against their sha256 and put in labd's artifact
+// store, from where the Macs fetch them. A Mac never reaches the internet
+// for one.
 func benchCmd(ctx context.Context, c *client.Client, args []string) error {
 	if len(args) == 0 || args[0] != "mirror" {
 		return fmt.Errorf("usage: %s", benchUsage)
@@ -30,14 +31,50 @@ func benchCmd(ctx context.Context, c *client.Client, args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	items, err := bench.Manifest()
+	all, err := sets.All()
 	if err != nil {
 		return err
 	}
-	return mirrorBench(ctx, items, *from, http.DefaultClient, c.Upload, os.Stdout)
+	return mirrorBench(ctx, mirrorItems(all, os.Stdout), *from, http.DefaultClient, c.Upload, os.Stdout)
 }
 
-func mirrorBench(ctx context.Context, items []bench.Item, from string, hc *http.Client,
+// benchFile is one pinned file to mirror, named set/system/file.
+type benchFile struct {
+	Name    string
+	Version string
+	Kind    string
+	URL     string
+	SHA256  string
+	Size    int64
+}
+
+// mirrorItems is every set's pinned files, each sha256 once, named
+// set/system/file; a placeholder is said and left.
+func mirrorItems(all []*sets.Set, w io.Writer) []benchFile {
+	var out []benchFile
+	seen := map[string]bool{}
+	add := func(it benchFile) {
+		if !seen[it.SHA256] {
+			seen[it.SHA256] = true
+			out = append(out, it)
+		}
+	}
+	for _, s := range all {
+		for _, sys := range sets.Systems {
+			for _, f := range s.Files[sys] {
+				name := s.Name + "/" + sys + "/" + f.ID
+				if !f.Pinned() {
+					fmt.Fprintf(w, "%s: a placeholder, not mirrored\n", name)
+					continue
+				}
+				add(benchFile{Name: name, Version: f.Version, Kind: f.Kind, URL: f.URL, SHA256: f.SHA256, Size: f.Size})
+			}
+		}
+	}
+	return out
+}
+
+func mirrorBench(ctx context.Context, items []benchFile, from string, hc *http.Client,
 	upload func(context.Context, string) (string, error), w io.Writer) error {
 	tmp, err := os.MkdirTemp("", "lab-bench-mirror-*")
 	if err != nil {
@@ -56,7 +93,7 @@ func mirrorBench(ctx context.Context, items []bench.Item, from string, hc *http.
 		if got, err := sumFile(p); err != nil {
 			return fmt.Errorf("%s: %w", it.Name, err)
 		} else if got != it.SHA256 {
-			return fmt.Errorf("%s %s: sha256 %s, but benchmarks.json pins %s", it.Name, it.Version, got, it.SHA256)
+			return fmt.Errorf("%s %s: sha256 %s, but it is pinned at %s", it.Name, it.Version, got, it.SHA256)
 		}
 		sha, err := upload(ctx, p)
 		if err != nil {

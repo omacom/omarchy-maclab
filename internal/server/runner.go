@@ -445,6 +445,11 @@ func (s *Server) runJobAsked(ctx context.Context, v *dev, j *api.Job, c *jobCanc
 				s.log.Printf("job %s: the Lease it took: %v", j.ID, err)
 			}
 		}
+		if p := j.Spec.Performance; p != nil && p.LeaseTaken {
+			if err := s.releaseLease(v, s.submitter(j), perfHolder, false, ""); err != nil {
+				s.log.Printf("job %s: the Lease it took: %v", j.ID, err)
+			}
+		}
 		// The job stops counting for a drain in the step that frees the
 		// Mac, as it started counting in the one that gave it the Mac.
 		v.mu.Lock()
@@ -461,6 +466,7 @@ func (s *Server) runJobAsked(ctx context.Context, v *dev, j *api.Job, c *jobCanc
 			freed()
 		}
 		s.lapse(v) // a Lease extended for this job ends with it
+		s.perfKick()
 	}()
 
 	// A Mac still on a lab entry (an earlier job's restore failed or was cut
@@ -578,7 +584,17 @@ func windowCut(what string) (string, string) {
 // Volunteer's Mac, it waits for a window it fits in. labd's own omarchy-m-test
 // refreshes aren't retried: the next one is due anyway.
 func (r *jobRun) retry() {
+	if r.j.Spec.MacOS != nil {
+		r.ev("not retried: the Mac's macOS run is queued again at its next slot")
+		return
+	}
 	if r.j.Spec.Holder == omtHolder {
+		return
+	}
+	if r.j.Spec.Performance != nil && !r.j.UnderLease {
+		// what it did not measure is still missing, and queued again at the
+		// Mac's next slot
+		r.ev("not retried: the lab queues what is missing at the Mac's next slot")
 		return
 	}
 	if r.j.UnderLease {
@@ -663,8 +679,14 @@ func (r *jobRun) finishAt(outcome, summary string, at time.Time) {
 
 func (r *jobRun) execute(ctx context.Context) (string, string) {
 	v, j := r.v, r.j
+	if j.Spec.MacOS != nil {
+		return r.macOSRun(ctx)
+	}
 	if j.Spec.Compare != nil {
 		return r.compare(ctx)
+	}
+	if j.Spec.Performance != nil {
+		return r.performance(ctx)
 	}
 
 	if j.Spec.InstalledManifest != "" {
@@ -1063,7 +1085,10 @@ func errText(msg string) string {
 // tests are the tests a job runs on its Lab boot.
 func (r *jobRun) tests() []api.TestSpec {
 	if c := r.j.Spec.Compare; c != nil {
-		return compareTests(api.SideB, c.Tier, false)
+		return compareTests(api.SideB, c, false)
+	}
+	if p := r.j.Spec.Performance; p != nil {
+		return perfTests(p, 0)
 	}
 	tests := testsFor(r.j.Spec)
 	if r.ir != nil {
@@ -1103,6 +1128,9 @@ func (r *jobRun) labBootJob() time.Duration {
 // identity checks before, booted and after, and on a Volunteer's Mac the
 // Reboot warning's wait.
 func (r *jobRun) expectedLength() time.Duration {
+	if r.j.Spec.MacOS != nil {
+		return macosDeadline(api.TierExtended) + 2*r.boot + r.s.cfg.RebootGrace
+	}
 	d := r.s.cfg.StageTimeout + r.labBootJob()
 	if c := r.j.Spec.Compare; c != nil {
 		d *= 2

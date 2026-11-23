@@ -97,16 +97,19 @@ func artifactsIn(c api.Command) []string {
 }
 
 // testArtifacts are what a test fetches from labd: its script and payload,
-// and for a benchmark builtin every pinned file of the benchmark bundle.
+// and for a benchmark builtin the pinned Omarchy files of its set's list.
 func testArtifacts(t api.TestSpec) []string {
 	shas := []string{t.Script}
 	for _, p := range t.Payload {
 		shas = append(shas, p.SHA256)
 	}
-	if t.Builtin == "bench" || t.Builtin == "bench-extended" {
-		if items, err := bench.Manifest(); err == nil {
-			for _, it := range items {
-				shas = append(shas, it.SHA256)
+	if t.Bench != nil {
+		return append(shas, benchFiles(t.Bench)...)
+	}
+	if list, ok := bench.Builtins[t.Builtin]; ok {
+		if s, err := bench.Set(); err == nil {
+			for _, f := range bench.Files(s, list) {
+				shas = append(shas, f.SHA256)
 			}
 		}
 	}
@@ -121,6 +124,9 @@ func (v *dev) endJobLocked(job string) {
 	defer v.mu.Unlock()
 	if v.d.ActiveJob == job {
 		v.d.ActiveJob = ""
+	}
+	if v.perfClaim == job {
+		v.perfClaim = ""
 	}
 	if l := v.d.Lease; l != nil && l.Job == job {
 		free := *l

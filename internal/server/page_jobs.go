@@ -107,6 +107,8 @@ func jobWhat(j *api.Job) string {
 		return "Mesa test"
 	case spec.Compare != nil:
 		return "Compare " + spec.Compare.Before + " and " + spec.Compare.After
+	case spec.Performance != nil:
+		return "Performance run of Release " + spec.Performance.Release
 	case j.Result.BootKernel != "":
 		return "Boot " + j.Result.BootKernel
 	case spec.Source != "":
@@ -295,7 +297,7 @@ func (s *Server) renderJob(w http.ResponseWriter, r *http.Request, j *api.Job, p
 		data.BootedIn = took(time.Duration(res.BootSeconds * float64(time.Second)))
 	}
 	data.CanCancel, data.CancelSentence = !done && mayCancel(p, j) == nil, cancelSentence(j)
-	data.Retry = done && p.OnMTeam() && (spec.Compare == nil || p.isMaintainer())
+	data.Retry = done && p.OnMTeam() && (spec.Compare == nil || p.isMaintainer()) && spec.Performance == nil
 
 	names := []string{"boot-health"}
 	for _, t := range spec.Tests {

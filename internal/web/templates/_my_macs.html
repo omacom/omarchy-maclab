@@ -32,15 +32,21 @@
 {{if .Why}}<p>{{.Why}}</p>
 {{end}}{{if .LastLog}}<p class="dim">The last line the lab had from it: <code>{{.LastLog}}</code></p>
 {{end}}</div>
+{{end}}{{with .MacOSWait}}<div class="fence" id="macos-at-mac-{{$card.Name}}">
+<p><b>The lab would like {{$card.Name}}'s macOS result</b>, and waits for you at the Mac until {{.}}, else it is dropped. Say so when you are at it: the lab then boots macOS once, and you type its password and log in. It comes back to Omarchy by itself.</p>
+<form class="inline" method="post" action="{{href (print $card.Page "/macos/at-mac")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><input type="hidden" name="back" value="my-macs"><button class="button button-small" type="submit">I am at the Mac</button></form>
+</div>
 {{end}}<dl class="facts">
 <dt>Configuration</dt><dd>{{.Configuration}}</dd>
 <dt>State</dt><dd>{{.State}}{{if .Reason}} <span class="dim">{{.Reason}}</span>{{end}}</dd>
 <dt>Availability window</dt><dd>{{if .Schedule}}{{.Schedule}}{{if .Zone}} <span class="dim">({{.Zone}})</span>{{end}}{{else}}none yet{{end}} <br>{{.Window}}{{if .Pending}} <br>{{.Pending}} <span class="dim">pending until the Mac checks in</span>{{end}}</dd>
 <dt>Access level</dt><dd>{{.AccessLevel}}</dd>
 <dt>Publishing</dt><dd>{{if .Publishing}}on <span class="dim">the lab may publish this Mac's reports</span>{{else}}off <span class="dim">the lab publishes none of this Mac's reports</span>{{end}}</dd>
+<dt>Performance runs</dt><dd>{{if .Performance}}on <span class="dim">the lab may use this Mac's window to measure Releases, at Access level Full and on AC power</span>{{else}}off <span class="dim">the lab starts no Performance run here</span>{{end}} <span class="dim">changed at the Mac</span></dd>
 <dt>Installed runs</dt><dd>{{if .Eligible}}Eligible{{else}}not Eligible <span class="dim">its system cannot be captured first</span>{{end}} <span class="dim">Installed runs are not offered on a Volunteer's Mac yet.</span></dd>
 <dt>Notices</dt><dd>{{if .Topic}}{{template "copy" (copy "the Notices topic" .Topic)}}{{else}}<span class="dim">no topic</span>{{end}} <span class="nowrap">job Notices {{if .JobNotices}}on{{else}}off{{end}}</span>{{template "topic-refused" .TopicRefused}}</dd>
 <dt>Lease</dt><dd>{{if .Holder}}@{{.Holder}}{{if .HolderKind}} <span class="badge {{.HolderClass}}">{{.HolderKind}}</span>{{end}} <span class="nowrap">until {{.Until}}</span>{{else}}<span class="dim">none</span>{{end}}</dd>
+<dt>macOS</dt><dd>{{if eq .MacOS "Unattended"}}Unattended <span class="dim">its macOS runs need nobody at the Mac</span>{{else if eq .MacOS "Attended"}}Attended <span class="dim">a macOS run waits for a person at the Mac to type its password</span>{{else}}not set up <span class="dim">the lab takes no macOS result from it</span>{{end}}</dd>
 <dt>lab-agent</dt><dd>{{if .Agent}}{{.Agent}}{{else}}<span class="dim">unknown</span>{{end}}{{if .LabAgent}} <span class="dim">older than the lab's {{.LabAgent}}</span>{{if .UpdateLine}} <span class="nowrap">Update it at the Mac: {{template "copy" (copy "the update command" .UpdateLine)}}</span>{{end}}{{end}}</dd>
 </dl>
 <div class="controls" id="controls-{{.Name}}">
@@ -50,6 +56,19 @@
 {{else}}<form class="inline" method="post" action="{{href (print "/my-macs/" .Name "/limit")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small button-plain" type="submit" data-sentence="{{.LimitSentence}}">Limit to Qualification</button></form>
 {{end}}{{template "take" ($.Take (print "/my-macs/" .Name "/leave") "Leave" .LeaveSentence)}}
 </div>
+<div class="controls" id="macos-setup-{{.Name}}">
+<form class="inline" method="post" action="{{href (print "/my-macs/" .Name "/macos")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small button-plain" type="submit">Set up macOS</button></form> <span class="dim">the macOS runner's one-time line, for this Mac in macOS: the lab then takes its macOS results there</span>
+</div>
+{{with .MacOSLine}}<div class="fence" id="macos-{{$card.Name}}">
+<p><b>The macOS runner's line for {{$card.Name}}</b>. This is the only time the lab shows it: copy it now. It is good for this Mac, once, until {{.Expires}}.</p>
+<ol class="steps">
+<li>In macOS on {{$card.Name}}, download <code>lab-macos-runner-darwin-arm64.tar.gz</code> from the Lab release, unpack it and run <code>sudo ./install.sh</code> in its folder: it checks the runner's signature before it installs anything.</li>
+<li>Paste this line into Terminal there:</li>
+</ol>
+{{template "copy-block" (copy "the macOS runner's line" .Line)}}
+<p>Then <code>sudo lab-macos-runner setup</code> asks whether to turn FileVault off and whether to log you in automatically, and changes nothing without your yes. Until a boot reaches your desktop with nobody typing, the Mac is Attended: a macOS run waits for you at the Mac.</p>
+</div>
+{{end}}
 <div class="controls" id="window-{{.Name}}">
 <form class="inline" method="post" action="{{href (print "/my-macs/" .Name "/window")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><label class="dim">days <input type="text" name="days" placeholder="mon-fri" size="7" required></label> <label class="dim">from <input type="text" name="from" placeholder="19:00" size="5" required></label> <label class="dim">to <input type="text" name="to" placeholder="07:00" size="5" required></label> <button class="button button-small" type="submit">Add a window</button></form>
 <form class="inline" method="post" action="{{href (print "/my-macs/" .Name "/window")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><input type="hidden" name="always" value="yes"><button class="button button-small button-plain" type="submit">Always</button></form>

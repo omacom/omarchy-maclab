@@ -16,15 +16,17 @@ import (
 )
 
 // accessFile holds what the Volunteer allows Maintainers on the Mac, under
-// the work directory: the Access level and the publishing opt-in. The
-// Volunteer's commands write it and take effect at once; lab-agent reads it
-// before every lab command and carries it to labd in its check-ins.
+// the work directory: the Access level, the publishing opt-in and whether
+// Performance runs may use the Availability window. The Volunteer's
+// commands write it and take effect at once; lab-agent reads it before
+// every lab command and carries it to labd in its check-ins.
 const accessFile = "access.json"
 
 // access is what accessFile holds.
 type access struct {
-	Level   string `json:"access_level"`
-	Publish bool   `json:"publish"`
+	Level       string `json:"access_level"`
+	Publish     bool   `json:"publish"`
+	Performance bool   `json:"performance,omitempty"`
 }
 
 // loadAccess reads the Mac's Access level and publishing opt-in. A Mac whose
@@ -119,6 +121,25 @@ func publishCmd(ctx context.Context, cfg *Config, sys System, args []string, out
 	fmt.Fprintln(out, "Published reports (open the deletion link to take one down):")
 	for _, p := range pubs {
 		fmt.Fprintf(out, "  job %s: %s\n    delete: %s\n", p.Job, p.ReportURL, p.DeletionURL)
+	}
+	return nil
+}
+
+// performanceCmd is `performance on|off`: whether the lab may use this Mac's
+// Availability window for Performance runs. Off until the Volunteer turns it
+// on; labd learns of a change at the Mac's next check-in.
+func performanceCmd(ctx context.Context, cfg *Config, sys System, args []string, out io.Writer) error {
+	if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+		return errors.New("usage: performance on|off")
+	}
+	on := args[0] == "on"
+	if err := changeAccess(cfg, func(ac *access) { ac.Performance = on }); err != nil {
+		return err
+	}
+	if on {
+		fmt.Fprintln(out, "Performance runs are on: from its next check-in the lab may use this Mac's Availability window, at Access level Full and on AC power, to measure Releases with its Benchmark set, each as a Candidate boot that leaves your own system as it is.")
+	} else {
+		fmt.Fprintln(out, "Performance runs are off: the lab starts no Performance run on this Mac from its next check-in. What it measured so far stays with the lab.")
 	}
 	return nil
 }

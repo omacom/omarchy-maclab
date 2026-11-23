@@ -155,6 +155,14 @@ func newMCP(c *client.Client) *mcp.Server {
 			return text(fmt.Sprintf("The macOS runner's line for %s is in %s (mode 0600) and nowhere else. It enrolls one Mac's runner, once, and expires %s. The person runs it in macOS on the Mac after sudo ./install.sh from lab-macos-runner-darwin-arm64.tar.gz.",
 				a.Device, a.Out, t.Expires.Format(time.DateTime))), nil, nil
 		})
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_macos_at_mac", Description: "Say a person is at an Attended Mac whose macOS run waits for one (the Mac's Volunteer, or a Maintainer): labd then boots macOS, now or at the Mac's next slot, and the person types its password and logs in. Only when the person says they are at the Mac."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, a devArg) (*mcp.CallToolResult, any, error) {
+			run, err := c.MacOSAtMac(ctx, a.Device)
+			if err != nil {
+				return nil, nil, err
+			}
+			return text(atMacWords(a.Device, run)), nil, nil
+		})
 	mcp.AddTool(s, &mcp.Tool{Name: "lab_remove", Description: "End a Mac's enrollment (Maintainers): its device secret stops working at once, its record is Retired, and lab-agent removes the lab from the Mac at its next check-in; a Volunteer is told. Only when a person asks for it: it cannot be undone, the Mac has to Join again."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a devArg) (*mcp.CallToolResult, any, error) {
 			if err := c.EndEnrollment(ctx, a.Device); err != nil {
@@ -764,7 +772,7 @@ func newMCP(c *client.Client) *mcp.Server {
 		Tier   string `json:"tier,omitempty" jsonschema:"default or extended"`
 		Hands  bool   `json:"hands,omitempty" jsonschema:"pause on B for a person until lab_compare_done"`
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "lab_compare", Description: "Queue a Compare (Maintainers): on one Mac, A (the known-good system or a set) and B (a set, as a Candidate boot) run the same pinned benchmarks and omarchy-m-test unattended; the report says per benchmark better, worse or no change against the Mac's noise. Answers the job; follow it with lab_wait, read it with lab_compare_show."},
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_compare", Description: "Queue a Compare (Maintainers): on one Mac, A (the known-good system or a set) and B (a set, as a Candidate boot) run the current Benchmark set's Quick (default tier) or Full (extended) list and omarchy-m-test unattended; the report says per metric better, worse or no change by its tolerance in the set. Answers the job; follow it with lab_wait, read it with lab_compare_show."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, a compareArg) (*mcp.CallToolResult, any, error) {
 			j, err := c.Compare(ctx, api.CompareRequest{Mac: a.Mac, Before: a.Before, After: a.After, MacOS: a.MacOS, Tier: a.Tier, Hands: a.Hands})
 			return text(j), nil, err
@@ -795,6 +803,15 @@ func newMCP(c *client.Client) *mcp.Server {
 				return nil, nil, err
 			}
 			return text(b.String()), nil, nil
+		})
+	type perfRerunArg struct {
+		Mac     string `json:"mac"`
+		Release string `json:"release" jsonschema:"the Release's name, as lab_installed_list shows it"`
+	}
+	mcp.AddTool(s, &mcp.Tool{Name: "lab_perf_rerun", Description: "Run a Mac's Performance run of a Release again (a Maintainer, or the Mac's Lease holder), under your Lease, taken for you when you hold none: its values replace the last only if it succeeds. Answers the job; follow it with lab_wait."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, a perfRerunArg) (*mcp.CallToolResult, any, error) {
+			j, err := c.PerfRerun(ctx, api.PerfRerunRequest{Mac: a.Mac, Release: a.Release})
+			return text(j), nil, err
 		})
 
 	return s

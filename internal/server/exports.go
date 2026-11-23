@@ -5,7 +5,8 @@ package server
 // every check result (CSV), and the matrix, the benchmark comparison and the
 // Aurora feature-support table (JSON). The reports, the checks and the
 // matrix take the filters the pages do; the matrix takes ?group= too. The
-// paths and the member names are the old site's.
+// paths and the member names are the old site's, but for the Performance
+// data, spec section 22's.
 
 import (
 	"net/http"
@@ -27,6 +28,7 @@ func (s *Server) exportRoutes() []route {
 		{"GET /api/v1/benchmarks.json", anyone, s.hBenchmarksJSON},
 		{"GET /api/v1/aurora", anyone, s.hAuroraJSON},
 		{"GET /api/v1/aurora.json", anyone, s.hAuroraJSON},
+		{"GET /api/v1/performance.json", anyone, s.hPerformanceJSON},
 	}
 }
 
@@ -75,6 +77,32 @@ func (s *Server) hBenchmarksJSON(w http.ResponseWriter, r *http.Request) {
 	if p := s.published(w); p != nil {
 		sendJSON(w, p.BenchmarksJSON(s.macOSReference, time.Now()))
 	}
+}
+
+// hPerformanceJSON is the Performance data: ?set= (bench-N or N; the
+// current set), ?release= (a kernel version; the newest qualified Release,
+// else the newest with no verdict yet) and ?volunteers=false, which hides
+// Volunteers' Macs and a Volunteer-only headline with them.
+func (s *Server) hPerformanceJSON(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	set, err := reports.PerfSet(q.Get("set"))
+	if err != nil {
+		httpErr(w, http.StatusNotFound, "no such Benchmark set")
+		return
+	}
+	f, err := s.reports.PerformanceFigures(s.catalogue, set, q.Get("volunteers") != "false")
+	if err != nil {
+		s.pageFailed(w, err)
+		return
+	}
+	release := f.DefaultRelease()
+	if name := q.Get("release"); name != "" {
+		if release = f.Release(name); release == nil {
+			httpErr(w, http.StatusNotFound, "no such Release")
+			return
+		}
+	}
+	sendJSON(w, f.JSON(release, time.Now()))
 }
 
 func (s *Server) hAuroraJSON(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,8 @@
 package repotest
 
 import (
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,27 +25,43 @@ func TestReleaseWorkflow(t *testing.T) {
 	if strings.Contains(wf, "self-hosted") {
 		t.Error("a self-hosted runner")
 	}
-	// One macOS runner builds only the reset tool; one arm64 Linux runner
+	// One macOS runner, with a pinned Xcode, builds the reset tool and the
+	// macOS benchmark programs and nothing else; one arm64 Linux runner
 	// builds every other file.
-	tool, rest, ok := strings.Cut(wf, "\n  build:\n")
-	if !ok || !strings.Contains(tool, "\n  reset-tool:\n") {
-		t.Fatal("no reset-tool job before the build job")
+	mac, rest, ok := strings.Cut(wf, "\n  build:\n")
+	if !ok || !strings.Contains(mac, "\n  macos:\n") {
+		t.Fatal("no macos job before the build job")
 	}
-	if runs := regexp.MustCompile(`runs-on: *(.*)`).FindAllStringSubmatch(tool, -1); len(runs) != 1 || runs[0][1] != "macos-15" {
-		t.Errorf("the reset tool is built on %v, want one macOS runner", runs)
+	if runs := regexp.MustCompile(`runs-on: *(.*)`).FindAllStringSubmatch(mac, -1); len(runs) != 1 || runs[0][1] != "macos-15" {
+		t.Errorf("the macOS files are built on %v, want one macOS runner", runs)
 	}
-	if steps := regexp.MustCompile(`(?m)^ +run: *(.*)$`).FindAllStringSubmatch(tool, -1); len(steps) != 1 || steps[0][1] != `release/reset-tool.sh "$RUNNER_TEMP/reset-tool"` {
-		t.Errorf("the macOS runner runs %v: it builds only the reset tool", steps)
+	var steps []string
+	for _, m := range regexp.MustCompile(`(?m)^ +run: *(.*)$`).FindAllStringSubmatch(mac, -1) {
+		steps = append(steps, m[1])
 	}
-	for _, s := range []string{"setup-go", "setup-python", "release/build.sh", "make ", "brew "} {
-		if strings.Contains(tool, s) {
-			t.Errorf("the reset-tool job has %q: the macOS runner builds only the reset tool", s)
+	if want := []string{
+		`release/reset-tool.sh "$RUNNER_TEMP/reset-tool"`,
+		`release/bench.sh darwin "$RUNNER_TEMP/bench/darwin-arm64"`,
+		`tar -cf "$RUNNER_TEMP/bench-darwin.tar" -C "$RUNNER_TEMP/bench" darwin-arm64`,
+	}; strings.Join(steps, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the macOS runner runs %q, want %q: the reset tool and the benchmark programs alone", steps, want)
+	}
+	xcode := regexp.MustCompile(`(?m)^      DEVELOPER_DIR: /Applications/Xcode_(\d+\.\d+(?:\.\d+)?)\.app/Contents/Developer\n      BENCH_XCODE: Xcode (\S+)$`).FindStringSubmatch(mac)
+	if xcode == nil || xcode[1] != xcode[2] {
+		t.Errorf("the macOS runner doesn't pin one Xcode and check it is the one: %q", xcode)
+	}
+	for _, s := range []string{"setup-go", "setup-python", "release/build.sh", "make ", "brew ", "secrets."} {
+		if strings.Contains(mac, s) {
+			t.Errorf("the macos job has %q: the macOS runner builds only the reset tool and the benchmark programs", s)
 		}
 	}
 	for _, m := range regexp.MustCompile(`runs-on: *(.*)`).FindAllStringSubmatch(rest, -1) {
 		if m[1] != "ubuntu-24.04-arm" {
-			t.Errorf("runs-on %s: one arm64 Linux runner builds every file but the reset tool", m[1])
+			t.Errorf("runs-on %s: one arm64 Linux runner builds every file but the macOS ones", m[1])
 		}
+	}
+	if strings.Contains(wf, "LAB_RELEASE_WITHOUT") {
+		t.Error("the release workflow leaves out files: only a release made on one machine may")
 	}
 	for _, m := range regexp.MustCompile(`secrets\.(\w+)`).FindAllStringSubmatch(wf, -1) {
 		if m[1] != "RELEASE_SIGNING_KEY" {
@@ -62,9 +80,13 @@ func TestReleaseWorkflow(t *testing.T) {
 	}
 	for _, s := range []string{
 		"release/check.sh",
-		`LAB_RELEASE="$GITHUB_REF_NAME" RESET_TOOL="$RUNNER_TEMP/reset-tool/macvdmtool" release/build.sh`,
-		"    needs: reset-tool\n",
+		`LAB_RELEASE="$GITHUB_REF_NAME" RESET_TOOL="$RUNNER_TEMP/reset-tool/macvdmtool" BENCH_PROGRAMS="$RUNNER_TEMP/bench" release/build.sh`,
+		"    needs: macos\n",
 		"grep -qx lab-server/bin/macvdmtool",
+		`release/bench.sh linux "$RUNNER_TEMP/bench/linux-arm64"`,
+		"          CC: clang-18\n          CXX: clang++-18\n",
+		"name: bench-darwin\n",
+		`for a in "${RELEASE_BENCH[@]}"; do`,
 		`git merge-base --is-ancestor HEAD origin/main`,
 	} {
 		if !strings.Contains(build, s) {
@@ -111,14 +133,61 @@ func TestReleaseWorkflow(t *testing.T) {
 	}
 }
 
-// One key, pinned in three places that must agree.
+// The files of a Lab release, as release/lib.sh lists them for every
+// script: the benchmark programs among them (spec, section 22, "Built by
+// the lab"), and LAB_RELEASE_WITHOUT leaving out only those.
+func TestReleaseFiles(t *testing.T) {
+	top := root(t)
+	list := func(without string) (string, error) {
+		cmd := exec.Command("bash", "-c", `. "$1/release/lib.sh" && printf '%s\n' "${RELEASE_FILES[@]}"`, "files", top)
+		cmd.Env = append(os.Environ(), "LAB_RELEASE_WITHOUT="+without)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := list("")
+	if err != nil {
+		t.Fatalf("release/lib.sh: %v\n%s", err, out)
+	}
+	want := []string{
+		"omarchy-m-test.tar.gz", "VERSION", "lab-darwin-arm64", "lab-linux-arm64", "lab-linux-amd64",
+		"lab-server-darwin-arm64.tar.gz", "lab-macos-runner-darwin-arm64.tar.gz", "lab-controller-darwin-arm64.tar.gz",
+		"bench-coremark-darwin-arm64.tar.gz", "bench-stream-darwin-arm64.tar.gz", "bench-clpeak-darwin-arm64.tar.gz",
+		"bench-fio-darwin-arm64.tar.gz", "bench-ane-bench-darwin-arm64.tar.gz", "bench-smc-power-darwin-arm64.tar.gz",
+		"bench-mlx-bench-darwin-arm64.tar.gz",
+		"bench-coremark-linux-arm64.tar.gz", "bench-stream-linux-arm64.tar.gz", "bench-clpeak-linux-arm64.tar.gz",
+	}
+	if got := strings.Fields(out); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("a Lab release's files are\n%q\nwant\n%q", got, want)
+	}
+
+	out, err = list("bench-mlx-bench-darwin-arm64.tar.gz bench-clpeak-linux-arm64.tar.gz")
+	if err != nil {
+		t.Fatalf("leaving out two benchmark archives: %v\n%s", err, out)
+	}
+	if got := strings.Fields(out); len(got) != len(want)-2 || strings.Contains(out, "mlx-bench") || strings.Contains(out, "clpeak-linux") {
+		t.Errorf("LAB_RELEASE_WITHOUT left %q", got)
+	}
+	for _, other := range []string{"lab-linux-amd64", "VERSION", "bench-geekbench-darwin-arm64.tar.gz"} {
+		if out, err := list(other); err == nil {
+			t.Errorf("LAB_RELEASE_WITHOUT=%s was taken: %s", other, out)
+		}
+	}
+
+	for _, rel := range []string{"release/build.sh", "release/check.sh", "release/verify.sh", "release/local.sh"} {
+		if !strings.Contains(read(t, top, rel), "bench") {
+			t.Errorf("%s doesn't know the benchmark programs", rel)
+		}
+	}
+}
+
+// One key, pinned in four places that must agree.
 func TestReleaseKeyPins(t *testing.T) {
 	top := root(t)
 	signers := strings.TrimSpace(read(t, top, "release/allowed_signers"))
 	if strings.Count(signers, "\n") != 0 || !strings.HasPrefix(signers, `release@omarchy-m-testing.org namespaces="omarchy-m-test-release" ssh-ed25519 `) {
 		t.Fatalf("release/allowed_signers is not one ed25519 release key: %q", signers)
 	}
-	for _, rel := range []string{"installer/install.sh", "installer/install-lab.sh", "docs/omarchy-m-test.md"} {
+	for _, rel := range []string{"installer/install.sh", "installer/install-lab.sh", "release/macos-runner/install.sh", "docs/omarchy-m-test.md"} {
 		if !strings.Contains(read(t, top, rel), signers) {
 			t.Errorf("%s doesn't pin the key of release/allowed_signers", rel)
 		}

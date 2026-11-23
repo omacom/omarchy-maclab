@@ -24,6 +24,12 @@
 <form class="form-inline" method="post" action="{{href (print "/compares/" .Hands "/done")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">Done</button></form>
 </div>
 {{- end}}
+{{- if .MacOSWait}}
+<div class="fence" id="macos-at-mac">
+<p><b>The macOS run of {{.Mac.Name}} waits for a person at the Mac</b> until {{.MacOSWait}}, else it is dropped. Say so when you are at it: the lab then boots macOS once, and you type its password and log in. It comes back to Omarchy by itself.</p>
+<form class="form-inline" method="post" action="{{href (print .Path "/macos/at-mac")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">I am at the Mac</button></form>
+</div>
+{{- end}}
 <p class="flash" id="mac-changed" hidden>This Mac has changed since this page was made. <a href="">Show it as it is now</a></p>
 {{- if .Fence}}
 <div class="fence" id="live-fence">
@@ -50,6 +56,10 @@
 <dt>Access level</dt><dd>{{.Facts.AccessLevel}}{{if not .Facts.Volunteers}} <span class="dim">a Lab-owned Mac</span>{{end}}</dd>
 {{- if .Facts.Volunteers}}
 <dt>Availability window</dt><dd>{{.Facts.Window}}</dd>
+<dt>Performance</dt><dd>{{.Facts.Counted}}
+{{- if .Maintainer}}
+<form class="inline" method="post" action="{{href (print .Path "/counted")}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><input type="hidden" name="back" value="mac"><input type="hidden" name="counted" value="{{if .Facts.Marked}}off{{else}}on{{end}}"><button class="button button-small" type="submit">{{if .Facts.Marked}}Take the Counted mark away{{else}}Mark Counted{{end}}</button></form>
+{{- end}}</dd>
 {{- end}}
 <dt>Known-good kernel</dt><dd>{{if .Facts.KnownGood}}{{.Facts.KnownGood}}{{else}}<span class="dim">none: it has not passed its baseline</span>{{end}}</dd>
 <dt>Running</dt><dd>{{if .Facts.Kernel}}{{.Facts.Kernel}}{{else}}<span class="dim">unknown</span>{{end}}</dd>

@@ -141,10 +141,11 @@ func (c *Client) MacOSEnrollToken(ctx context.Context, mac string) (*api.MacOSEn
 	return &out, c.do(ctx, "POST", "/api/macos/enroll-tokens", jsonBody(map[string]string{"mac": mac}), &out)
 }
 
-// QueueMacOSRun queues a macOS run of the tier's benchmarks on the Mac.
-func (c *Client) QueueMacOSRun(ctx context.Context, mac, tier string) (*api.MacOSRun, error) {
+// MacOSAtMac says the caller is at the Mac whose macOS run waits for a
+// person: labd boots macOS for it. It answers the run.
+func (c *Client) MacOSAtMac(ctx context.Context, mac string) (*api.MacOSRun, error) {
 	var out api.MacOSRun
-	return &out, c.do(ctx, "POST", "/api/devices/"+url.PathEscape(mac)+"/macos-runs", jsonBody(api.MacOSRunRequest{Tier: tier}), &out)
+	return &out, c.do(ctx, "POST", "/api/devices/"+url.PathEscape(mac)+"/macos/at-mac", nil, &out)
 }
 
 // MacOSRun is the Mac's latest macOS run.
@@ -512,6 +513,12 @@ func (c *Client) RemoveController(ctx context.Context, name string) error {
 func (c *Client) Compare(ctx context.Context, req api.CompareRequest) (*api.Job, error) {
 	var out api.Job
 	return &out, c.do(ctx, "POST", "/api/compares", jsonBody(req), &out)
+}
+
+// PerfRerun runs a Mac's Performance run of a Release again: its job.
+func (c *Client) PerfRerun(ctx context.Context, req api.PerfRerunRequest) (*api.Job, error) {
+	var out api.Job
+	return &out, c.do(ctx, "POST", "/api/perf/rerun", jsonBody(req), &out)
 }
 
 // CompareDone presses Done for a Compare waiting for a person.

@@ -1042,7 +1042,7 @@ func TestARunOnAnImageNamingItsSetIsOfferedByTheSetsName(t *testing.T) {
 // The public pages need reports.db alone: they render with labd.db gone.
 // laterPages are the public pages that came after the first four, on the
 // production reports: each must do what those do.
-var laterPages = []string{"/reports", "/reports?gen=m1&confirmed=1", "/reports/" + m3ID, "/gaps", "/aurora", "/benchmarks", "/candidates", "/data"}
+var laterPages = []string{"/reports", "/reports?gen=m1&confirmed=1", "/reports/" + m3ID, "/gaps", "/aurora", "/performance", "/candidates", "/data"}
 
 func TestEachPublicPageRendersWithLabdDBAbsent(t *testing.T) {
 	l := newPublicLab(t, nil)
@@ -1121,7 +1121,7 @@ func TestThePublicPagesPolicyIsHostBasedAndTheyCarryNothingInline(t *testing.T) 
 func TestInPreviewThePublicPagesCarryTheBanner(t *testing.T) {
 	l := newPublicLab(t, func(c *Config) { c.Preview = true })
 	l.add(goldenDoc(t, "m2-max-image2"), "a")
-	for _, target := range []string{"/", "/matrix", "/models", "/models/j416c", "/features", "/features/gpu", "/reports", "/gaps", "/aurora", "/benchmarks", "/candidates", "/data"} {
+	for _, target := range []string{"/", "/matrix", "/models", "/models/j416c", "/features", "/features/gpu", "/reports", "/gaps", "/aurora", "/performance", "/candidates", "/data"} {
 		if l.page(target).count(t, "p.preview-banner") != 1 {
 			t.Errorf("%s has no Preview banner", target)
 		}

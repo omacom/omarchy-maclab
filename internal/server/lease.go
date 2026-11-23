@@ -130,6 +130,7 @@ func (s *Server) mayLease(v *dev, p Person, holder string) (leaseAsked, error) {
 	if !p.OnMTeam() {
 		return found, refuse(403, "a Lease is for the M team and Maintainers")
 	}
+	claim := s.perfClaimHolds(v)
 	v.mu.Lock()
 	name := v.d.Name
 	var err error
@@ -138,6 +139,8 @@ func (s *Server) mayLease(v *dev, p Person, holder string) (leaseAsked, error) {
 		err = refuse(409, "%s has left the lab", name)
 	case v.d.KnownGood == "":
 		err = refuse(409, "%s has not passed its baseline yet, so it takes no Lease", name)
+	case claim != "" && v.perfClaim != "":
+		err = refuse(409, "%s is claimed by a scheduled Performance run (%s) until its cleanup ends: a Maintainer may cancel it", name, claimWords(claim))
 	case v.termsWait:
 		err = refuse(409, "%s", termsWaitingLine(name))
 	case v.d.IsVolunteer() && v.openUntilLocked().IsZero():

@@ -4,7 +4,7 @@ package server
 // (a Lab-owned Mac needs hands, a job's result) goes to the hooks, the log
 // and --notify-cmd on the mini: it never leaves the mini. A Notice goes to
 // a Volunteer's phone through the notice server, on the Mac's own topic: the
-// Mac's name, one of five fixed wordings and a link to the Mac on My Macs,
+// Mac's name, one of six fixed wordings and a link to the Mac on My Macs,
 // with the title "Omarchy Mac Lab". Nothing else is ever sent to the notice
 // server: no handle, no label, no log line, no kernel, no source, and never a
 // request for a password or a command.
@@ -61,16 +61,18 @@ const (
 	noticeJob                       // a job is starting or is done
 	noticeTerms                     // the lab's terms changed
 	noticeUpdate                    // an update is waiting
+	noticeMacOS                     // an Attended Mac's macOS result is due
 )
 
 // noticeKinds are all of them, for the test that holds every wording to the
 // rules.
-var noticeKinds = []noticeKind{noticeRestart, noticeEnded, noticeJob, noticeTerms, noticeUpdate}
+var noticeKinds = []noticeKind{noticeRestart, noticeEnded, noticeJob, noticeTerms, noticeUpdate, noticeMacOS}
 
 const (
 	updateNotice = "An update is waiting for this Mac. Open My Macs."
 	termsNotice  = "The lab's terms changed. This Mac is waiting for you: open My Macs."
 	endedNotice  = "This Mac's enrollment in Omarchy Mac Lab was ended. Open My Macs."
+	macOSNotice  = "The lab would like this Mac's macOS result. It waits a day for someone at the Mac: if that is you, open My Macs and say you are at it."
 )
 
 // restartSteps are the physical steps of the restart Notice, by the Mac's
@@ -109,6 +111,8 @@ func noticeText(d api.Device, k noticeKind, job jobWording) string {
 		said = termsNotice
 	case noticeUpdate:
 		said = updateNotice
+	case noticeMacOS:
+		said = macOSNotice
 	}
 	return d.Name + ": " + said
 }

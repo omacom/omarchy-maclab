@@ -90,6 +90,11 @@ type dev struct {
 	// freed the Mac.
 	afterFree func()
 
+	// perfClaim is the scheduled Performance run that claimed the Mac, from
+	// its queueing until its cleanup ends: no Lease is taken meanwhile.
+	// "claiming" while the scheduler queues it.
+	perfClaim string
+
 	// forgotten: lab forget deleted the device's row. Set under mu, which
 	// every save holds, so nothing still holding the device writes it back.
 	forgotten bool
@@ -284,6 +289,7 @@ func (s *Server) joined(v *dev) {
 	}
 	s.macSaid(d.Name, d.ID, macJoined, "Joined as "+as+" ("+orUnknown(configuration)+")")
 	s.labGroup.MacJoined(d.Name, configuration, d.Kind)
+	s.perfKick()
 	if !d.IsVolunteer() || d.VolunteerID == 0 {
 		return
 	}
@@ -345,6 +351,15 @@ func (s *Server) firstBaselineEnded(v *dev, job, outcome string) {
 // heartbeat records a check-in. Commands are handed out separately by deliver.
 func (v *dev) heartbeat(ci api.Checkin) {
 	defer v.s.decideTerms(v) // after the unlock below
+	name, published, rebooted := "", false, false
+	defer func() {
+		if published {
+			v.s.publishPerf()
+		}
+		if rebooted {
+			v.s.macOSNotTaken(name)
+		}
+	}()
 	// When the check-in came, not when it got the lock: one from the old
 	// boot queued behind a slow save must not count as heard after a
 	// reboot's grace (recover.go), nor a later one be stamped earlier.
@@ -354,7 +369,7 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	if v.heard.After(now) {
 		now = v.heard
 	}
-	rebooted := v.d.BootID != "" && ci.BootID != v.d.BootID
+	name, rebooted = v.d.Name, v.d.BootID != "" && ci.BootID != v.d.BootID
 	if v.d.BootID == "" {
 		if err := v.s.store.spendTokens(v.d.Name); err != nil {
 			v.s.log.Printf("spend enrollment tokens for %s: %v", v.d.Name, err)
@@ -374,9 +389,12 @@ func (v *dev) heartbeat(ci api.Checkin) {
 	if v.syncWindowLocked(ci.Window) {
 		persist = true
 	}
+	publishing := v.d.Publish
 	if v.syncAccessLocked(ci) {
 		persist = true
 	}
+	// Its performance values leave reports.db, or come to it, at once.
+	published = v.d.Publish != publishing
 	if v.capLeaseLocked() {
 		persist = true
 	}

@@ -55,6 +55,8 @@ func TestBootMacOSOnceBlessesTheMacOSVolumeForTheNextBootOnly(t *testing.T) {
 	}
 }
 
+// labd refusing the start (no run queued) puts the next boot back on this
+// Linux, and nothing reboots.
 func TestBootMacOSOnceChangesNothingWithoutAQueuedRun(t *testing.T) {
 	bless, calls := fakeBless(t, "1) Macintosh HD\n*2) Omarchy\n")
 	cfg, _ := fakeStartLab(t, 409)
@@ -64,8 +66,27 @@ func TestBootMacOSOnceChangesNothingWithoutAQueuedRun(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 	b, _ := os.ReadFile(calls)
-	if strings.Contains(string(b), "--set-boot") || rebooted != 0 {
-		t.Errorf("changed the Mac: %q, rebooted %d", b, rebooted)
+	if got := strings.TrimSpace(string(b)); got != "--list-volumes\n--next --set-boot 1 --yes\n--next --set-boot 2 --yes" || rebooted != 0 {
+		t.Errorf("asahi-bless calls:\n%s\nrebooted %d", got, rebooted)
+	}
+}
+
+// labd is told the run started only once asahi-bless has set macOS as the
+// next boot: a start that fails tells labd nothing and reboots nothing.
+func TestBootMacOSOnceTellsLabdOnlyAfterAsahiBlessSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	bless := filepath.Join(dir, "asahi-bless")
+	script := "#!/bin/sh\nif [ \"$1\" = --list-volumes ]; then printf '1) Macintosh HD\\n*2) Omarchy\\n'; exit 0; fi\necho 'NVRAM write failed' >&2\nexit 1\n"
+	if err := os.WriteFile(bless, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, asked := fakeStartLab(t, 200)
+	err := BootMacOSOnce(context.Background(), cfg, MacOSBoot{Bless: bless, Reboot: func() error { t.Error("rebooted"); return nil }, Log: t.Logf})
+	if err == nil || !strings.Contains(err.Error(), "NVRAM write failed") {
+		t.Fatalf("err %v", err)
+	}
+	if *asked != 0 {
+		t.Errorf("labd told %d times of a start that failed", *asked)
 	}
 }
 

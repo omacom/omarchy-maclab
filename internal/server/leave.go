@@ -63,6 +63,7 @@ func (s *Server) leave(v *dev, why string) ([]string, error) {
 	}
 	v.mu.Unlock()
 	s.log.Printf("%s is leaving the lab: %s", name, why)
+	s.publishPerf()
 
 	open, err := s.store.jobs(name, 1000, true)
 	if err != nil {
@@ -97,7 +98,12 @@ func (s *Server) leave(v *dev, why string) ([]string, error) {
 // left; the jobs canceled then stay canceled. why is what brings it back:
 // lab-agent uninstall stopping before it stopped the agent (LeaveRequest.Undo),
 // or an admin's lab reset. It says whether the Mac had left.
-func (s *Server) rejoin(v *dev, why string) (bool, error) {
+func (s *Server) rejoin(v *dev, why string) (back bool, err error) {
+	defer func() {
+		if back {
+			s.publishPerf()
+		}
+	}()
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.forgotten {

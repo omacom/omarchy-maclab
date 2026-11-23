@@ -4,9 +4,12 @@ name: Release
 # Release candidate. The tag is the one number, stamped into omarchy-m-test,
 # lab and labd.
 #
-# "reset-tool" builds the mini's reset tool on macOS, from the source
-# deploy/pins names, and nothing else; no other file is built there.
-# "build" tests and builds every file with no secret. "publish" runs in the
+# "macos" builds, on the one macOS runner with a pinned Xcode, the mini's
+# reset tool from the source deploy/pins names and the macOS benchmark
+# programs from release/bench-pins and tools/bench-macos/, and nothing else.
+# "build", on the one arm64 Linux runner, builds Omarchy's benchmark
+# programs the same way, then tests and builds every file with no secret
+# and packs what both built. "publish" runs in the
 # environment "release" (the owner as required reviewer, v* tags only), so it
 # waits for the owner's approval: only then is the release key read, lab-agent
 # and every file signed, and the GitHub Release made. A Release candidate is a
@@ -24,25 +27,37 @@ permissions:
   contents: read
 
 jobs:
-  reset-tool:
-    name: Build the reset tool
+  macos:
+    name: Build the reset tool and the macOS benchmark programs
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      BENCH_XCODE: Xcode 16.4
     steps:
       - uses: actions/checkout@v5
       - name: Build omacom/macvdmtool at its pinned commit and checksum
         run: release/reset-tool.sh "$RUNNER_TEMP/reset-tool"
+      - name: Build the macOS benchmark programs from their pinned sources
+        run: release/bench.sh darwin "$RUNNER_TEMP/bench/darwin-arm64"
+      - name: One file, so the modes survive
+        run: tar -cf "$RUNNER_TEMP/bench-darwin.tar" -C "$RUNNER_TEMP/bench" darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: reset-tool
           path: ${{ runner.temp }}/reset-tool/macvdmtool
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-darwin
+          path: ${{ runner.temp }}/bench-darwin.tar
+          if-no-files-found: error
 
   build:
     name: Build
-    needs: reset-tool
+    needs: macos
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
@@ -68,18 +83,39 @@ jobs:
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libvulkan-dev glslang-tools spirv-tools
           cli/scripts/build_gpu_benchmark.sh "$RUNNER_TEMP/gpu-benchmark"
           echo "OMARCHY_GPU_BINARY_DIR=$RUNNER_TEMP/gpu-benchmark" >> "$GITHUB_ENV"
+      - name: Build Omarchy's benchmark programs from their pinned sources
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          sudo apt-get install -y --no-install-recommends clang-18 cmake ocl-icd-opencl-dev
+          release/bench.sh linux "$RUNNER_TEMP/bench/linux-arm64"
       - name: Check every file of a Lab release
         run: release/check.sh
       - uses: actions/download-artifact@v4
         with:
           name: reset-tool
           path: ${{ runner.temp }}/reset-tool
+      - uses: actions/download-artifact@v4
+        with:
+          name: bench-darwin
+          path: ${{ runner.temp }}
+      - name: Unpack the macOS benchmark programs
+        run: tar -xf "$RUNNER_TEMP/bench-darwin.tar" -C "$RUNNER_TEMP/bench"
       - name: Build
-        run: LAB_RELEASE="$GITHUB_REF_NAME" RESET_TOOL="$RUNNER_TEMP/reset-tool/macvdmtool" release/build.sh dist
+        run: LAB_RELEASE="$GITHUB_REF_NAME" RESET_TOOL="$RUNNER_TEMP/reset-tool/macvdmtool" BENCH_PROGRAMS="$RUNNER_TEMP/bench" release/build.sh dist
       - name: The bundle and the controller carry the reset tool
         run: |
           tar -tzf dist/lab-server-darwin-arm64.tar.gz | grep -qx lab-server/bin/macvdmtool
           tar -tzf dist/lab-controller-darwin-arm64.tar.gz | grep -qx lab-controller/bin/macvdmtool
+      - name: Every benchmark program is there
+        run: |
+          . release/lib.sh
+          for a in "${RELEASE_BENCH[@]}"; do
+            p="${a#bench-}"
+            p="${p%-*-arm64.tar.gz}"
+            tar -tzf "dist/$a" | grep -qx "bench-$p/bin/$p"
+          done
       - name: The macOS runner carries its install script and LaunchDaemon
         run: |
           tar -tzf dist/lab-macos-runner-darwin-arm64.tar.gz > "$RUNNER_TEMP/runner-files"

@@ -59,6 +59,9 @@ type macPageData struct {
 	Jobs  []macJobRow
 	// Hands is the Compare waiting on this Mac for a person to press Done.
 	Hands string
+	// MacOSWait is until when the Mac's macOS run waits for a person at
+	// it, for one who may say so; "" when it waits for nobody.
+	MacOSWait string
 
 	// Fence stands in place of Live for an M team member without their own
 	// Lease on the Mac.
@@ -82,6 +85,10 @@ type macFacts struct {
 	// Cable is a Lab-owned Mac's place on the lab server's cables, and
 	// NoHardReset why no Hard reset can reach it now.
 	Cable, NoHardReset string
+	// Counted says whether a Volunteer's Mac's performance values make the
+	// headline, and why; Marked is a Maintainer's mark on it.
+	Counted string
+	Marked  bool
 }
 
 type macJobRow struct {
@@ -205,6 +212,7 @@ func (s *Server) renderMac(w http.ResponseWriter, r *http.Request, v *dev, tab s
 			data.Hands = id
 		}
 	}
+	data.MacOSWait = s.macOSWaitWords(v, p)
 	switch tab {
 	case tabLive:
 		data.Fence, data.Live = s.macLive(r, v, d, c, data.Mac)
@@ -230,6 +238,7 @@ func (s *Server) macFacts(v *dev, d DeviceView) macFacts {
 		f.LastSeen = whenDay(d.LastSeen)
 	}
 	if f.Volunteers {
+		f.Counted, f.Marked = s.countedWords(d.Device), d.Counted
 		switch {
 		case d.AccessLevel != api.AccessFull:
 			f.AccessLevel = "Qualification"

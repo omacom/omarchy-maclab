@@ -24,6 +24,7 @@ var specTable = map[string]string{
 	"installed verdict":         "added",
 	"agent-update":              "added",
 	"macos enroll":              "added",
+	"macos at-mac":              "added",
 	"set create":                "added",
 	"set capture":               "added",
 	"set list":                  "added",
@@ -75,6 +76,7 @@ var specTable = map[string]string{
 	"builder list":              "unchanged",
 	"boot-test":                 "unchanged",
 	"bench mirror":              "added",
+	"perf rerun":                "added",
 }
 
 // The table's retired rows.

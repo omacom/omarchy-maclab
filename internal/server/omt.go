@@ -100,7 +100,7 @@ func (s *Server) omtBaseline(device string) *omtBaseline {
 // omtWanted says whether a job on this Mac runs omarchy-m-test without being asked:
 // it needs a desktop user and an agent that carries the test.
 func (s *Server) omtWanted(d api.Device, spec api.JobSpec) bool {
-	return s.cfg.OMT && spec.Crash == "" && d.Facts.GUIUser != "" && versionAtLeast(d.Facts.AgentVersion, omtMinAgent)
+	return s.cfg.OMT && spec.Crash == "" && spec.MacOS == nil && d.Facts.GUIUser != "" && versionAtLeast(d.Facts.AgentVersion, omtMinAgent)
 }
 
 func omtSpec() api.TestSpec {

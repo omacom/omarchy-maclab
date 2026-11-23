@@ -1,14 +1,13 @@
 // Package macosrunner is lab-macos-runner: in macOS on a lab Mac, at boot,
-// it asks labd whether a macOS run is queued for this Mac and, if one is,
-// runs the tier's benchmarks, uploads the results and reboots. The Mac was
-// booted into macOS for one boot only (lab-agent boot-macos-once, asahi-bless
-// --next), so the reboot returns it to Omarchy.
+// it tells labd the macOS build and asks whether a macOS run was started for
+// this boot and, if one was, runs the Benchmark set's list, uploads the
+// results and reboots. The Mac was booted into macOS for one boot only
+// (lab-agent boot-macos-once, asahi-bless --next), so the reboot returns it
+// to Omarchy.
 package macosrunner
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,9 +19,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -32,7 +33,7 @@ var Version = "0.1.0"
 // ConfigPath is where enroll keeps the runner's secret, root's only.
 const ConfigPath = "/Library/Application Support/Omarchy Mac Lab/macos-runner.json"
 
-// WorkDir is where a run keeps its artifacts and scratch files.
+// WorkDir is where a run keeps its files, its private log and its results.
 const WorkDir = "/Library/Application Support/Omarchy Mac Lab/work"
 
 // Config is the enrolled runner.
@@ -59,11 +60,19 @@ func LoadConfig(path string) (Config, error) {
 }
 
 // Enroll spends the one-time token from `lab macos enroll` for this Mac's
-// runner secret and keeps it at path, mode 0600.
-func Enroll(ctx context.Context, server, token, guiUser, path string) error {
+// runner secret and keeps it at path, mode 0600. It tells labd the macOS
+// version and build, as every boot does; host nil is macOS itself.
+func Enroll(ctx context.Context, server, token, guiUser, path string, host Host) error {
 	server = strings.TrimRight(server, "/")
+	if host == nil {
+		host = MacHost{}
+	}
+	u := server + "/api/macos/runner/enroll"
+	if v, b, err := host.SWVers(ctx); err == nil {
+		u += BootFacts{Version: v, Build: b}.pollQuery()
+	}
 	var e api.MacOSEnrolled
-	if err := call(ctx, http.DefaultClient, "POST", server+"/api/macos/runner/enroll", token, nil, &e); err != nil {
+	if err := call(ctx, http.DefaultClient, "POST", u, token, nil, &e); err != nil {
 		return err
 	}
 	b, _ := json.MarshalIndent(Config{Server: server, Mac: e.Mac, Secret: e.Secret, GUIUser: guiUser}, "", "  ")
@@ -77,49 +86,50 @@ func Enroll(ctx context.Context, server, token, guiUser, path string) error {
 	return os.Rename(tmp, path)
 }
 
-// Tools are the programs the benchmarks run; "" is the usual place.
-type Tools struct {
-	SevenZip, Geekbench, FFmpeg, Chrome, Chromium string
-}
-
-func (t Tools) withDefaults() Tools {
-	or := func(s, d string) string {
-		if s == "" {
-			return d
-		}
-		return s
-	}
-	t.SevenZip = or(t.SevenZip, "/opt/homebrew/bin/7zz")
-	t.Geekbench = or(t.Geekbench, "/Applications/Geekbench 6.app/Contents/Resources/geekbench6")
-	t.FFmpeg = or(t.FFmpeg, "/opt/homebrew/bin/ffmpeg")
-	t.Chrome = or(t.Chrome, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-	t.Chromium = or(t.Chromium, "/Applications/Chromium.app/Contents/MacOS/Chromium")
-	return t
-}
-
 // Runner is one boot's run.
 type Runner struct {
 	Config Config
 	Dir    string
-	Tools  Tools
-	HTTP   *http.Client
+	// Host is the Mac; nil is macOS itself.
+	Host Host
+	// Set is the Benchmark set of that name, "" for the newest; nil is the
+	// sets the runner was built with.
+	Set func(name string) (*sets.Set, error)
+	// ShareDir is where the files the logged-in user runs are unpacked; ""
+	// is a new folder under /private/var/tmp.
+	ShareDir string
+	HTTP     *http.Client
 	// Reboot returns the Mac to Omarchy; nil is shutdown -r now.
 	Reboot func() error
-	// BrowserTimeout bounds one browser benchmark; 0 is 15 minutes.
+	// BrowserTimeout bounds one browser benchmark; 0 is the benchmark's own.
 	BrowserTimeout time.Duration
 	// NetworkWait is how long the first poll retries while the network
 	// comes up after boot; 0 is 5 minutes.
 	NetworkWait time.Duration
 	Log         func(string, ...any)
-
-	files map[string]string // the run's artifacts by name
-	web   string            // the web bundle, unpacked
 }
 
 func (r *Runner) say(f string, a ...any) {
 	if r.Log != nil {
 		r.Log(f, a...)
 	}
+}
+
+func (r *Runner) host() Host {
+	if r.Host == nil {
+		r.Host = MacHost{GUIUser: r.Config.GUIUser}
+	}
+	return r.Host
+}
+
+func (r *Runner) set(name string) (*sets.Set, error) {
+	if r.Set != nil {
+		return r.Set(name)
+	}
+	if name == "" {
+		return sets.Newest()
+	}
+	return sets.Load(name)
 }
 
 func (r *Runner) client() *http.Client {
@@ -131,40 +141,52 @@ func (r *Runner) client() *http.Client {
 
 func (r *Runner) url(p string) string { return strings.TrimRight(r.Config.Server, "/") + p }
 
-// Boot is the LaunchDaemon's run at boot. With no run queued it does
-// nothing: the Mac stays in macOS, booted by a person. With one, whatever
-// happens, it reports and reboots.
+// Boot is the LaunchDaemon's run at boot. Every boot tells labd the macOS
+// build. A boot labd did not start for a macOS run does nothing else: the
+// Mac stays in macOS, booted by a person, and its session is left alone.
+// The run's own boot, whatever happens, measures, reports and reboots.
 func (r *Runner) Boot(ctx context.Context) error {
-	run, err := r.poll(ctx)
-	if err != nil || run == nil {
-		if run == nil && err == nil {
-			r.say("no macOS run queued for %s", r.Config.Mac)
-		}
+	facts := r.bootFacts(ctx)
+	run, err := r.poll(ctx, facts)
+	if err != nil {
 		return err
 	}
-	r.say("macOS run %s (%s) on %s", run.ID, run.Tier, r.Config.Mac)
-	results, runErr := r.Run(ctx, run)
-	up := api.MacOSResults{RunID: run.ID, Results: results}
-	if runErr != nil {
-		up.Error = runErr.Error()
+	if run == nil {
+		r.say("no macOS run queued for %s", r.Config.Mac)
+		return nil
 	}
-	var upErr error
-	for i := 0; i < 5; i++ {
-		if upErr = call(ctx, r.client(), "POST", r.url("/api/macos/runner/results"), r.Config.Secret, up, nil); upErr == nil {
-			break
-		}
-		r.say("upload: %v", upErr)
-		sleep(ctx, 10*time.Second)
+	if why := r.notThisBoot(run, facts); why != "" {
+		r.say("macOS run %s is not this boot's (%s): nothing is measured", run.ID, why)
+		return nil
+	}
+	if err := r.take(run.ID, facts.Session); err != nil {
+		r.say("macOS run %s: this boot cannot record that it took the run (%v): nothing is measured", run.ID, err)
+		return nil
 	}
 	reboot := r.Reboot
 	if reboot == nil {
 		reboot = func() error { return exec.Command("/sbin/shutdown", "-r", "now").Run() }
 	}
+	if run.PerfRun <= 0 {
+		r.say("macOS run %s has no performance run to upload to: nothing is measured; rebooting to Omarchy", run.ID)
+		return reboot()
+	}
+	r.say("macOS run %s (%s) on %s", run.ID, run.Tier, r.Config.Mac)
+	up, runErr := r.Run(ctx, run)
+	path := "/api/macos/runner/performance/" + strconv.FormatInt(run.PerfRun, 10) + "/results"
+	var upErr error
+	for i := 0; i < 5; i++ {
+		if upErr = call(context.WithoutCancel(ctx), r.client(), "POST", r.url(path), r.Config.Secret, up, nil); upErr == nil {
+			break
+		}
+		r.say("upload: %v", upErr)
+		sleep(ctx, 10*time.Second)
+	}
 	r.say("rebooting to Omarchy")
 	return errors.Join(runErr, upErr, reboot())
 }
 
-func (r *Runner) poll(ctx context.Context) (*api.MacOSRun, error) {
+func (r *Runner) poll(ctx context.Context, facts BootFacts) (*api.MacOSRun, error) {
 	wait := r.NetworkWait
 	if wait == 0 {
 		wait = 5 * time.Minute
@@ -172,7 +194,7 @@ func (r *Runner) poll(ctx context.Context) (*api.MacOSRun, error) {
 	end := time.Now().Add(wait)
 	for {
 		var p api.MacOSPoll
-		err := call(ctx, r.client(), "GET", r.url("/api/macos/runner/poll"), r.Config.Secret, nil, &p)
+		err := call(ctx, r.client(), "GET", r.url("/api/macos/runner/poll"+facts.pollQuery()), r.Config.Secret, nil, &p)
 		var se *statusError
 		if err == nil || errors.As(err, &se) || time.Now().After(end) {
 			return p.Run, err
@@ -189,7 +211,7 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-// fetch gets the run's artifacts into the work directory by name, each
+// fetch gets the run's files into the work directory by file id, each
 // checked against its sha256.
 func (r *Runner) fetch(ctx context.Context, run *api.MacOSRun) (map[string]string, error) {
 	dir := filepath.Join(r.Dir, "artifacts")
@@ -198,16 +220,20 @@ func (r *Runner) fetch(ctx context.Context, run *api.MacOSRun) (map[string]strin
 	}
 	got := map[string]string{}
 	for _, a := range run.Artifacts {
+		p := filepath.Join(dir, a.SHA256)
+		if have, err := fileSHA256(p); err == nil && have == a.SHA256 {
+			got[a.Name] = p
+			continue
+		}
 		req, _ := http.NewRequestWithContext(ctx, "GET", r.url("/api/macos/runner/artifacts/"+a.SHA256), nil)
 		body, err := do(r.client(), req, r.Config.Secret)
 		if err != nil {
-			return nil, fmt.Errorf("artifact %s: %w", a.Name, err)
+			return nil, fmt.Errorf("file %s: %w", a.Name, err)
 		}
 		sum := sha256.Sum256(body)
 		if hex.EncodeToString(sum[:]) != a.SHA256 {
-			return nil, fmt.Errorf("artifact %s: its sha256 is not the pinned %s", a.Name, a.SHA256)
+			return nil, fmt.Errorf("file %s: its sha256 is not the pinned %s", a.Name, a.SHA256)
 		}
-		p := filepath.Join(dir, a.SHA256)
 		if err := os.WriteFile(p, body, 0o600); err != nil {
 			return nil, err
 		}
@@ -216,52 +242,17 @@ func (r *Runner) fetch(ctx context.Context, run *api.MacOSRun) (map[string]strin
 	return got, nil
 }
 
-// untar unpacks a .tar.gz into dir, refusing any path out of it.
-func untar(file, dir string) error {
-	f, err := os.Open(file)
+func fileSHA256(p string) (string, error) {
+	f, err := os.Open(p)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
 	}
-	tr := tar.NewReader(gz)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		name := filepath.Clean(h.Name)
-		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, "../") {
-			return fmt.Errorf("%s: %s is outside the bundle", file, h.Name)
-		}
-		p := filepath.Join(dir, name)
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(h.Mode)&0o755|0o600)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(out, tr)
-			if cerr := out.Close(); err == nil {
-				err = cerr
-			}
-			if err != nil {
-				return err
-			}
-		}
-	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 type statusError struct {

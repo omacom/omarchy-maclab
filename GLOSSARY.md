@@ -88,6 +88,32 @@ _Avoid_: Install test, release run
 A Maintainer making an accepted Installed run a Mac's new Reference and Known-good kernel. A Volunteer's Mac is never promoted.
 _Avoid_: Ready for promotion (said of a candidate set fit to ship), release (as a verb)
 
+### Performance
+
+**Benchmark set**:
+A numbered, frozen list of benchmarks, each at one version with its settings, run the same way on Omarchy and on macOS. Values from different sets are never compared.
+_Avoid_: Suite, tier, bench version
+
+**Performance run**:
+One Release measured with one Benchmark set on one Mac, booted without being installed, so that it can be set against the same Mac's macOS result.
+_Avoid_: Bench run, benchmark job, Compare (two sides a Maintainer asks for on one Mac)
+
+**macOS result**:
+One Mac's measurements of one Benchmark set in macOS, at one macOS build; its Performance runs are compared with it.
+_Avoid_: Baseline (the first run that sets a Mac's Reference), macOS reference (the catalogue's facts about a board)
+
+**Counted**:
+Said of a Volunteer's Mac whose performance results join its Configuration's headline figures, as a Lab-owned Mac's do.
+_Avoid_: Promoted (said of a Reference), trusted, verified
+
+**Unattended Mac**:
+A Mac whose macOS starts and logs in with nobody at it, so that the lab can take its macOS result alone.
+_Avoid_: Headless Mac, automatic Mac
+
+**Attended Mac**:
+A Mac whose macOS waits for a person to type its password before the lab can take its macOS result.
+_Avoid_: Locked Mac, manual Mac, Unlock (the owner opening the lab server)
+
 ### Machines
 
 **Lease**:

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""The lab's benchmark runner: one tier of pinned benchmarks on one Mac.
+"""The lab's benchmark runner: one Benchmark set's Quick or Full list on a Mac
+running Omarchy, by metric id.
 
-lab-agent runs it as root with the artifacts already fetched from labd by
-sha256 into --cache; nothing here reaches the internet. Programs that draw
-run as the GUI user inside the Wayland session (runuser plus that session's
-environment). Writes bench.json (a list, one entry per measurement) and
-bench-conditions.json beside it.
+lab-agent runs it as root with the list's pinned Omarchy files already
+fetched from labd by sha256 into --cache; nothing here reaches the internet.
+Programs that draw run as the GUI user inside the Wayland session (runuser
+plus that session's environment).
+
+It writes bench.json, one entry per metric holding FIELDS and nothing else,
+with a reason from REASONS where there is no value, and bench-conditions.json
+beside it. What the tools print goes to stderr, the job's private log, and
+never into either file: a tool's text can carry a user name or a path.
 """
 
 import argparse
@@ -16,6 +21,7 @@ import functools
 import glob
 import http.server
 import json
+import math
 import os
 import pathlib
 import re
@@ -23,21 +29,30 @@ import shutil
 import signal
 import socket
 import stat
+import statistics
 import subprocess
 import sys
 import tarfile
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 
-TIERS = {
-    "default": ["speedometer-chrome", "motionmark-chrome", "7zip", "glmark2", "vkmark", "boot"],
-}
-TIERS["extended"] = TIERS["default"] + [
-    "speedometer-chromium", "jetstream-chrome", "geekbench", "coremark", "kernel-compile",
-    "vkpeak", "clpeak", "ffmpeg-vaapi", "suspend",
-]
+# The fixed reason codes, the only words bench.json carries besides the
+# set's own. labd keeps the same list.
+REASONS = (
+    "no_build", "no_driver", "fell_back", "no_comparable_sensor", "not_run", "skipped", "error",
+    "disk_too_full", "not_on_ac", "not_idle", "software_renderer", "placeholder_file", "battery_charging",
+)
+# A row with one of these fails the run; any other reason does not.
+FAILING = ("error", "software_renderer")
+
+FIELDS = ("set", "metric", "category", "version", "value", "unit", "higher_is_better", "spread",
+          "seconds", "cool_down", "api", "capacity", "fill", "reason")
+
+LISTS = ("quick", "full")
+SYSTEM = "omarchy"
 
 POWER_PROFILE = "balanced"
 BRIGHTNESS = 0.5
@@ -45,42 +60,54 @@ COOL_LIMIT = 60
 COOL_THRESHOLD = 50.0
 BUSY_LIMIT = 25.0
 
+REFRESH_HZ = 60
+REFRESH_SLACK = 0.1
+DEVICE_PIXEL_RATIO = 2
+
+STORAGE_FREE = 0.20
+CACHED_LIMIT = 0.10
+
+# STREAM's arrays are at least four times the largest cache. sysfs does not
+# show Apple's system level cache, the largest, so it is taken at the biggest
+# any Apple Silicon Mac has.
+STREAM_LARGEST_CACHE = 96 << 20
+STREAM_CACHE_FACTOR = 4
+
+IDLE_SECONDS = 60
+# The all-core load's fixed work: this many CoreMark iterations in all,
+# shared among a thread per core. The macOS runner does the same.
+POWER_COREMARK_ITERATIONS = 4_000_000
+POWER_MAX_W = 1000.0
+
+LLAMA_ALL_LAYERS = 999
+ANE_TOOL = "ane-bench"
+
+
+class Reason(Exception):
+    """The metric has no value, for this reason; detail goes to the log only."""
+
+    def __init__(self, code, detail="", capacity=None):
+        if code not in REASONS:
+            raise ValueError(f"not a reason code: {code}")
+        super().__init__(f"{code}: {detail}" if detail else code)
+        self.code = code
+        self.capacity = capacity
+
+
+class Refused(Reason):
+    """The whole run is refused before anything is measured."""
+
 
 class ParseError(Exception):
     pass
 
 
-class Refused(Exception):
-    pass
-
-
-class Skip(Exception):
-    pass
+class Cancelled(BaseException):
+    """SIGTERM: lab-agent cancelled the run. Not an Exception, so that no
+    benchmark's own handling swallows it and every finally runs."""
 
 
 # ---------------------------------------------------------------- parsers
-
-def _num(m, what):
-    if not m:
-        raise ParseError(f"no {what} in the output")
-    return float(m.group(1))
-
-
-def parse_7z(text):
-    """7-Zip's total rating in MIPS: the last number of its Tot: line."""
-    m = re.findall(r"^Tot:\s.*?(\d+)\s*$", text, re.M)
-    if not m:
-        raise ParseError("no Tot: line from 7z b")
-    return int(m[-1])
-
-
-def parse_score(text, tool):
-    m = re.findall(rf"{re.escape(tool)} Score:\s*(\d+(?:\.\d+)?)", text)
-    if not m:
-        raise ParseError(f"no {tool} Score")
-    v = float(m[-1])
-    return int(v) if v.is_integer() else v
-
 
 def _duration(s):
     total = 0.0
@@ -97,57 +124,189 @@ def parse_boot(text):
     return round(_duration(m.group(1)), 6)
 
 
-def parse_geekbench(text):
-    s = re.search(r"Single-Core Score\s+(\d+)", text)
-    m = re.search(r"Multi-Core Score\s+(\d+)", text)
-    if not s or not m:
-        raise ParseError("no Geekbench scores")
-    return {"single": int(s.group(1)), "multi": int(m.group(1))}
+def parse_7z(text):
+    """7-Zip's total rating in MIPS: the last number of its Tot: line."""
+    m = re.findall(r"^Tot:\s.*?(\d+)\s*$", text, re.M)
+    if not m:
+        raise ParseError("no Tot: line from 7z b")
+    return int(m[-1])
 
 
-CLPEAK_UNITS = {"": 1.0, "MFLOPS": 1e-3, "GFLOPS": 1.0, "TFLOPS": 1e3}
+def coremark_valid(text):
+    if "Correct operation validated" not in text or re.search(r"^ERROR!.*crc", text, re.M | re.I):
+        raise ParseError("CoreMark did not validate its own work")
 
 
-def parse_clpeak(text):
-    """The best single-precision GFLOPS of the first device. clpeak 1.x heads
-    the section "(GFLOPS)"; 3.x gives each value its own unit."""
-    sect = re.search(r"Single-precision compute(?: \(GFLOPS\))?\n((?:\s+\w+\s*:\s*[\d.]+(?: [MGT]FLOPS)?\n?)+)", text)
+def parse_coremark(text):
+    coremark_valid(text)
+    m = re.search(r"^CoreMark 1\.0 : ([0-9.]+)", text, re.M)
+    if not m:
+        why = re.findall(r"^ERROR!.*", text, re.M)
+        raise ParseError("no valid CoreMark result" + (": " + why[0] if why else ""))
+    return float(m.group(1))
+
+
+CLPEAK_SCALE = {"": 1.0, "M": 1e-3, "G": 1.0, "T": 1e3}
+
+
+def _clpeak_section(text, head):
+    sect = re.search(rf"{head}[^\n]*\n((?:[ \t]+\w+[ \t]*:[ \t]*[\d.]+[^\n]*\n?)+)", text)
     if not sect:
-        raise ParseError("no single-precision section from clpeak")
-    return max(round(float(v) * CLPEAK_UNITS[u], 3)
-               for v, u in re.findall(r":\s*([\d.]+)\s*([MGT]FLOPS)?", sect.group(1)))
+        raise ParseError(f"no {head} section from clpeak")
+    return sect.group(1)
 
 
-def parse_vkpeak(text):
-    return _num(re.search(r"^fp32-vec4\s*=\s*([\d.]+)\s*GFLOPS", text, re.M), "fp32-vec4")
+def parse_clpeak_fp32(text):
+    """The best single-precision GFLOPS. clpeak 1.x heads the section
+    "(GFLOPS)"; 3.x gives each value its own unit."""
+    sect = _clpeak_section(text, "Single-precision compute")
+    return max(round(float(v) * CLPEAK_SCALE[u], 3)
+               for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])FLOPS)?", sect))
+
+
+def parse_clpeak_bandwidth(text):
+    """The best global memory bandwidth in GB/s, "(GBPS)" in the heading or
+    a unit on each value."""
+    sect = _clpeak_section(text, "Global memory bandwidth")
+    return max(round(float(v) * CLPEAK_SCALE[u], 3)
+               for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])B(?:PS|/s))?", sect))
+
+
+def clpeak_device(text):
+    m = re.search(r"Device(?: \d+)?\s*:\s*(.+)", text)
+    return m.group(1).strip() if m else None
+
+
+SOFTWARE = re.compile(r"llvmpipe|softpipe|swrast|swiftshader|lavapipe|software|\bcpu\b", re.I)
+
+
+def clpeak_verdict(code, text):
+    """None when clpeak ran on the physical GPU, else the reason code."""
+    if re.search(r"no platforms|CL_PLATFORM_NOT_FOUND|clGetPlatformIDs \(-1001\)", text, re.I):
+        return "no_driver"
+    if code != 0:
+        return "error"
+    dev = clpeak_device(text)
+    if not dev or SOFTWARE.search(dev):
+        return "fell_back"
+    return None
+
+
+def parse_stream(text, kernel):
+    """STREAM's best rate of one kernel (Copy, Scale, Add, Triad), in GB/s."""
+    if not re.search(r"Solution Validates", text):
+        raise ParseError("STREAM did not validate its arrays")
+    m = re.search(rf"^{kernel}:\s+([\d.]+)\s+[\d.]+\s+[\d.]+\s+[\d.]+", text, re.M | re.I)
+    if not m:
+        raise ParseError(f"no {kernel} line from STREAM")
+    return round(float(m.group(1)) / 1000, 3)
+
+
+def parse_fio(text, rw):
+    """fio's JSON for one group: (MB/s, its spread), (kIOPS, its spread)."""
+    i = text.find("{")
+    if i < 0:
+        raise ParseError("no JSON from fio")
+    try:
+        jobs = json.loads(text[i:])["jobs"]
+    except (ValueError, KeyError) as e:
+        raise ParseError(f"fio's JSON: {e}")
+    side = jobs[0]["write" if "write" in rw else "read"]
+    if not side.get("io_bytes"):
+        raise ParseError("fio moved no bytes")
+    return {
+        "mbs": round(side["bw_bytes"] / 1e6, 3),
+        "mbs_spread": round(side.get("bw_dev", 0) * 1024 / 1e6, 3),
+        "kiops": round(side["iops"] / 1e3, 3),
+        "kiops_spread": round(side.get("iops_stddev", 0) / 1e3, 3),
+    }
 
 
 def parse_ffmpeg(text):
-    """Frames decoded per second of wall time, from -benchmark's rtime."""
+    """(frames decoded, frames per second of wall time), from -benchmark."""
     frames = re.findall(r"frame=\s*(\d+)", text)
     rtime = re.search(r"bench:.*rtime=([\d.]+)s", text)
     if not frames or not rtime or float(rtime.group(1)) <= 0:
         raise ParseError("no frame count or rtime from ffmpeg")
-    return round(int(frames[-1]) / float(rtime.group(1)), 3)
+    n = int(frames[-1])
+    return n, round(n / float(rtime.group(1)), 3)
 
 
-def parse_suspend(dmesg):
-    """Milliseconds spent suspending and resuming devices in the last cycle."""
-    i = dmesg.rfind("PM: suspend entry")
-    if i < 0:
-        raise ParseError("no suspend cycle in the kernel log")
-    sus = res = 0.0
-    for kind, ms in re.findall(r"PM: (?:\w+ )?(suspend|resume) of devices complete after ([\d.]+) msecs", dmesg[i:]):
-        if kind == "suspend":
-            sus += float(ms)
-        else:
-            res += float(ms)
-    return round(sus, 3), round(res, 3)
+DECODE_NO_DEVICE = re.compile(r"Device creation failed|No device available for decoder|"
+                              r"Failed to (?:open|find|probe) .*(?:media|video) device", re.I)
+DECODE_FALLBACK = re.compile(r"Failed setup for format|hwaccel initiali[sz]ation returned error|"
+                             r"Failed to get (?:a )?(?:HW|hardware) (?:surface )?format|"
+                             r"falling back to software|software decoding", re.I)
+
+
+def decode_verdict(code, text):
+    """None when FFmpeg decoded every frame in hardware, else the reason."""
+    if DECODE_NO_DEVICE.search(text):
+        return "no_driver"
+    if code != 0:
+        return "error"
+    if DECODE_FALLBACK.search(text):
+        return "fell_back"
+    return None
+
+
+def parse_llama(text):
+    """llama-bench's JSONL rows."""
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{") and "avg_ts" in line:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+    if not rows:
+        raise ParseError("no result from llama-bench")
+    return rows
+
+
+def llama_row(rows, prompt, gen):
+    for r in rows:
+        if int(r.get("n_prompt", -1)) == prompt and int(r.get("n_gen", -1)) == gen:
+            return r
+    raise ParseError(f"llama-bench gave no row for {prompt} prompt and {gen} generated tokens")
+
+
+def llama_gpu_verdict(text, rows):
+    """None when llama.cpp put every layer on a physical GPU through Vulkan."""
+    dev = re.search(r"ggml_vulkan: 0 = (.+)", text)
+    if not dev or SOFTWARE.search(dev.group(1)):
+        return "fell_back"
+    if not any("vulkan" in str(r.get("backends", "")).lower() for r in rows):
+        return "fell_back"
+    off = re.findall(r"offloaded (\d+)/(\d+) layers to GPU", text)
+    if not off or any(a != b for a, b in off):
+        return "fell_back"
+    return None
+
+
+def parse_ane(text):
+    """ane-bench's (device, inferences/s)."""
+    dev = re.search(r"^device:\s*(\S+)", text, re.M)
+    v = re.search(r"^inferences/s:\s*([\d.]+)", text, re.M)
+    if not dev or not v:
+        raise ParseError("no device or inferences/s from ane-bench")
+    return dev.group(1).lower(), float(v.group(1))
+
+
+def parse_mlx(text):
+    for line in reversed(text.strip().splitlines()):
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                break
+    raise ParseError("no result from the MLX probe")
 
 
 def page_result(obj):
     if not isinstance(obj, dict) or not isinstance(obj.get("value"), (int, float)):
-        raise ParseError(f"the page gave no score: {obj!r}")
+        raise ParseError("the page gave no score")
     sp = obj.get("spread")
     return obj["value"], sp if isinstance(sp, (int, float)) else None
 
@@ -155,6 +314,13 @@ def page_result(obj):
 def devtools_port(profile):
     p = pathlib.Path(profile, "DevToolsActivePort")
     return int(p.read_text().split("\n", 1)[0])
+
+
+def size_bytes(s):
+    m = re.fullmatch(r"(\d+)\s*([KMGT]?)i?B?", str(s).strip(), re.I)
+    if not m:
+        raise ValueError(f"size {s!r}")
+    return int(m.group(1)) << {"": 0, "K": 10, "M": 20, "G": 30, "T": 40}[m.group(2).upper()]
 
 
 # ---------------------------------------------------------------- the Mac
@@ -198,6 +364,15 @@ class Host:
     def which(self, name):
         return shutil.which(name)
 
+    def cpus(self):
+        try:
+            return len(os.sched_getaffinity(0))
+        except AttributeError:
+            return os.cpu_count() or 1
+
+    def statvfs(self, path):
+        return os.statvfs(path)
+
     def _wrap(self, cmd, gui, env):
         extra = dict(env or {})
         full = dict(os.environ, **extra)
@@ -209,11 +384,11 @@ class Host:
         return list(cmd), full
 
     def run(self, cmd, timeout=None, env=None, gui=False, cwd=None):
-        argv, env = self._wrap(cmd, gui, env)
+        argv, env = self._wrap([str(c) for c in cmd], gui, env)
         start = time.monotonic()
         try:
-            p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                               errors="replace", timeout=timeout, env=env, cwd=cwd)
+            p = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, errors="replace", timeout=timeout, env=env, cwd=cwd)
         except FileNotFoundError as e:
             return Ran(127, str(e), 0.0)
         except subprocess.TimeoutExpired as e:
@@ -222,9 +397,9 @@ class Host:
         return Ran(p.returncode, p.stdout, time.monotonic() - start)
 
     def spawn(self, cmd, env=None, gui=False):
-        argv, env = self._wrap(cmd, gui, env)
-        return subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=True)
+        argv, env = self._wrap([str(c) for c in cmd], gui, env)
+        return subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
 
     def gui_dir(self, parent):
         d = pathlib.Path(parent, f"profile-{os.getpid()}-{int(time.time() * 1000)}")
@@ -241,13 +416,13 @@ class Host:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             f.close()
-            raise Refused("another benchmark run holds the lock")
+            raise Refused("not_idle", "another benchmark run holds the lock")
         return f
 
 
 # ---------------------------------------------------------------- conditions
 
-def on_ac(host):
+def supplies(host):
     batteries, mains = [], []
     for t in host.glob("sys/class/power_supply/*/type"):
         kind = host.read(t)
@@ -256,19 +431,24 @@ def on_ac(host):
             batteries.append(d)
         elif kind in ("Mains", "USB", "USB_PD", "USB_C"):
             mains.append(host.read(d + "/online") == "1")
-    if not batteries:
-        return True, "no battery"
-    if any(mains):
-        return True, "on AC"
-    return False, "on battery: plug the Mac in to run benchmarks"
+    return batteries, mains
+
+
+def on_ac(host):
+    """(on AC, has a battery). A Mac with no battery counts as on AC."""
+    batteries, mains = supplies(host)
+    return (not batteries or any(mains)), bool(batteries)
+
+
+def battery_charging(host):
+    return any(host.read(d + "/status") == "Charging" for d in supplies(host)[0])
 
 
 def cpu_temp(host):
     temps = []
     for rel in host.glob("sys/class/thermal/thermal_zone*/temp") + host.glob("sys/class/hwmon/hwmon*/temp*_input"):
-        v = host.read(rel)
         try:
-            temps.append(int(v) / 1000)
+            temps.append(int(host.read(rel)) / 1000)
         except (TypeError, ValueError):
             pass
     return max(temps) if temps else None
@@ -304,118 +484,92 @@ def busy(host, interval=3):
     return 100.0 * (1 - (b[1] - a[1]) / (b[0] - a[0]))
 
 
-def conditions(host, profile=POWER_PROFILE, level=BRIGHTNESS, busy_fn=None, busy_limit=BUSY_LIMIT):
-    ok, why = on_ac(host)
-    if not ok:
-        raise Refused(why)
+def conditions(host, profile=POWER_PROFILE, level=BRIGHTNESS, busy_fn=None, busy_limit=BUSY_LIMIT, c=None):
+    """The run's conditions, set: (what bench-conditions.json says, filled
+    into c as they are checked, and what restore puts back). Refused when
+    not on AC or not idle."""
+    ac, battery = on_ac(host)
+    c = {} if c is None else c
+    c.update({"on_ac": ac, "battery": battery, "cpu_busy_percent": None, "power_profile": None, "backlight_percent": None})
+    if not ac:
+        raise Refused("not_on_ac")
     load = (busy_fn or busy)(host)
+    c["cpu_busy_percent"] = round(load, 1)
     if load > busy_limit:
-        raise Refused(f"the Mac is busy ({load:.0f}% CPU): another job may be running")
-    c = {"power": why, "busy_percent": round(load, 1)}
-    r = host.run(["powerprofilesctl", "set", profile])
-    got = host.run(["powerprofilesctl", "get"]).out.strip() if r.code == 0 else ""
-    c["power_profile"] = got if got else f"unavailable ({r.out.strip()[:80]})"
-    bl = {}
+        raise Refused("not_idle", f"{load:.0f}% CPU")
+    saved = {"power_profile": None, "brightness": {}}
+    was = host.run(["powerprofilesctl", "get"])
+    if was.code == 0 and was.out.strip():
+        saved["power_profile"] = was.out.strip()
+    host.run(["powerprofilesctl", "set", profile])
+    got = host.run(["powerprofilesctl", "get"])
+    c["power_profile"] = profile if got.code == 0 and got.out.strip() == profile else None
     for m in host.glob("sys/class/backlight/*/max_brightness"):
         d = os.path.dirname(m)
         try:
-            mx, was = int(host.read(m)), int(host.read(d + "/brightness"))
-        except (TypeError, ValueError):
+            mx, cur = int(host.read(m)), int(host.read(d + "/brightness"))
+            host.write(d + "/brightness", str(round(mx * level)))
+        except (TypeError, ValueError, OSError):
             continue
-        want = round(mx * level)
-        host.write(d + "/brightness", str(want))
-        bl[os.path.basename(d)] = {"was": was, "set": want, "max": mx}
-    c["brightness"] = bl
-    return c
+        saved["brightness"][d] = cur
+        c["backlight_percent"] = round(level * 100)
+    host.run(["hyprctl", "dispatch", "dpms", "on"], timeout=10, gui=True)
+    return c, saved
 
 
-def restore(host, c):
-    for name, b in (c or {}).get("brightness", {}).items():
+def restore(host, saved):
+    if not saved:
+        return
+    for d, was in saved.get("brightness", {}).items():
         try:
-            host.write(f"sys/class/backlight/{name}/brightness", str(b["was"]))
+            host.write(d + "/brightness", str(was))
         except OSError:
             pass
+    if saved.get("power_profile") and saved["power_profile"] != POWER_PROFILE:
+        host.run(["powerprofilesctl", "set", saved["power_profile"]])
 
 
-# ---------------------------------------------------------------- runner
-
-@dataclasses.dataclass
-class Measure:
-    name: str
-    version: str
-    value: float
-    unit: str
-    higher_is_better: bool
-    spread: float = None
-
-
-@dataclasses.dataclass
-class Bench:
-    fn: object
-    needs: tuple = ()
-
-
-def run_tier(names, benches, host, ctx, cool=None):
-    out = []
-    for name in names:
-        b = benches[name]
-        entry = {"name": name, "version": None, "value": None, "unit": None,
-                 "higher_is_better": None, "spread": None, "seconds": 0}
-        cd = None
-        if cool:
-            w, t = cool(host)
-            cd = {"seconds": w, "temp_c": t}
-        start = host.now()
-        try:
-            ms = b.fn(ctx)
-        except Skip as e:
-            out.append(dict(entry, seconds=round(host.now() - start, 3), skipped=str(e), **_cd(cd)))
-            continue
-        except Exception as e:  # one broken benchmark does not stop the tier
-            out.append(dict(entry, seconds=round(host.now() - start, 3), error=f"{type(e).__name__}: {e}", **_cd(cd)))
-            continue
-        took = round(host.now() - start, 3)
-        for m in ms:
-            out.append(dict(dataclasses.asdict(m), seconds=took, **_cd(cd)))
-    return out
-
-
-def _cd(cd):
-    return {"cool_down": cd} if cd else {}
-
-
-def exit_code(results):
-    return 1 if any("error" in r for r in results) else 0
-
-
-def load_manifest(path):
-    with open(path) as f:
-        return {i["name"]: i for i in json.load(f)["items"]}
-
+# ---------------------------------------------------------------- files
 
 class Ctx:
-    def __init__(self, host, manifest, cache, work):
-        self.host, self.manifest, self.cache, self.work = host, manifest, pathlib.Path(cache), pathlib.Path(work)
+    def __init__(self, host, bset, cache, work, log=sys.stderr):
+        self.host, self.set = host, bset
+        self.files = {f["id"]: f for f in bset["files"].get(SYSTEM, [])}
+        self.cache, self.work, self.logf = pathlib.Path(cache), pathlib.Path(work), log
+        self.power_interval = 1.0
 
-    def version(self, item):
-        return self.manifest[item]["version"]
+    def log(self, what, ran=None):
+        if ran is None:
+            print(f"-- {what}", file=self.logf, flush=True)
+        else:
+            print(f"-- {what}: exit {ran.code} after {ran.seconds:.1f} s\n{ran.out.rstrip()}", file=self.logf, flush=True)
 
-    def file(self, item):
-        p = self.cache / self.manifest[item]["sha256"]
+    def run(self, what, cmd, **kw):
+        r = self.host.run(cmd, **kw)
+        self.log(what, r)
+        return r
+
+    def file(self, fid):
+        f = self.files.get(fid)
+        if f is None:
+            raise Reason("error", f"the set has no {SYSTEM} file {fid}")
+        if f["sha256"] == "placeholder":
+            raise Reason("placeholder_file", fid)
+        p = self.cache / f["sha256"]
         if not p.exists():
-            raise Skip(f"{item} is not in the cache (lab bench mirror, then run again)")
+            raise Reason("error", f"{fid} is not in the cache")
         return p
 
-    def unpack(self, item):
-        """The item unpacked under work, readable by the GUI user."""
-        it = self.manifest[item]
-        src = self.file(item)
-        dest = self.work / item
+    def unpack(self, fid):
+        """The file unpacked under work, readable by the GUI user."""
+        f = self.files[fid]
+        src = self.file(fid)
+        dest = self.work / fid
         if not dest.exists():
-            tmp = self.work / (item + ".part")
+            tmp = self.work / (fid + ".part")
             shutil.rmtree(tmp, ignore_errors=True)
             tmp.mkdir(parents=True)
-            if it["kind"] == "zip":
+            if f["kind"] == "zip":
                 _unzip(src, tmp)
             else:
                 with tarfile.open(src) as t:
@@ -427,11 +581,31 @@ class Ctx:
             tmp.rename(dest)
         return dest
 
-    def entry(self, item):
-        return self.unpack(item) / self.manifest[item]["entry"]
+    def program(self, fid, name):
+        """The program called name in the file: its entry, or the one
+        executable of that name nearest the top of the archive."""
+        f = self.files.get(fid) or {}
+        root = self.unpack(fid)
+        if f.get("entry"):
+            p = root / f["entry"]
+            if p.is_file():
+                return p
+            raise Reason("no_build", f"{fid} holds no {f['entry']}")
+        found = sorted((p for p in root.rglob(name) if p.is_file() and os.access(p, os.X_OK)),
+                       key=lambda p: (len(p.parts), str(p)))
+        if not found:
+            raise Reason("no_build", f"{fid} holds no program {name}")
+        return found[0]
 
-    def serve(self, item):
-        root = self.unpack(item) / self.manifest[item].get("root", "")
+    def libs(self, fid):
+        """LD_LIBRARY_PATH for a program pinned with the libraries it needs."""
+        root = self.unpack(fid)
+        dirs = sorted({str(p) for p in root.rglob("lib") if p.is_dir()} | {str(p) for p in root.rglob("lib64") if p.is_dir()})
+        have = os.environ.get("LD_LIBRARY_PATH")
+        return {"LD_LIBRARY_PATH": ":".join(dirs + ([have] if have else []))} if dirs else {}
+
+    def serve(self, fid):
+        root = self.unpack(fid) / self.files[fid].get("root", "")
         handler = functools.partial(_Quiet, directory=str(root))
         srv = _Server(("127.0.0.1", 0), handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -463,7 +637,82 @@ def _unzip(src, dest):
                 os.chmod(path, mode)
 
 
-# ---------------------------------------------------------------- CDP
+def _ok(r, what):
+    if r.code != 0:
+        raise RuntimeError(f"{what} exited {r.code}")
+    return r
+
+
+@dataclasses.dataclass
+class Value:
+    value: float
+    spread: float = None
+    capacity: dict = None
+
+
+# ---------------------------------------------------------------- CPU
+
+def coremark_program(ctx, threads):
+    """The lab's CoreMark build: one program for up to 64 threads, told how
+    many by its first argument, M<threads>."""
+    return ctx.program("coremark", "coremark")
+
+
+def run_coremark(ctx, threads, iterations=0):
+    exe = coremark_program(ctx, threads)
+    r = ctx.run(f"coremark {threads} threads", [exe, f"M{threads}", "0x0", "0x0", "0x66", str(iterations), "7", "1", "2000"],
+                timeout=1200, env=ctx.libs("coremark"))
+    return _ok(r, "coremark")
+
+
+def coremark(threads):
+    def fn(ctx, m):
+        n = threads or ctx.host.cpus()
+        return Value(parse_coremark(run_coremark(ctx, n).out))
+    return fn
+
+
+def seven_zip(ctx, m):
+    r = _ok(ctx.run("7z b", [ctx.program("7zip", "7z"), "b"], timeout=900), "7z b")
+    return Value(parse_7z(r.out))
+
+
+# ---------------------------------------------------------------- browser
+
+class CDP:
+    def __init__(self, ws_url, timeout=30):
+        m = re.match(r"ws://([^/:]+):(\d+)(/.*)", ws_url)
+        self.sock = socket.create_connection((m.group(1), int(m.group(2))), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((f"GET {m.group(3)} HTTP/1.1\r\nHost: {m.group(1)}:{m.group(2)}\r\n"
+                           f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                           "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            resp += _exact(self.sock, 1)
+        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+            raise ConnectionError("no websocket from the browser")
+        self.n = 0
+
+    def call(self, method, **params):
+        self.n += 1
+        self.sock.sendall(ws_frame(json.dumps({"id": self.n, "method": method, "params": params}).encode()))
+        while True:
+            msg = json.loads(ws_recv(self.sock))
+            if msg.get("id") == self.n:
+                if "error" in msg:
+                    raise RuntimeError(f"{method}: {msg['error']}")
+                return msg.get("result", {})
+
+    def eval(self, expr):
+        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
+        if "exceptionDetails" in r:
+            return None
+        return r.get("result", {}).get("value")
+
+    def close(self):
+        self.sock.close()
+
 
 def ws_frame(payload, mask=True):
     head = bytearray([0x81])
@@ -516,48 +765,13 @@ def ws_recv(sock):
             return msg
 
 
-class CDP:
-    def __init__(self, ws_url, timeout=30):
-        m = re.match(r"ws://([^/:]+):(\d+)(/.*)", ws_url)
-        self.sock = socket.create_connection((m.group(1), int(m.group(2))), timeout=timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f"GET {m.group(3)} HTTP/1.1\r\nHost: {m.group(1)}:{m.group(2)}\r\n"
-                           f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           "Sec-WebSocket-Version: 13\r\n\r\n").encode())
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            resp += _exact(self.sock, 1)
-        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
-            raise ConnectionError(f"no websocket from the browser: {resp[:80]!r}")
-        self.n = 0
-
-    def call(self, method, **params):
-        self.n += 1
-        self.sock.sendall(ws_frame(json.dumps({"id": self.n, "method": method, "params": params}).encode()))
-        while True:
-            msg = json.loads(ws_recv(self.sock))
-            if msg.get("id") == self.n:
-                if "error" in msg:
-                    raise RuntimeError(f"{method}: {msg['error']}")
-                return msg.get("result", {})
-
-    def eval(self, expr):
-        r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
-        if "exceptionDetails" in r:
-            return None
-        return r.get("result", {}).get("value")
-
-    def close(self):
-        self.sock.close()
-
-
 APPS = {
     "speedometer": {
         "url": "index.html?startAutomatically&iterationCount=10",
         "done": "!!(globalThis.benchmarkClient && benchmarkClient._hasResults && !benchmarkClient._isRunning)",
         "result": "(() => { const s = benchmarkClient._metrics.Score;"
                   " return s ? {value: s.mean, spread: s.delta || null} : {value: null}; })()",
-        "unit": "score", "timeout": 900,
+        "timeout": 900,
     },
     "motionmark": {
         "url": "MotionMark/index.html",
@@ -566,7 +780,7 @@ APPS = {
         "done": "document.body.classList.contains('showing-results')",
         "result": "(() => { const r = benchmarkRunnerClient.results;"
                   " return {value: r.score, spread: r.score - r.scoreLowerBound}; })()",
-        "unit": "score", "timeout": 900,
+        "timeout": 900,
     },
     "jetstream": {
         "url": "index.html",
@@ -574,14 +788,14 @@ APPS = {
         "start": "JetStream.start(); true",
         "done": "document.getElementById('result-summary').classList.contains('done')",
         "result": "({value: geomean(JetStream.benchmarks.map(b => b.score)), spread: null})",
-        "unit": "score", "timeout": 1200,
+        "timeout": 1200,
     },
 }
 
 # Headless on the Mac's GPU: a headed window draws only while the compositor
 # shows it, and a Lab boot locks the session at once (idle locks it later), so
-# a headed page never gets a frame. The screen is the same on every Mac: 1920
-# by 1080 at a device pixel ratio of 2, which gives MotionMark its large stage.
+# a headed page never gets a frame. The screen is the same on every Mac and
+# both systems: 1920 by 1080 at a device pixel ratio of 2.
 BROWSER_FLAGS = [
     "--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-extensions",
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
@@ -590,17 +804,31 @@ BROWSER_FLAGS = [
     "--remote-debugging-port=0", "--remote-allow-origins=*",
 ]
 
-GL_RENDERER = ("(() => { const gl = document.createElement('canvas').getContext('webgl2');"
-               " const e = gl && gl.getExtension('WEBGL_debug_renderer_info');"
-               " return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : null; })()")
+PROBE = ("(() => { const gl = document.createElement('canvas').getContext('webgl2');"
+         " const e = gl && gl.getExtension('WEBGL_debug_renderer_info');"
+         " return {renderer: e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : null,"
+         " dpr: window.devicePixelRatio}; })()")
+
+FRAME_RATE = ("new Promise(r => { let n = 0; let t0 = null; function f(t) {"
+              " if (t0 === null) t0 = t; else n++;"
+              " if (t - t0 >= 2000) r(n * 1000 / (t - t0)); else requestAnimationFrame(f); }"
+              " requestAnimationFrame(f); })")
 
 
 def software_gl(renderer):
-    """Why the browser's GL renderer is not the Mac's GPU, or None if it is."""
-    if not renderer:
-        return "the browser has no WebGL renderer"
-    if re.search(r"swiftshader|llvmpipe|softpipe|software", renderer, re.I):
-        return f"the browser draws in software ({renderer})"
+    """Whether the browser's GL renderer is not the Mac's GPU."""
+    return not renderer or bool(re.search(r"swiftshader|llvmpipe|softpipe|software", renderer, re.I))
+
+
+def browser_verdict(probe, fps):
+    """None when the GPU draws the pages at the set's frame rate and pixel
+    ratio, else the reason code."""
+    if not isinstance(probe, dict) or software_gl(probe.get("renderer")):
+        return "software_renderer"
+    if probe.get("dpr") != DEVICE_PIXEL_RATIO:
+        return "error"
+    if not isinstance(fps, (int, float)) or abs(fps - REFRESH_HZ) > REFRESH_HZ * REFRESH_SLACK:
+        return "fell_back"
     return None
 
 
@@ -612,41 +840,6 @@ def _wait(host, fn, timeout, step=2, what="the page"):
             return v
         host.sleep(step)
     raise TimeoutError(f"{what} did not finish in {timeout} s")
-
-
-def browser_bench(app, browser):
-    def fn(ctx):
-        h, a = ctx.host, APPS[app]
-        exe = ctx.entry(browser)
-        base, stop = ctx.serve(app)
-        profile = h.gui_dir(ctx.work)
-        proc = h.spawn([str(exe), f"--user-data-dir={profile}", *BROWSER_FLAGS, base + a["url"]], gui=True)
-        cdp = None
-        try:
-            port = _wait(h, lambda: _try(devtools_port, profile), 60, 1, "the browser's DevTools port")
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=10) as r:
-                pages = [p for p in json.load(r) if p.get("type") == "page"]
-            cdp = CDP(pages[0]["webSocketDebuggerUrl"])
-            sw = software_gl(_try_for(h, lambda: cdp.eval(GL_RENDERER), 30))
-            if sw:
-                raise RuntimeError(sw)
-            if "ready" in a:
-                _wait(h, lambda: cdp.eval(a["ready"]), 300, 2, "the benchmark's start button")
-                cdp.eval(a["start"])
-            _wait(h, lambda: cdp.eval(a["done"]), a["timeout"], 5, app)
-            value, spread = page_result(cdp.eval(a["result"]))
-        finally:
-            if cdp:
-                try:
-                    cdp.call("Browser.close")
-                except Exception:
-                    pass
-                cdp.close()
-            stop()
-            _end(proc)
-        ver = f"{ctx.version(app)} ({browser} {ctx.version(browser)})"
-        return [Measure(f"{app}-{browser}", ver, value, a["unit"], True, spread)]
-    return Bench(fn, (app, browser))
 
 
 def _try_for(host, fn, seconds, step=1):
@@ -677,234 +870,621 @@ def _end(proc):
         proc.wait(5)
 
 
-def _ok(r, what):
-    if r.code != 0:
-        raise RuntimeError(f"{what} exited {r.code}: {r.out.strip()[-300:]}")
-    return r
+def browser(app):
+    def fn(ctx, m):
+        h, a = ctx.host, APPS[app]
+        exe = ctx.program("chrome", "chrome")
+        base, stop = ctx.serve(app)
+        profile = h.gui_dir(ctx.work)
+        proc = h.spawn([exe, f"--user-data-dir={profile}", *BROWSER_FLAGS, "about:blank"], gui=True)
+        cdp = None
+        try:
+            port = _wait(h, lambda: _try(devtools_port, profile), 60, 1, "the browser's DevTools port")
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=10) as r:
+                pages = [p for p in json.load(r) if p.get("type") == "page"]
+            cdp = CDP(pages[0]["webSocketDebuggerUrl"])
+            probe = _try_for(h, lambda: (lambda p: p if p and p.get("renderer") else None)(cdp.eval(PROBE)), 30)
+            fps = cdp.eval(FRAME_RATE)
+            ctx.log(f"{app}: renderer {probe and probe.get('renderer')}, dpr {probe and probe.get('dpr')}, {fps} frames/s")
+            why = browser_verdict(probe, fps)
+            if why:
+                raise Reason(why)
+            cdp.call("Page.navigate", url=base + a["url"])
+            if "ready" in a:
+                _wait(h, lambda: cdp.eval(a["ready"]), 300, 2, "the benchmark's start button")
+                cdp.eval(a["start"])
+            _wait(h, lambda: cdp.eval(a["done"]), a["timeout"], 5, app)
+            value, spread = page_result(cdp.eval(a["result"]))
+        finally:
+            if cdp:
+                try:
+                    cdp.call("Browser.close")
+                except Exception:
+                    pass
+                cdp.close()
+            stop()
+            _end(proc)
+            shutil.rmtree(profile, ignore_errors=True)
+        return Value(value, spread)
+    return fn
 
 
-def seven_zip(ctx):
-    r = _ok(ctx.host.run([str(ctx.entry("7zip")), "b"], timeout=600), "7z b")
-    return [Measure("7zip", ctx.version("7zip"), parse_7z(r.out), "MIPS", True)]
+# ---------------------------------------------------------------- GPU
+
+def clpeak(test, parse):
+    def fn(ctx, m):
+        exe = ctx.program("clpeak", "clpeak")
+        env = dict(ctx.libs("clpeak"), RUSTICL_ENABLE="asahi")
+        r = ctx.run(f"clpeak {test}", [exe, "--opencl", test], timeout=900, env=env, gui=True)
+        why = clpeak_verdict(r.code, r.out)
+        if why:
+            raise Reason(why)
+        return Value(parse(r.out))
+    return fn
 
 
-GLMARK2_SCENES = ["build:use-vbo=true", "texture:texture-filter=linear", "shading:shading=phong",
-                  "bump:bump-render=normals", "effect2d", "pulsar", "desktop", "refract"]
+# ---------------------------------------------------------------- Storage
+
+def disk_bytes(host):
+    """The internal SSD's size: the biggest whole NVMe disk."""
+    sizes = []
+    for rel in host.glob("sys/block/nvme*/size"):
+        try:
+            sizes.append(int(host.read(rel)) * 512)
+        except (TypeError, ValueError):
+            pass
+    return max(sizes) if sizes else None
 
 
-def glmark2(ctx):
-    pre = ctx.unpack("glmark2")
-    cmd = [str(ctx.entry("glmark2")), "--data-path", str(pre / "usr/share/glmark2")]
-    for s in GLMARK2_SCENES:
-        cmd += ["-b", f"{s}:duration=5"]
-    r = _ok(ctx.host.run(cmd, timeout=300, gui=True), "glmark2")
-    return [Measure("glmark2", ctx.version("glmark2"), parse_score(r.out, "glmark2"), "score", True)]
+def storage_room(host, work, file_size):
+    """The capacity entry, with the file in place; disk_too_full when less
+    than STORAGE_FREE of the disk would stay free."""
+    st = host.statvfs(str(work))
+    total = st.f_blocks * st.f_frsize
+    after = st.f_bavail * st.f_frsize - file_size
+    cap = {"bytes": disk_bytes(host), "fill_percent": round(100 * (1 - after / total), 1) if total else None}
+    if total <= 0 or after < STORAGE_FREE * total:
+        raise Reason("disk_too_full", capacity=cap)
+    return cap
 
 
-VKMARK_SCENES = ["vertex:device-local=true", "texture:anisotropy=0", "shading:shading=phong",
-                 "effect2d:kernel=edge", "cube", "clear:color=0.8,0.5,0.1,1"]
-
-
-def vkmark(ctx):
-    pre = ctx.unpack("vkmark")
-    libs = ctx.unpack("assimp") / "usr/lib"
-    cmd = [str(ctx.entry("vkmark")), "--winsys", "wayland", "--winsys-dir", str(pre / "usr/lib/vkmark"),
-           "--data-dir", str(pre / "usr/share/vkmark")]
-    for s in VKMARK_SCENES:
-        cmd += ["-b", f"{s}:duration=5"]
-    r = _ok(ctx.host.run(cmd, timeout=300, gui=True, env={"LD_LIBRARY_PATH": str(libs)}), "vkmark")
-    return [Measure("vkmark", ctx.version("vkmark"), parse_score(r.out, "vkmark"), "score", True)]
-
-
-def boot(ctx):
-    r = _ok(ctx.host.run(["systemd-analyze"], timeout=60), "systemd-analyze")
-    v = ctx.host.run(["systemd-analyze", "--version"]).out.split("\n", 1)[0].strip()
-    return [Measure("boot", v or "systemd", parse_boot(r.out), "s", False)]
-
-
-def geekbench(ctx):
-    r = ctx.host.run([str(ctx.entry("geekbench")), "--cpu", "--no-upload"], timeout=1200)
-    if r.code != 0 and re.search(r"licen[cs]e|Pro", r.out):
-        raise Skip("Geekbench refuses --no-upload without a Pro licence; results are never uploaded")
-    s = parse_geekbench(_ok(r, "geekbench6").out)
-    v = ctx.version("geekbench")
-    return [Measure("geekbench-single", v, s["single"], "score", True),
-            Measure("geekbench-multi", v, s["multi"], "score", True)]
-
-
-COREMARK_SRCS = ["core_list_join.c", "core_main.c", "core_matrix.c", "core_state.c", "core_util.c",
-                 "linux64/core_portme.c"]
-
-
-def parse_coremark(text):
-    m = re.search(r"^CoreMark 1\.0 : ([0-9.]+)", text, re.M)
-    if not m:
-        why = re.findall(r"^ERROR!.*", text, re.M)
-        raise ParseError("no valid CoreMark result" + (": " + why[0] if why else ""))
-    return float(m.group(1))
-
-
-def coremark(ctx):
-    """CoreMark's performance run, built here with gcc -O2: once on one
-    core, once with a thread per core. Each runs about 20 s."""
-    h = ctx.host
-    if not h.which("gcc"):
-        raise Skip("no gcc on this Mac")
-    src = ctx.unpack("coremark") / ctx.manifest["coremark"]["root"]
-    n = os.cpu_count()
-    out = []
-    for name, threads in (("coremark-single", 1), ("coremark-multi", n)):
-        exe = ctx.work / f"coremark-{threads}"
-        cmd = ["gcc", "-O2", "-Ilinux64", "-I.", '-DFLAGS_STR="-O2"', "-DPERFORMANCE_RUN=1", "-DITERATIONS=0"]
-        if threads > 1:
-            cmd += [f"-DMULTITHREAD={threads}", "-DUSE_PTHREAD"]
-        _ok(h.run(cmd + COREMARK_SRCS + ["-o", str(exe), "-lrt", "-pthread"], timeout=300, cwd=str(src)), "gcc coremark")
-        r = _ok(h.run([str(exe), "0x0", "0x0", "0x66", "0", "7", "1", "2000"], timeout=600), "coremark")
-        v = f"{ctx.version('coremark')} gcc -O2" + (f" {threads} threads" if threads > 1 else "")
-        out.append(Measure(name, v, parse_coremark(r.out), "iterations/s", True))
-    return out
-
-
-def kernel_compile(ctx):
-    h = ctx.host
-    missing = [t for t in ("make", "gcc", "flex", "bison", "perl") if not h.which(t)]
-    if missing:
-        raise Skip("no " + ", ".join(missing) + " on this Mac")
-    src = ctx.unpack("kernel") / ctx.manifest["kernel"]["root"]
-    # bc is pinned: Omarchy does not install it.
-    env = {"PATH": f"{ctx.unpack('bc') / 'usr/bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
-    _ok(h.run(["make", "defconfig"], timeout=300, cwd=str(src), env=env), "make defconfig")
-    r = _ok(h.run(["make", f"-j{os.cpu_count()}", "Image"], timeout=3600, cwd=str(src), env=env), "make Image")
-    shutil.rmtree(ctx.work / "kernel", ignore_errors=True)
-    return [Measure("kernel-compile", f"{ctx.version('kernel')} defconfig -j{os.cpu_count()}",
-                    round(r.seconds, 1), "s", False)]
-
-
-def vkpeak(ctx):
-    exe = ctx.host.which("vkpeak")
+def cached_bytes(ctx, path):
+    """How much of the file the page cache holds, by fincore; None when it
+    cannot tell."""
+    exe = ctx.host.which("fincore")
     if not exe:
-        raise Skip("no aarch64 vkpeak build is pinned (source only) and none is installed")
-    r = _ok(ctx.host.run([exe, "0"], timeout=600, gui=True), "vkpeak")
-    return [Measure("vkpeak-fp32-vec4", ctx.version("vkpeak"), parse_vkpeak(r.out), "GFLOPS", True)]
+        return None
+    r = ctx.run("fincore", [exe, "--bytes", "--noheadings", "--output", "RES", path], timeout=60)
+    try:
+        return int(r.out.split()[0]) if r.code == 0 else None
+    except (IndexError, ValueError):
+        return None
 
 
-def clpeak(ctx):
-    r = ctx.host.run([str(ctx.entry("clpeak")), "--opencl", "--single-precision-compute"], timeout=600,
-                     env={"RUSTICL_ENABLE": "asahi"}, gui=True)
-    if "no platforms" in r.out.lower():
-        raise Skip("no OpenCL platform (Mesa's rusticl is not installed)")
-    return [Measure("clpeak-sp", ctx.version("clpeak"), parse_clpeak(_ok(r, "clpeak").out), "GFLOPS", True)]
+def fio_args(exe, path, s, out):
+    a = [exe, f"--name={s['rw']}", f"--filename={path}", f"--rw={s['rw']}", f"--bs={s['bs']}",
+         f"--direct={1 if s.get('direct', True) else 0}", f"--ioengine={s.get('ioengine', 'psync')}", "--thread",
+         f"--iodepth={s.get('iodepth', 1)}", "--output-format=json", f"--output={out}"]
+    if "write" in s["rw"]:
+        a.append("--refill_buffers")
+    if s.get("numjobs"):
+        a += [f"--numjobs={s['numjobs']}", f"--size={s['range_per_job']}", "--offset=0",
+              f"--offset_increment={s['range_per_job']}", "--time_based", f"--runtime={s['runtime_s']}",
+              "--norandommap", "--randrepeat=0"]
+        if s.get("group_reporting"):
+            a.append("--group_reporting")
+    else:
+        a += ["--numjobs=1", f"--size={s['file']}"]
+    return a
 
 
-def ffmpeg_vaapi(ctx):
-    exe = ctx.host.which("ffmpeg")
-    if not exe:
-        raise Skip("no ffmpeg on this Mac")
-    clip = ctx.file("clip")
-    r = ctx.host.run([exe, "-hide_banner", "-benchmark", "-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi",
-                      "-i", str(clip), "-f", "null", "-"], timeout=300, env={"LIBVA_DRIVER_NAME": "v4l2_request"},
-                     gui=True)
-    if r.code != 0:
-        raise Skip("no VA-API decode: " + r.out.strip().splitlines()[-1][:200] if r.out.strip() else "no VA-API decode")
-    v = ctx.host.run([exe, "-version"]).out.split("\n", 1)[0].replace("ffmpeg version ", "").split(" ")[0]
-    return [Measure("ffmpeg-vaapi", f"{ctx.version('clip')} (ffmpeg {v})", parse_ffmpeg(r.out), "fps", True)]
+def fill_args(exe, path, size, out):
+    return [exe, "--name=fill", f"--filename={path}", "--rw=write", "--bs=1M", f"--size={size}", "--direct=1",
+            "--ioengine=psync", "--thread", "--iodepth=1", "--refill_buffers", "--output-format=json", f"--output={out}"]
 
 
-def wake_rtc(h):
-    """An RTC that can wake the Mac from suspend, its alarm on and its device
-    allowed to wake; None when there is none (Apple Silicon's macsmc RTC has
-    no alarm)."""
-    for rel in h.glob("sys/class/rtc/rtc*"):
-        wakeup = rel + "/device/power/wakeup"
-        if h.read(rel + "/wakealarm") is None or h.read(wakeup) is None:
+def fio(ctx, m):
+    """One fio test on a scratch file filled before timing, in the work
+    folder on the system's disk, removed however the test ends."""
+    s = m["settings"]
+    exe = ctx.program("fio", "fio")
+    env = ctx.libs("fio")
+    size = size_bytes(s["file"])
+    cap = storage_room(ctx.host, ctx.work, size)
+    d = ctx.work / "fio"
+    path, out = d / "scratch", d / "fio.json"
+    try:
+        d.mkdir(exist_ok=True)
+        path.touch()
+        if ctx.host.which("chattr"):
+            ctx.run("chattr", ["chattr", "+m", path], timeout=30)
+        _ok(ctx.run("fio fill", fill_args(exe, path, s["file"], d / "fill.json"), timeout=1800, env=env), "fio fill")
+        r = ctx.run(f"fio {s['rw']}", fio_args(exe, path, s, out), timeout=1800, env=env)
+        try:
+            text = out.read_text()
+        except OSError:
+            text = r.out
+        ctx.log("fio json", Ran(r.code, text, r.seconds))
+        _ok(r, "fio")
+        got = parse_fio(text, s["rw"])
+        res = cached_bytes(ctx, path)
+        if res is not None and res > CACHED_LIMIT * size:
+            raise Reason("fell_back", "direct I/O went through the page cache", capacity=cap)
+    except Reason as e:
+        e.capacity = e.capacity or cap
+        raise
+    except Exception as e:
+        raise Reason("error", f"{type(e).__name__}: {e}", capacity=cap)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    if m["unit"] == "MB/s":
+        return Value(got["mbs"], got["mbs_spread"], cap)
+    return Value(got["kiops"], got["kiops_spread"], cap)
+
+
+# ---------------------------------------------------------------- Memory
+
+def largest_cache(host):
+    sizes = []
+    for rel in host.glob("sys/devices/system/cpu/cpu*/cache/index*/size"):
+        try:
+            sizes.append(size_bytes(host.read(rel)))
+        except (TypeError, ValueError):
+            pass
+    return max(sizes + [STREAM_LARGEST_CACHE])
+
+
+def stream_elements(host):
+    """Doubles per array: each array at least STREAM_CACHE_FACTOR times the
+    largest cache."""
+    return STREAM_CACHE_FACTOR * largest_cache(host) // 8
+
+
+def stream(kernel):
+    def fn(ctx, m):
+        exe = ctx.program("stream", "stream")
+        env = dict(ctx.libs("stream"), OMP_NUM_THREADS=str(ctx.host.cpus()))
+        r = _ok(ctx.run(f"stream {kernel}", [exe, str(stream_elements(ctx.host))], timeout=900, env=env), "stream")
+        return Value(parse_stream(r.out, kernel))
+    return fn
+
+
+# ---------------------------------------------------------------- Video
+
+DECODE_HWACCEL = "v4l2request"
+
+
+def ffmpeg(ctx):
+    ff, probe = ctx.host.which("ffmpeg"), ctx.host.which("ffprobe")
+    if not ff or not probe:
+        raise Reason("no_build", "no ffmpeg or ffprobe on this Mac")
+    r = ctx.run("ffmpeg -hwaccels", [ff, "-hide_banner", "-hwaccels"], timeout=60)
+    if DECODE_HWACCEL not in r.out.split():
+        raise Reason("no_build", f"ffmpeg has no {DECODE_HWACCEL} hwaccel")
+    if not ctx.host.glob("dev/media*"):
+        raise Reason("no_driver", "no media device")
+    return ff, probe
+
+
+def clip_frames(ctx, probe, clip):
+    r = _ok(ctx.run("ffprobe", [probe, "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                                "stream=nb_read_packets", "-of", "csv=p=0", clip], timeout=300), "ffprobe")
+    try:
+        return int(r.out.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        raise ParseError("no packet count from ffprobe")
+
+
+def decode_args(ff, clip, realtime=False):
+    return [ff, "-hide_banner", "-nostdin", "-benchmark", *(["-re"] if realtime else []),
+            "-hwaccel", DECODE_HWACCEL, "-hwaccel_output_format", "drm_prime", "-i", clip,
+            "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "null", "-"]
+
+
+def hw_decode(ctx, clip_id, realtime=False):
+    """Every frame of the clip through the hardware decoder: (frames, frames/s)."""
+    ff, probe = ffmpeg(ctx)
+    clip = ctx.file(clip_id)
+    want = clip_frames(ctx, probe, clip)
+    r = ctx.run("ffmpeg decode", decode_args(ff, clip, realtime), timeout=900)
+    why = decode_verdict(r.code, r.out)
+    if why:
+        raise Reason(why)
+    got, fps = parse_ffmpeg(r.out)
+    if got != want:
+        raise Reason("error", f"decoded {got} of {want} frames")
+    return got, fps
+
+
+def decode(clip_id):
+    def fn(ctx, m):
+        return Value(hw_decode(ctx, clip_id)[1])
+    return fn
+
+
+# ---------------------------------------------------------------- AI
+
+def ane_device(host):
+    for rel in host.glob("sys/class/accel/accel*/device/uevent"):
+        if re.search(r"^DRIVER=.*ane", host.read(rel) or "", re.M | re.I):
+            return True
+    return False
+
+
+def neural_engine(ctx, m):
+    model = ctx.file("mobilenet-v1")
+    if not ane_device(ctx.host):
+        raise Reason("no_driver", "no Neural engine accelerator device")
+    tool = ctx.host.which(ANE_TOOL)
+    if not tool:
+        raise Reason("no_build", f"no {ANE_TOOL} from libane on this Mac")
+    s = m["settings"]
+    r = _ok(ctx.run("ane-bench", [tool, "--model", model, "--precision", s.get("precision", "fp16"),
+                                  "--batch", str(s.get("batch", 1))], timeout=900), "ane-bench")
+    dev, v = parse_ane(r.out)
+    if dev != "ane":
+        raise Reason("fell_back", f"ran on {dev}")
+    return Value(v)
+
+
+def llama(gpu):
+    def fn(ctx, m):
+        s = m["settings"]
+        exe = ctx.program("llama.cpp", "llama-bench")
+        model = ctx.file("llama-model")
+        p, n = int(s.get("prompt_tokens", 0)), int(s.get("generated_tokens", 0))
+        ngl = LLAMA_ALL_LAYERS if gpu else int(s.get("gpu_layers", 0))
+        r = ctx.run("llama-bench", [exe, "-m", model, "-p", str(p), "-n", str(n), "-ngl", str(ngl),
+                                    "-t", str(ctx.host.cpus()), "-o", "jsonl", "-v"],
+                    timeout=1800, env=ctx.libs("llama.cpp"))
+        _ok(r, "llama-bench")
+        rows = parse_llama(r.out)
+        if gpu:
+            why = llama_gpu_verdict(r.out, rows)
+            if why:
+                raise Reason(why)
+        row = llama_row(rows, p, n)
+        return Value(round(float(row["avg_ts"]), 3), round(float(row.get("stddev_ts") or 0), 3))
+    return fn
+
+
+MLX_PROBE = r"""
+import json, sys, time
+try:
+    import mlx.core as mx
+except Exception:
+    print(json.dumps({"status": "no_build"})); sys.exit(0)
+try:
+    ok = mx.is_available(mx.gpu)
+except Exception:
+    ok = False
+if not ok:
+    print(json.dumps({"status": "no_build"})); sys.exit(0)
+mx.set_default_device(mx.gpu)
+n, warmup, reps = (int(a) for a in sys.argv[1:4])
+a = mx.random.normal((n, n)).astype(mx.float16)
+b = mx.random.normal((n, n)).astype(mx.float16)
+mx.eval(a, b)
+mx.synchronize()
+def step():
+    mx.eval(a @ b)
+    mx.synchronize()
+for _ in range(warmup):
+    step()
+t = time.perf_counter()
+for _ in range(reps):
+    step()
+dt = time.perf_counter() - t
+gpu = "gpu" in str(mx.default_device()).lower()
+print(json.dumps({"status": "ok" if gpu else "fell_back", "tflops": 2 * n ** 3 * reps / dt / 1e12}))
+"""
+# As tools/bench-macos/mlx-bench times it, so both systems time the same work.
+MLX_SIZE, MLX_WARMUP, MLX_REPS = 4096, 5, 50
+
+
+def mlx(ctx, m):
+    py = ctx.host.which("python3")
+    if not py:
+        raise Reason("no_build", "no python3")
+    r = _ok(ctx.run("mlx", [py, "-c", MLX_PROBE, str(MLX_SIZE), str(MLX_WARMUP), str(MLX_REPS)], timeout=900), "mlx")
+    got = parse_mlx(r.out)
+    if got.get("status") in ("no_build", "fell_back"):
+        raise Reason(got["status"])
+    if got.get("status") != "ok" or not isinstance(got.get("tflops"), (int, float)):
+        raise ParseError("the MLX probe gave no TFLOPS")
+    return Value(round(got["tflops"], 3))
+
+
+# ---------------------------------------------------------------- Power
+
+def pstr(host):
+    """macsmc-hwmon's input for the SMC's whole-Mac power key, PSTR."""
+    for rel in host.glob("sys/class/hwmon/hwmon*/name"):
+        if "macsmc" not in (host.read(rel) or ""):
             continue
-        if h.read(wakeup) != "enabled":
-            try:
-                h.write(wakeup, "enabled")
-            except OSError:
-                continue
-        return os.path.basename(rel)
+        for lbl in host.glob(os.path.dirname(rel) + "/power*_label"):
+            label = (host.read(lbl) or "").strip()
+            if label == "PSTR" or label.lower() == "total system power":
+                return lbl[: -len("_label")] + "_input"
     return None
 
 
-def suspend(ctx):
-    h = ctx.host
-    if os.geteuid() != 0 or not h.which("rtcwake"):
-        raise Skip("needs root and rtcwake")
-    rtc = wake_rtc(h)
-    if not rtc:
-        raise Skip("suspend needs a wake source, and no RTC on this Mac has an alarm that can wake it")
-    _ok(h.run(["rtcwake", "-d", rtc, "-m", "mem", "-s", "15"], timeout=120), "rtcwake")
-    sus, res = parse_suspend(_ok(h.run(["dmesg"], timeout=30), "dmesg").out)
-    k = os.uname().release
-    return [Measure("suspend", k, sus, "ms", False), Measure("resume", k, res, "ms", False)]
+def watts(host, rel):
+    try:
+        w = int(host.read(rel)) / 1e6
+    except (TypeError, ValueError):
+        return None
+    return w if 0 < w < POWER_MAX_W else None
 
 
-BENCHES = {
-    "speedometer-chrome": browser_bench("speedometer", "chrome"),
-    "motionmark-chrome": browser_bench("motionmark", "chrome"),
-    "speedometer-chromium": browser_bench("speedometer", "chromium"),
-    "jetstream-chrome": browser_bench("jetstream", "chrome"),
-    "7zip": Bench(seven_zip, ("7zip",)),
-    "glmark2": Bench(glmark2, ("glmark2",)),
-    "vkmark": Bench(vkmark, ("vkmark", "assimp")),
-    "boot": Bench(boot),
-    "geekbench": Bench(geekbench, ("geekbench",)),
-    "coremark": Bench(coremark, ("coremark",)),
-    "kernel-compile": Bench(kernel_compile, ("kernel", "bc")),
-    "vkpeak": Bench(vkpeak, ("vkpeak",)),
-    "clpeak": Bench(clpeak, ("clpeak",)),
-    "ffmpeg-vaapi": Bench(ffmpeg_vaapi, ("clip",)),
-    "suspend": Bench(suspend),
+def power_sensor(ctx):
+    rel = pstr(ctx.host)
+    if not rel or watts(ctx.host, rel) is None:
+        raise Reason("no_comparable_sensor")
+    if battery_charging(ctx.host):
+        raise Reason("battery_charging")
+    return rel
+
+
+def _enough(samples, seconds):
+    return len(samples) >= max(1, math.floor(0.5 * seconds))
+
+
+def power_idle(ctx, m):
+    rel = power_sensor(ctx)
+    secs = int(m["settings"].get("seconds", IDLE_SECONDS))
+    got = []
+    for _ in range(secs):
+        ctx.host.sleep(ctx.power_interval)
+        w = watts(ctx.host, rel)
+        if w is not None:
+            got.append(w)
+    if battery_charging(ctx.host):
+        raise Reason("battery_charging")
+    if not _enough(got, secs):
+        raise Reason("no_comparable_sensor", f"{len(got)} valid samples of {secs}")
+    ctx.log(f"power idle: {len(got)} samples")
+    return Value(round(statistics.fmean(got), 3), round(statistics.pstdev(got), 3))
+
+
+def energy(ctx, rel, work):
+    """Joules the work takes: the mean of PSTR, sampled every
+    power_interval while it runs, times how long it ran."""
+    got, stop = [], threading.Event()
+
+    def sample():
+        while not stop.wait(ctx.power_interval):
+            w = watts(ctx.host, rel)
+            if w is not None:
+                got.append(w)
+    t = threading.Thread(target=sample, daemon=True)
+    start = time.monotonic()
+    t.start()
+    try:
+        work()
+    finally:
+        stop.set()
+        t.join()
+    secs = time.monotonic() - start
+    if battery_charging(ctx.host):
+        raise Reason("battery_charging")
+    if not _enough(got, secs / ctx.power_interval):
+        raise Reason("no_comparable_sensor", f"{len(got)} valid samples in {secs:.0f} s")
+    ctx.log(f"power: {len(got)} samples in {secs:.1f} s")
+    return Value(round(statistics.fmean(got) * secs, 3), None)
+
+
+def power_playback(ctx, m):
+    rel = power_sensor(ctx)
+    return energy(ctx, rel, lambda: hw_decode(ctx, "clip-h264-1080p", realtime=True))
+
+
+def power_all_core(ctx, m):
+    rel = power_sensor(ctx)
+    n = ctx.host.cpus()
+    per = -(-POWER_COREMARK_ITERATIONS // n)
+
+    def work():
+        coremark_valid(run_coremark(ctx, n, per).out)
+    return energy(ctx, rel, work)
+
+
+# ---------------------------------------------------------------- Omarchy only
+
+def boot_time(ctx, m):
+    r = _ok(ctx.run("systemd-analyze", ["systemd-analyze"], timeout=60), "systemd-analyze")
+    return Value(parse_boot(r.out))
+
+
+METRICS = {
+    "coremark-single": coremark(1),
+    "coremark-all": coremark(None),
+    "7zip": seven_zip,
+    "motionmark": browser("motionmark"),
+    "clpeak-global-bandwidth": clpeak("--global-memory-bandwidth", parse_clpeak_bandwidth),
+    "clpeak-fp32": clpeak("--single-precision-compute", parse_clpeak_fp32),
+    "fio-seq-read": fio,
+    "fio-seq-write": fio,
+    "fio-rand-read-4k": fio,
+    "fio-rand-write-4k": fio,
+    "stream-triad": stream("Triad"),
+    "stream-copy": stream("Copy"),
+    "speedometer": browser("speedometer"),
+    "jetstream": browser("jetstream"),
+    "decode-h264-1080p": decode("clip-h264-1080p"),
+    "decode-hevc-4k": decode("clip-hevc-4k"),
+    "neural-engine-mobilenet-v1": neural_engine,
+    "llama-prompt-gpu": llama(gpu=True),
+    "llama-gen-gpu": llama(gpu=True),
+    "llama-gen-cpu": llama(gpu=False),
+    "mlx-matmul-fp16": mlx,
+    "power-idle": power_idle,
+    "power-playback-1080p": power_playback,
+    "power-all-core": power_all_core,
+    "boot-time": boot_time,
 }
 
 
-def needs(tier):
-    """The manifest items a tier uses: lab-agent fetches these and no others."""
-    return sorted({i for n in TIERS[tier] for i in BENCHES[n].needs})
+# ---------------------------------------------------------------- the list
+
+def entry(bset, m, value=None, spread=None, seconds=0.0, cool=None, capacity=None, reason=None):
+    side = m.get(SYSTEM) or {}
+    return {
+        "set": bset["set"], "metric": m["id"], "category": m["category"], "version": m["version"],
+        "value": value, "unit": m["unit"], "higher_is_better": m["direction"] == "higher",
+        "spread": spread, "seconds": round(seconds, 3), "cool_down": cool, "api": side.get("api"),
+        "capacity": capacity, "reason": reason,
+    }
 
 
-def main(argv=None, host=None, stderr=sys.stderr):
+def _number(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def clean(e):
+    """The entry as bench.json may hold it: FIELDS only, a value or a
+    reason, never both, and numbers that are numbers."""
+    e = {k: e.get(k) for k in FIELDS}
+    if e["reason"] not in REASONS + (None,):
+        e["reason"] = "error"
+    if e["reason"] is None and not _number(e["value"]):
+        e["reason"] = "error"
+    if e["reason"] is not None:
+        e["value"] = e["spread"] = None
+    if e["spread"] is not None and not _number(e["spread"]):
+        e["spread"] = None
+    cd = e["cool_down"]
+    cd = cd.get("seconds") if isinstance(cd, dict) else cd
+    e["cool_down"] = float(cd) if _number(cd) else 0.0
+    cap = e["capacity"]
+    e["capacity"] = e["fill"] = None
+    if isinstance(cap, dict) and _number(cap.get("bytes")) and cap["bytes"] > 0:
+        e["capacity"] = max(1, round(cap["bytes"] / 1e9))
+        if _number(cap.get("fill_percent")):
+            e["fill"] = cap["fill_percent"]
+    return e
+
+
+def selected(bset, lst, only=None):
+    """The list's metrics on this system, in the set's order; with only, just
+    those metric ids, each of which must be in the list."""
+    ms = [m for m in bset["metrics"] if m.get(SYSTEM) is not None and (lst == "full" or m["list"] == lst)]
+    if only is None:
+        return ms
+    have = {m["id"] for m in ms}
+    unknown = [i for i in only if i not in have]
+    if unknown:
+        raise ValueError(f"not in {bset['set']}'s {lst} list on {SYSTEM}: {', '.join(unknown)}")
+    if not only or len(set(only)) != len(only):
+        raise ValueError("no metric, or one given twice")
+    return [m for m in ms if m["id"] in only]
+
+
+def placeholder(ctx, m):
+    for fid in m[SYSTEM].get("files", []):
+        f = ctx.files.get(fid)
+        if f is None or f["sha256"] == "placeholder":
+            return fid
+    return None
+
+
+def run_list(metrics, ctx, cool=None, impl=None, out=None):
+    """Each metric once, in order, into out: a cancelled run keeps what it
+    measured before."""
+    impl = METRICS if impl is None else impl
+    h = ctx.host
+    out = [] if out is None else out
+    for m in metrics:
+        start = h.now()
+        cd = None
+        try:
+            fn = impl.get(m["id"])
+            if fn is None:
+                raise Reason("not_run", "this runner has no such metric")
+            if placeholder(ctx, m):
+                raise Reason("placeholder_file", placeholder(ctx, m))
+            if cool:
+                w, t = cool(h)
+                cd = {"seconds": w, "temp_c": t}
+            start = h.now()
+            ctx.log(f"{m['id']}: start")
+            v = fn(ctx, m)
+            e = entry(ctx.set, m, v.value, v.spread, h.now() - start, cd, v.capacity)
+        except Reason as r:
+            ctx.log(f"{m['id']}: {r}")
+            e = entry(ctx.set, m, seconds=h.now() - start, cool=cd, capacity=r.capacity, reason=r.code)
+        except Exception:
+            ctx.log(f"{m['id']}: error\n{traceback.format_exc()}")
+            e = entry(ctx.set, m, seconds=h.now() - start, cool=cd, reason="error")
+        out.append(clean(e))
+    return out
+
+
+def exit_code(results):
+    return 1 if any(r["reason"] in FAILING for r in results) else 0
+
+
+def _cancel(*_):
+    raise Cancelled()
+
+
+def main(argv=None, host=None, stderr=sys.stderr, impl=None):
     ap = argparse.ArgumentParser(prog="bench.py")
-    ap.add_argument("--tier", choices=sorted(TIERS), default="default")
-    ap.add_argument("--needs", action="store_true", help="print the items the tier uses and stop")
-    ap.add_argument("--manifest")
+    ap.add_argument("--metrics", action="store_true", help="print the metric ids this runner runs and stop")
+    ap.add_argument("--reasons", action="store_true", help="print the reason codes and stop")
+    ap.add_argument("--set")
+    ap.add_argument("--list", choices=LISTS, default="quick")
+    ap.add_argument("--only", help="a Performance run's metric ids, comma-separated: only those of the list run")
     ap.add_argument("--cache")
     ap.add_argument("--work")
     ap.add_argument("--out")
     ap.add_argument("--gui-user")
     ap.add_argument("--gui-env-file")
     a = ap.parse_args(argv)
-    if a.needs:
-        print("\n".join(needs(a.tier)))
+    if a.metrics:
+        print("\n".join(sorted(METRICS)))
+        return 0
+    if a.reasons:
+        print("\n".join(REASONS))
         return 0
     if host is None:
         env = []
         if a.gui_env_file:
             env = [l for l in pathlib.Path(a.gui_env_file).read_text().split("\n") if "=" in l]
         host = Host("/", a.gui_user, env)
+    bset = json.loads(pathlib.Path(a.set).read_text())
+    try:
+        metrics = selected(bset, a.list, None if a.only is None else a.only.split(","))
+    except ValueError as e:
+        print(f"bench.py: --only: {e}", file=stderr)
+        return 2
     out = pathlib.Path(a.out)
     cond_path = out.parent / "bench-conditions.json"
-    cond = {"tier": a.tier}
-    results = []
-    lock = None
+    cond = {"set": bset["set"], "list": a.list, "refused": None}
+    results, saved, lock = [], None, None
+    old = signal.signal(signal.SIGTERM, _cancel) if threading.current_thread() is threading.main_thread() else None
     try:
         lock = host.lock() if host.root == "/" else None
-        cond.update(conditions(host))
+        _, saved = conditions(host, c=cond)
         print(f"conditions: {json.dumps(cond)}", file=stderr, flush=True)
-        ctx = Ctx(host, load_manifest(a.manifest), a.cache, a.work)
-        results = run_tier(TIERS[a.tier], BENCHES, host, ctx, cool=cool_down)
+        ctx = Ctx(host, bset, a.cache, a.work, log=stderr)
+        run_list(metrics, ctx, cool=cool_down, impl=impl, out=results)
         code = exit_code(results)
     except Refused as e:
-        cond["refused"] = str(e)
+        cond["refused"] = e.code
         print(f"refused: {e}", file=stderr)
         code = 3
+    except Cancelled:
+        print("cancelled", file=stderr)
+        code = 143
     finally:
-        restore(host, cond)
+        restore(host, saved)
         out.write_text(json.dumps(results, indent=2) + "\n")
         cond_path.write_text(json.dumps(cond, indent=2) + "\n")
         if lock:
             lock.close()
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
     for r in results:
         print(json.dumps(r), file=stderr)
     return code

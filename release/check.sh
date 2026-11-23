@@ -17,9 +17,18 @@
 #     /privacy as labd carries them, and none of the commands that are not
 #     shipped; a reset tool that is no macOS arm64 program is refused before
 #     anything is built;
+#   - the macOS runner and its LaunchDaemon carry their own signatures, which
+#     its install.sh checks against its pinned key before it installs
+#     anything;
 #   - every file has a signature the release key verifies, a changed file or a
 #     file signed by another key is refused, and a tag that is not a Lab
-#     release's is refused before anything is built.
+#     release's is refused before anything is built;
+#   - each benchmark program's archive holds the program, BUILD.json and
+#     licence it was given (stand-ins here: the programs are built on the
+#     release workflow's runners) and the tag; a program built for the
+#     other system, a script, a missing program or BUILD.json, or a symlink
+#     is refused before anything is built; and a release that leaves some
+#     out verifies only under LAB_RELEASE_WITHOUT, which names nothing else.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,7 +58,49 @@ printf '#!/bin/sh\n' > "$t/script"
 if LAB_RELEASE="$tag" RESET_TOOL="$t/script" "$repo/release/build.sh" "$t/refused" >/dev/null 2>&1; then fail "took a script for the reset tool"; fi
 [[ ! -e $t/refused/lab-linux-arm64 ]] || fail "a refused reset tool still built something"
 
-LAB_RELEASE="$tag" RELEASE_ALLOWED_SIGNERS="$t/allowed_signers" RESET_TOOL="$t/macvdmtool" "$repo/release/build.sh" "$t/dist" >/dev/null
+# The benchmark programs are built on the release workflow's runners
+# (release/bench.sh); what stands in for each here has its system's first
+# bytes, a BUILD.json and a licence.
+standin() { # standin DIR SYSTEM PROGRAM
+  local d="$1/$2-arm64/$3"
+  mkdir -p "$d/bin"
+  if [[ $2 == darwin ]]; then
+    printf '\xcf\xfa\xed\xfe\x0c\x00\x00\x01 stands in for %s\n' "$3" > "$d/bin/$3"
+  else
+    printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00 stands in for %s\n' "$3" > "$d/bin/$3"
+  fi
+  chmod 0755 "$d/bin/$3"
+  printf '{"program":"%s","system":"%s-arm64"}\n' "$3" "$2" > "$d/BUILD.json"
+  printf 'the licence of %s\n' "$3" > "$d/LICENSE"
+}
+for p in "${RELEASE_BENCH_DARWIN[@]}"; do standin "$t/bench" darwin "$p"; done
+for p in "${RELEASE_BENCH_LINUX[@]}"; do standin "$t/bench" linux "$p"; done
+printf 'stands in for MLX kernels\n' > "$t/bench/darwin-arm64/mlx-bench/bin/mlx.metallib"
+(( ${#RELEASE_BENCH[@]} == ${#RELEASE_BENCH_DARWIN[@]} + ${#RELEASE_BENCH_LINUX[@]} )) || fail "the benchmark archives are not one per program and system"
+
+refused_bench() { # refused_bench WHY: BENCH_PROGRAMS=$t/bad is refused before anything is built
+  if LAB_RELEASE="$tag" RESET_TOOL="$t/macvdmtool" BENCH_PROGRAMS="$t/bad" "$repo/release/build.sh" "$t/refused" >/dev/null 2>&1; then fail "built $1"; fi
+  [[ ! -e $t/refused/lab-linux-arm64 ]] || fail "$1 was refused but still built something"
+}
+rm -rf "$t/bad" && cp -R "$t/bench" "$t/bad"
+cp "$t/bench/darwin-arm64/stream/bin/stream" "$t/bad/linux-arm64/stream/bin/stream"
+refused_bench "with a macOS program for Omarchy's STREAM"
+rm -rf "$t/bad" && cp -R "$t/bench" "$t/bad"
+cp "$t/script" "$t/bad/darwin-arm64/fio/bin/fio"
+refused_bench "with a script for fio"
+rm -rf "$t/bad" && cp -R "$t/bench" "$t/bad"
+rm -rf "$t/bad/darwin-arm64/ane-bench"
+refused_bench "without ane-bench"
+rm -rf "$t/bad" && cp -R "$t/bench" "$t/bad"
+rm "$t/bad/linux-arm64/coremark/BUILD.json"
+refused_bench "a program with no BUILD.json"
+rm -rf "$t/bad" && cp -R "$t/bench" "$t/bad"
+ln -s /etc/passwd "$t/bad/darwin-arm64/smc-power/bin/passwd"
+refused_bench "a program beside a symlink"
+if LAB_RELEASE_WITHOUT="lab-linux-amd64" LAB_RELEASE="$tag" "$repo/release/build.sh" "$t/refused" >/dev/null 2>&1; then fail "left out lab-linux-amd64, which is not a benchmark program's archive"; fi
+[[ ! -e $t/refused/lab-linux-arm64 ]] || fail "a refused LAB_RELEASE_WITHOUT still built something"
+
+LAB_RELEASE="$tag" RELEASE_ALLOWED_SIGNERS="$t/allowed_signers" RESET_TOOL="$t/macvdmtool" BENCH_PROGRAMS="$t/bench" "$repo/release/build.sh" "$t/dist" >/dev/null
 for f in "${RELEASE_FILES[@]}"; do
   [[ -s $t/dist/$f ]] || fail "the build left no $f"
 done
@@ -201,6 +252,7 @@ r="$t/runner/lab-macos-runner"
 [[ "$(<"$r/VERSION")" == "$tag" ]] || fail "the macOS runner's VERSION says $(<"$r/VERSION"), not $tag"
 cmp -s "$repo/release/macos-runner/install.sh" "$r/install.sh" && [[ -x $r/install.sh ]] || fail "the macOS runner's install.sh is missing, different or not executable"
 cmp -s "$repo/release/macos-runner/org.omarchy.maclab.macos-runner.plist" "$r/org.omarchy.maclab.macos-runner.plist" || fail "the macOS runner's LaunchDaemon plist is missing or different"
+[[ ! -e $r/bin/lab-macos-runner.sig ]] || fail "an unsigned build's macOS runner carries a signature"
 
 # The Mac lab controller: oobd and the reset tool the bundle carries, and its install.
 mkdir "$t/ctl"
@@ -212,6 +264,26 @@ cmp -s "$t/ctl/lab-controller/bin/oobd" "$t/unsigned/lab-server/bin/oobd" || fai
 cmp -s "$t/ctl/lab-controller/bin/macvdmtool" "$t/macvdmtool" || fail "the controller's reset tool is not the one given"
 cmp -s "$t/ctl/lab-controller/install" "$repo/scripts/controller/install" || fail "the controller's install is not scripts/controller/install"
 [[ "$(<"$t/ctl/lab-controller/VERSION")" == "$tag" ]] || fail "the controller's VERSION is not $tag"
+
+# The benchmark programs: each archive holds its program, BUILD.json and
+# licence as given, byte for byte, and the tag; nothing else.
+for a in "${RELEASE_BENCH[@]}"; do
+  [[ $a =~ ^bench-(.+)-(darwin|linux)-arm64\.tar\.gz$ ]] || fail "$a is not bench-PROGRAM-SYSTEM-arm64.tar.gz"
+  p="${BASH_REMATCH[1]}" sys="${BASH_REMATCH[2]}"
+  rm -rf "$t/b" && mkdir "$t/b"
+  tar -xzf "$t/dist/$a" -C "$t/b"
+  [[ "$(ls -A "$t/b")" == "bench-$p" ]] || fail "$a does not unpack to bench-$p/ alone"
+  b="$t/b/bench-$p" given="$t/bench/$sys-arm64/$p"
+  [[ -x $b/bin/$p ]] || fail "$a has no executable bin/$p"
+  [[ "$(platform "$b/bin/$p")" == "$sys arm64" ]] || fail "$a's $p was built for $(platform "$b/bin/$p")"
+  [[ "$(<"$b/VERSION")" == "$tag" ]] || fail "$a's VERSION says $(<"$b/VERSION"), not $tag"
+  while read -r f; do
+    cmp -s "$given/$f" "$b/$f" || fail "$a's $f is not the one given"
+  done < <(cd "$given" && find . -type f | sort)
+  [[ "$(cd "$b" && find . -type f ! -path ./VERSION | sort)" == "$(cd "$given" && find . -type f | sort)" ]] || fail "$a holds files it was not given"
+done
+[[ -f $t/b/bench-$p/bin/$p ]] || fail "no benchmark archive was checked"
+tar -tzf "$t/dist/bench-mlx-bench-darwin-arm64.tar.gz" | grep -qx bench-mlx-bench/bin/mlx.metallib || fail "mlx-bench has no mlx.metallib beside it"
 
 # The fixed lines of the release notes.
 while read -r line; do
@@ -233,6 +305,23 @@ mkdir "$t/signed"
 tar -xzf "$t/dist/$RELEASE_BUNDLE" -C "$t/signed"
 bundle_check "$t/signed"
 verified "$t/allowed_signers" "$t/signed/$RELEASE_AGENT" || fail "lab-agent's own signature doesn't verify"
+
+# The macOS runner's install.sh installs nothing that its pinned key does not
+# verify: here, with the pin swapped for this check's key.
+mkdir "$t/runner-signed"
+tar -xzf "$t/dist/$RELEASE_MACOS_RUNNER" -C "$t/runner-signed"
+rs="$t/runner-signed/lab-macos-runner"
+for f in "${RELEASE_RUNNER_SIGNED[@]}"; do
+  verified "$t/allowed_signers" "$t/runner-signed/$f" || fail "the macOS runner's ${f#lab-macos-runner/} has no signature of its own"
+done
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a runner the release key did not sign"; fi
+real="$(release_key "$repo/release/allowed_signers")"
+sed "s|$real|$key|" "$repo/release/macos-runner/install.sh" > "$rs/install.sh"
+"$rs/install.sh" --check >/dev/null || fail "install.sh refused a runner its pinned key signed"
+cp "$rs/bin/lab-macos-runner" "$t/runner-bin" && printf 'x' >> "$rs/bin/lab-macos-runner"
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a changed runner"; fi
+cp "$t/runner-bin" "$rs/bin/lab-macos-runner" && rm "$rs/org.omarchy.maclab.macos-runner.plist.sig"
+if "$rs/install.sh" --check >/dev/null 2>&1; then fail "install.sh took a LaunchDaemon with no signature"; fi
 
 # Refused: the real key's pin, another tag, a changed file, a missing signature,
 # a stray file, another key, and an agent that is not the one signed.
@@ -266,4 +355,25 @@ pack "$t/stage" lab-server 0 > "$t/bad/$RELEASE_BUNDLE"
 sign "$t/key" "$t/bad/$RELEASE_BUNDLE"
 refused "an agent signed by another key" "$t/bad"
 
-echo "release ok: $tag; the test tool ($(ls "$pkg"/*.py | wc -l | tr -d ' ') modules, catalogue, Asahi kernel config and $vendored vendored, test card and GPU source/data files), lab for three machines, the server bundle ($bundled builder, deploy and mini files); ${#RELEASE_FILES[@]} files signed, verified and refused when changed"
+# The runner's archive signed by the release key around a runner signed by another.
+rm -rf "$t/bad" "$t/stage" && cp -R "$t/dist" "$t/bad" && mkdir "$t/stage"
+tar -xzf "$t/bad/$RELEASE_MACOS_RUNNER" -C "$t/stage"
+sign "$t/other" "$t/stage/${RELEASE_RUNNER_SIGNED[0]}"
+pack "$t/stage" lab-macos-runner 0 > "$t/bad/$RELEASE_MACOS_RUNNER"
+sign "$t/key" "$t/bad/$RELEASE_MACOS_RUNNER"
+refused "a macOS runner signed by another key" "$t/bad"
+
+# A release made on a machine that cannot build every benchmark program
+# (release/local.sh) leaves those archives out under LAB_RELEASE_WITHOUT;
+# without it, the same release is refused.
+partial="bench-mlx-bench-darwin-arm64.tar.gz bench-clpeak-linux-arm64.tar.gz"
+LAB_RELEASE_WITHOUT="$partial" LAB_RELEASE="$tag" RELEASE_ALLOWED_SIGNERS="$t/allowed_signers" RESET_TOOL="$t/macvdmtool" BENCH_PROGRAMS="$t/bench" "$repo/release/build.sh" "$t/partial" >/dev/null 2>&1
+for a in $partial; do
+  [[ ! -e $t/partial/$a ]] || fail "LAB_RELEASE_WITHOUT left $a in"
+done
+[[ -s $t/partial/bench-clpeak-darwin-arm64.tar.gz && -s $t/partial/bench-stream-linux-arm64.tar.gz ]] || fail "LAB_RELEASE_WITHOUT left out more than it named"
+LAB_RELEASE_WITHOUT="$partial" "$repo/release/sign.sh" "$t/partial" "$t/key" >/dev/null
+LAB_RELEASE_WITHOUT="$partial" "$repo/release/verify.sh" "$t/partial" "$t/allowed_signers" "$tag" >/dev/null || fail "a release that leaves out $partial doesn't verify under LAB_RELEASE_WITHOUT"
+refused "a release without $partial, as a whole one" "$t/partial"
+
+echo "release ok: $tag; the test tool ($(ls "$pkg"/*.py | wc -l | tr -d ' ') modules, catalogue, Asahi kernel config and $vendored vendored, test card and GPU source/data files), lab for three machines, the server bundle ($bundled builder, deploy and mini files), ${#RELEASE_BENCH[@]} benchmark programs; ${#RELEASE_FILES[@]} files signed, verified and refused when changed"

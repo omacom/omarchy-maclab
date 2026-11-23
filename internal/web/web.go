@@ -92,7 +92,7 @@ func PublicNav() []NavItem {
 		{ID: "features", Label: "Features", Path: "/features"},
 		{ID: "gaps", Label: "Kernel gaps", Path: "/gaps"},
 		{ID: "aurora", Label: "Aurora", Path: "/aurora"},
-		{ID: "benchmarks", Label: "Benchmarks", Path: "/benchmarks"},
+		{ID: "performance", Label: "Performance", Path: "/performance"},
 		{ID: "candidates", Label: "Candidates", Path: "/candidates"},
 		{ID: "reports", Label: "Reports", Path: "/reports"},
 		{ID: "data", Label: "Data", Path: "/data"},

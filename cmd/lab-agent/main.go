@@ -45,7 +45,11 @@ const usage = `lab-agent: the Mac side of Omarchy Mac Lab
                                   --script or --gui-script; lowering it stops what it no longer allows
   sudo lab-agent publish on|off   whether this Mac's omarchy-m-test reports may be published (off until
                                   you turn it on); on lists the deletion links of those published
-  sudo lab-agent log              every Maintainer action on this Mac, from its own Audit log (works offline)
+  sudo lab-agent performance on|off
+                                  whether the lab may use this Mac's Availability window for Performance runs:
+                                  a Release booted as a Candidate boot and measured, your own system left as
+                                  it is (off until you turn it on)
+  sudo lab-agent log             every Maintainer action on this Mac, from its own Audit log (works offline)
   sudo lab-agent jobs             the lab's jobs on this Mac
   sudo lab-agent leave            leave the lab now (asks first; --yes skips the question): stops any job, returns
                                   to your own kernel, removes the lab's boot entries, units and device secret,
