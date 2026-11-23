@@ -430,8 +430,8 @@ class PortsTest(unittest.TestCase):
         host = over_ssh("ports", [EOF], rec=with_command(recording(M1), ports.THUNDERBOLT_LIST, stdout="nobus\n"))
 
         links = results(host)["ports.thunderbolt"]
-        self.assertEqual((links["status"], links["classification"]["outcome"]), ("fail", "not-in-asahi"))
-        self.assertEqual(links["classification"]["expected"], {"asahi": "wip", "aurora": "unknown"})
+        self.assertEqual((links["status"], links["classification"]["outcome"]), ("fail", "not-in-aurora"))
+        self.assertEqual(links["classification"]["expected"], {"asahi": "linux-asahi", "aurora": "unknown"})
 
     def test_on_the_macbook_neo_thunderbolt_is_not_applicable_and_nothing_asks_for_a_thunderbolt_device(self):
         host = run("ports", [ENTER, "s", "s"], rec=neo(live_recording()))

@@ -155,7 +155,7 @@ func parityCorpus(t testing.TB) []parityCase {
 	first := goldenPaths(t, "signed/*.json")[0]
 	add("reports", "signature-status-changed", encode(t, put(parse(t, read(t, first)), "fail", "checks", 0, "status")))
 	add("reports", "signature-kernel-changed", encode(t, put(parse(t, read(t, first)), "7.1.13-1-ARCH", "machine", "kernel")))
-	add("reports", "signature-catalogue-changed", encode(t, put(sign(t, g(), "a"), integer(20), "catalogue_version")))
+	add("reports", "signature-catalogue-changed", encode(t, put(sign(t, g(), "a"), integer(99), "catalogue_version")))
 	add("reports", "signature-member-added", encode(t, sign(t, g(), "a").set("unattended", true)))
 	add("reports", "signature-other-key", encode(t, put(sign(t, g(), "mallory"), testPublicKey("a"), "signature", "public_key")))
 	blob := unarmor(t, at(sign(t, g(), "a"), "signature", "signature").(string))

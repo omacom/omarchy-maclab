@@ -5,7 +5,7 @@
     "version": "0.2.0"
   },
   "consent_version": 6,
-  "catalogue_version": 19,
+  "catalogue_version": 20,
   "machine": {
     "model": "Apple MacBook Pro (16-inch, M2 Max, 2023)",
     "board": "j416c",
@@ -1570,7 +1570,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "supported"
         }
       }
@@ -1859,7 +1859,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "supported"
         }
       }
@@ -2339,6 +2339,6 @@
   ],
   "signature": {
     "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHWZLEbyxAyRBj1yRyeHbRhQvVhcrUqpMaNH7ivMU1DW",
-    "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdZksRvLEDJEGPXJHJ4dtGFC9WF\nytSqkxo0fuK8xTUNYAAAAVb21hcmNoeS1tLXRlc3QtcmVwb3J0AAAAAAAAAAZzaGE1MTIA\nAABTAAAAC3NzaC1lZDI1NTE5AAAAQDOY9Me2Q/fZYQ9AfvwgwRy5PoyDQ9rlY0mkUpHJP1\nFblcebJhst8LAgnXNolGf+ChEcp57hcKcK2EHrIWDkGAA=\n-----END SSH SIGNATURE-----"
+    "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgdZksRvLEDJEGPXJHJ4dtGFC9WF\nytSqkxo0fuK8xTUNYAAAAVb21hcmNoeS1tLXRlc3QtcmVwb3J0AAAAAAAAAAZzaGE1MTIA\nAABTAAAAC3NzaC1lZDI1NTE5AAAAQEInrD2WF8dzlgRJsQq7UtbJpVDc8NG/SsipHAJQaB\ncwBiYbk/daHyGxFONpFh9GhOmycEqP74Ath/AeE3XyhAM=\n-----END SSH SIGNATURE-----"
   }
 }

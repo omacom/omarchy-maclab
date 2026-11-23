@@ -5,7 +5,7 @@
     "version": "0.2.0"
   },
   "consent_version": 6,
-  "catalogue_version": 19,
+  "catalogue_version": 20,
   "machine": {
     "model": "Apple MacBook Pro (14-inch, M1 Pro, 2021)",
     "board": "j314s",
@@ -1552,7 +1552,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "unknown"
         }
       }
@@ -1838,7 +1838,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "unknown"
         }
       }
