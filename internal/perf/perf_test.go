@@ -39,14 +39,14 @@ func TestAResultAsBenchJSONHasItIsTaken(t *testing.T) {
 		t.Fatalf("%+v %v", e, err)
 	}
 	e, err = CheckEntry(entry(func(m map[string]any) {
-		m["metric"], m["category"], m["version"], m["unit"] = "fio-seq-read", "Storage", "placeholder", "MB/s"
+		m["metric"], m["category"], m["version"], m["unit"] = "fio-seq-read", "Storage", "3.43", "MB/s"
 		m["capacity"] = 512
 	}), set, SideMacOS)
 	if err != nil || *e.Capacity != 512 {
 		t.Fatalf("a Storage value with its capacity: %+v %v", e, err)
 	}
 	e, err = CheckEntry(entry(func(m map[string]any) {
-		m["metric"], m["category"], m["version"], m["unit"] = "mlx-matmul-fp16", "AI", "placeholder", "TFLOPS"
+		m["metric"], m["category"], m["version"], m["unit"] = "mlx-matmul-fp16", "AI", "1", "TFLOPS"
 		m["value"], m["spread"], m["reason"] = nil, nil, NoBuild
 	}), set, SideOmarchy)
 	if err != nil || *e.Reason != NoBuild || e.Value != nil {
@@ -82,7 +82,7 @@ func TestAResultWithAFieldOutsideTheAllowlistIsRefused(t *testing.T) {
 		}
 	}
 	if _, err := CheckEntry(entry(func(m map[string]any) {
-		m["metric"], m["category"], m["version"], m["unit"] = "fio-seq-read", "Storage", "placeholder", "MB/s"
+		m["metric"], m["category"], m["version"], m["unit"] = "fio-seq-read", "Storage", "3.43", "MB/s"
 	}), set, SideOmarchy); err == nil || !strings.Contains(err.Error(), "capacity") {
 		t.Errorf("a Storage value with no capacity: %v", err)
 	}

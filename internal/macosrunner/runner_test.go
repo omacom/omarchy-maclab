@@ -394,7 +394,7 @@ func TestWorkThatDidNotRunWhereItSaysFellBack(t *testing.T) {
 	t.Run("no OpenCL platform", func(t *testing.T) {
 		t.Setenv("FAKE_CL_PLATFORM", "")
 		b := newBench(t)
-		b.files["clpeak"] = tarGz(map[string]string{"clpeak": "#!/bin/sh\necho 'no platforms found'\n"})
+		b.files["clpeak"] = tarGz(map[string]string{"bench-clpeak/bin/clpeak": "#!/bin/sh\necho 'no platforms found'\n"})
 		h := newFakeHost()
 		for i, f := range b.set.Files[sets.MacOS] {
 			if f.ID == "clpeak" {
@@ -698,7 +698,7 @@ func TestAFileNotMatchingItsSHA256IsRefused(t *testing.T) {
 func TestAFileThatIsNotTheSetsIsAnError(t *testing.T) {
 	b := newBench(t)
 	h := newFakeHost()
-	b.files["stream"] = tarGz(map[string]string{"stream": "#!/bin/sh\necho other\n"})
+	b.files["stream"] = tarGz(map[string]string{"bench-stream/bin/stream": "#!/bin/sh\necho other\n"})
 	lab := newFakeLab(t, startedRun(h, "mos-1", api.TierDefault), b.files)
 	r, _ := newRunner(t, lab, h, b)
 	r.Boot(context.Background())

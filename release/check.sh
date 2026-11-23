@@ -76,6 +76,8 @@ standin() { # standin DIR SYSTEM PROGRAM
 for p in "${RELEASE_BENCH_DARWIN[@]}"; do standin "$t/bench" darwin "$p"; done
 for p in "${RELEASE_BENCH_LINUX[@]}"; do standin "$t/bench" linux "$p"; done
 printf 'stands in for MLX kernels\n' > "$t/bench/darwin-arm64/mlx-bench/bin/mlx.metallib"
+mkdir "$t/bench/darwin-arm64/ane-bench/MobileNetV1.mlmodelc"
+printf 'stands in for the model\n' > "$t/bench/darwin-arm64/ane-bench/MobileNetV1.mlmodelc/coremldata.bin"
 (( ${#RELEASE_BENCH[@]} == ${#RELEASE_BENCH_DARWIN[@]} + ${#RELEASE_BENCH_LINUX[@]} )) || fail "the benchmark archives are not one per program and system"
 
 refused_bench() { # refused_bench WHY: BENCH_PROGRAMS=$t/bad is refused before anything is built
@@ -284,6 +286,7 @@ for a in "${RELEASE_BENCH[@]}"; do
 done
 [[ -f $t/b/bench-$p/bin/$p ]] || fail "no benchmark archive was checked"
 tar -tzf "$t/dist/bench-mlx-bench-darwin-arm64.tar.gz" | grep -qx bench-mlx-bench/bin/mlx.metallib || fail "mlx-bench has no mlx.metallib beside it"
+tar -tzf "$t/dist/bench-ane-bench-darwin-arm64.tar.gz" | grep -qx bench-ane-bench/MobileNetV1.mlmodelc/coremldata.bin || fail "ane-bench has no MobileNet v1 beside it"
 
 # The fixed lines of the release notes.
 while read -r line; do
