@@ -3,7 +3,7 @@ package detect
 import "testing"
 
 // The table holds the boards Apple sold with one Configuration: 29 of the
-// 59 in the device list (research/09-configurations.md).
+// 64 in the device list (research/09-configurations.md).
 func TestTheTableHoldsTheBoardsWithOneConfiguration(t *testing.T) {
 	if len(oneConfiguration) != 29 {
 		t.Fatalf("the table holds %d boards, want 29", len(oneConfiguration))

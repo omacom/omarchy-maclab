@@ -22,7 +22,7 @@ func TestARefusalIsAnsweredAsTheOldSiteAnsweredIt(t *testing.T) {
 	_, refusal := upload(t, put(golden(t, "m2-max-image2"), "made.up", "checks", 0, "id"))
 
 	body, _ := json.Marshal(refusal)
-	want := `{"error":"The report has checks this site doesn't know (feature catalogue v19). Update omarchy-m-test (curl -fsSL http://www.example.com/install | bash) and run it again.","details":["unknown check id made.up"]}`
+	want := `{"error":"The report has checks this site doesn't know (feature catalogue v20). Update omarchy-m-test (curl -fsSL http://www.example.com/install | bash) and run it again.","details":["unknown check id made.up"]}`
 	if string(body) != want {
 		t.Errorf("answer %s\nwant   %s", body, want)
 	}
@@ -114,8 +114,8 @@ func TestTheSchemaComparesAsRubyDoes(t *testing.T) {
 
 func TestTheCatalogue(t *testing.T) {
 	c := testRules(t).Catalogue()
-	if c.Version() != 19 {
-		t.Errorf("catalogue version %d, want 19", c.Version())
+	if c.Version() != 20 {
+		t.Errorf("catalogue version %d, want 20", c.Version())
 	}
 	if ids := c.CheckIDs(); len(ids) != 89 || ids[0] != "system.identity" {
 		t.Errorf("%d check ids, the first %q", len(ids), ids[0])
@@ -135,7 +135,7 @@ func TestTheCatalogue(t *testing.T) {
 	if got := c.ChecksFor("boot-chain"); !reflect.DeepEqual(got, []string{"boot.kernel-package", "boot.chain"}) && len(got) < 2 {
 		t.Errorf("checks of boot-chain: %q", got)
 	}
-	if len(c.Boards().Keys()) != 59 || len(c.Chips().Keys()) != 15 || len(c.Features()) != 79 {
+	if len(c.Boards().Keys()) != 64 || len(c.Chips().Keys()) != 15 || len(c.Features()) != 81 {
 		t.Error("boards, chips or features are not all there")
 	}
 
@@ -152,10 +152,10 @@ func TestTheCatalogue(t *testing.T) {
 
 	thunderbolt := c.Feature("thunderbolt")
 	status := func(states *Object, layer string) any { return member(states, layer, "status") }
-	if states := c.Expected(thunderbolt, "m2", ""); status(states, "asahi") != "wip" || status(states, "aurora") != "supported" {
+	if states := c.Expected(thunderbolt, "m2", ""); status(states, "asahi") != "linux-asahi" || status(states, "aurora") != "supported" {
 		t.Errorf("thunderbolt on m2: %s", encode(t, states))
 	}
-	if states := c.Expected(thunderbolt, "m2", "j700"); status(states, "aurora") != "absent" || status(states, "asahi") != "wip" {
+	if states := c.Expected(thunderbolt, "m2", "j700"); status(states, "aurora") != "absent" || status(states, "asahi") != "linux-asahi" {
 		t.Errorf("thunderbolt on the j700: %s", encode(t, states))
 	}
 	if status(c.Expected(thunderbolt, "m2", ""), "aurora") != "supported" {
