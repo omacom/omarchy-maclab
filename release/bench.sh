@@ -10,7 +10,7 @@
 # refused unless its checksum is the pinned one; the program is built from
 # exactly what was checked, with clang -O2. The lab's own three are built
 # from tools/bench-macos/. Leaves OUTDIR/PROGRAM/: bin/PROGRAM (mlx-bench
-# with its mlx.metallib), BUILD.json (the sources and their checksums, the
+# with its mlx.metallib, ane-bench with MobileNetV1.mlmodelc), BUILD.json (the sources and their checksums, the
 # compiler, Xcode and SDK, the flags, the program's own sha256) and the
 # source's licence. release/build.sh packs each into
 # bench-PROGRAM-SYSTEM-arm64.tar.gz (BENCH_PROGRAMS).
@@ -243,6 +243,9 @@ build_ane_bench() {
   own ane-bench
   # shellcheck disable=SC2086
   xcrun swiftc $flags "$repo/tools/bench-macos/ane-bench/main.swift" -o "$dest/bin/ane-bench" >&2
+  python3 -I "$repo/tools/bench-macos/ane-bench/mobilenet_v1.py" "$work/MobileNetV1.mlmodel"
+  xcrun coremlcompiler compile "$work/MobileNetV1.mlmodel" "$dest" --platform macos --deployment-target "$MACOS_MIN" >&2
+  [[ -s $dest/MobileNetV1.mlmodelc/coremldata.bin ]] || die "MobileNet v1 was not compiled"
   finish ane-bench "swiftc $flags" "$repo/LICENSE"
 }
 

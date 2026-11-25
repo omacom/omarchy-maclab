@@ -1112,9 +1112,11 @@ def ane_device(host):
 
 
 def neural_engine(ctx, m):
-    model = ctx.file("mobilenet-v1")
     if not ane_device(ctx.host):
         raise Reason("no_driver", "no Neural engine accelerator device")
+    if "mobilenet-v1" not in ctx.files:
+        raise Reason("no_build", "the set has no MobileNet v1 for libane")
+    model = ctx.file("mobilenet-v1")
     tool = ctx.host.which(ANE_TOOL)
     if not tool:
         raise Reason("no_build", f"no {ANE_TOOL} from libane on this Mac")

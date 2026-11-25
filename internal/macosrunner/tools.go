@@ -443,7 +443,7 @@ func modelDigest(root string) (string, error) {
 	return hex.EncodeToString(d[:]), nil
 }
 
-// coreMLModel is the pinned model as ane-bench takes it, a compiled
+// coreMLModel is the model in ane-bench's archive as ane-bench takes it, a compiled
 // .mlmodelc folder, and the model_sha256 it must report.
 func (s *session) coreMLModel(ctx context.Context, id string) (string, string, error) {
 	d, err := s.dir(ctx, id)
@@ -470,7 +470,7 @@ func neuralEngine(s *session, ctx context.Context) map[string]outcome {
 	if err != nil {
 		return all([]string{id}, because(Error))
 	}
-	model, want, err := s.coreMLModel(ctx, "mobilenet-v1-coreml")
+	model, want, err := s.coreMLModel(ctx, "ane-bench")
 	if err != nil {
 		return all([]string{id}, because(Error))
 	}
@@ -505,7 +505,8 @@ type llamaTest struct {
 // llamaAllLayers offloads every layer of any model, as on Omarchy.
 const llamaAllLayers = 999
 
-// llama runs llama-bench on the pinned model with gpuLayers offloaded, and
+// llama runs llama-bench as Omarchy does (a thread per core, and -v, without
+// which it prints no layer count) with gpuLayers offloaded, and
 // says how many of its layers went to the GPU.
 func (s *session) llama(ctx context.Context, prompt, gen, gpuLayers int) ([]llamaTest, int, int, error) {
 	exe, err := s.program(ctx, "llama.cpp")
@@ -513,7 +514,7 @@ func (s *session) llama(ctx context.Context, prompt, gen, gpuLayers int) ([]llam
 		return nil, 0, 0, err
 	}
 	out, stderr, err := s.tool(ctx, 30*time.Minute, exe, "-m", s.file("llama-model"), "-p", strconv.Itoa(prompt),
-		"-n", strconv.Itoa(gen), "-ngl", strconv.Itoa(gpuLayers), "-o", "json")
+		"-n", strconv.Itoa(gen), "-ngl", strconv.Itoa(gpuLayers), "-t", strconv.Itoa(s.host().CPUs()), "-o", "json", "-v")
 	if err != nil {
 		return nil, 0, 0, err
 	}

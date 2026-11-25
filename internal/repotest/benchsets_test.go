@@ -16,7 +16,7 @@ import (
 // added here. Only a set that still holds placeholders may be changed, to
 // fill them, with its line here changed in the same pull request.
 var frozenSets = map[string]string{
-	"bench-1.json": "0156269a22a2a5b45fa8d741937f52888d7906b25f516ce6334406bd418ca689",
+	"bench-1.json": "2f5f1bbc815f7e1a5410dee6b16b44469008b2fc1a5c30dd3e0245b70e7334ca",
 }
 
 func TestEveryBenchmarkSetLoadsAndIsFrozen(t *testing.T) {

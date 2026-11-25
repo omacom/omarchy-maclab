@@ -367,9 +367,9 @@ bench: utime=0.500s stime=0.100s rtime=2.000s
 EOF
 `
 	fakeLlama = `echo "llama-bench $*" >> "$FAKE_TOOLS_LOG"
-ngl=0; p=0; n=0; while [ $# -gt 0 ]; do case "$1" in -ngl) ngl="$2"; shift;; -p) p="$2"; shift;; -n) n="$2"; shift;; esac; shift; done
+ngl=0; p=0; n=0; v=; while [ $# -gt 0 ]; do case "$1" in -v) v=1;; -ngl) ngl="$2"; shift;; -p) p="$2"; shift;; -n) n="$2"; shift;; esac; shift; done
 if [ "$ngl" = 0 ]; then off=0; ts=30.25; else off="${FAKE_LLAMA_OFFLOADED:-29}"; ts=80.5; fi
-echo "load_tensors: offloaded $off/29 layers to GPU (/Users/alice/model.gguf)" >&2
+[ -n "$v" ] && echo "load_tensors: offloaded $off/29 layers to GPU (/Users/alice/model.gguf)" >&2
 out="["
 [ "$p" != 0 ] && out="$out{\"model_filename\":\"/Users/alice/m.gguf\",\"n_prompt\":$p,\"n_gen\":0,\"avg_ts\":900.5,\"stddev_ts\":5.5,\"backends\":\"Metal,BLAS\"},"
 echo "$out{\"n_prompt\":0,\"n_gen\":$n,\"avg_ts\":$ts,\"stddev_ts\":0.5,\"backends\":\"Metal,BLAS\"}]"
@@ -407,17 +407,17 @@ echo '{"compute_units":"cpu_and_neural_engine","inferences_per_s":2500.5,"iterat
 `
 }
 
-// coreMLModel is a compiled Core ML model, as the set pins it, and the
-// model_sha256 ane-bench gives for it.
-func coreMLModel(t *testing.T) ([]byte, string) {
-	b := tarGz(map[string]string{
-		"MobileNetV1.mlmodelc/model.mil":            "program(1.0)",
-		"MobileNetV1.mlmodelc/weights/weight.bin":   "weights",
-		"MobileNetV1.mlmodelc/metadata.json":        "{}",
-		"MobileNetV1.mlmodelc/analytics/coremldata": "x",
-	})
+// coreMLModel is a compiled Core ML model's files, as ane-bench's archive
+// holds them, and the model_sha256 ane-bench gives for it.
+func coreMLModel(t *testing.T) (map[string]string, string) {
+	m := map[string]string{
+		"MobileNetV1.mlmodelc/model.espresso.net":     "net",
+		"MobileNetV1.mlmodelc/model.espresso.weights": "weights",
+		"MobileNetV1.mlmodelc/metadata.json":          "{}",
+		"MobileNetV1.mlmodelc/analytics/coremldata":   "x",
+	}
 	f := filepath.Join(t.TempDir(), "model")
-	os.WriteFile(f, b, 0o600)
+	os.WriteFile(f, tarGz(m), 0o600)
 	d := t.TempDir()
 	if err := unpack(context.Background(), f, d); err != nil {
 		t.Fatal(err)
@@ -426,7 +426,7 @@ func coreMLModel(t *testing.T) ([]byte, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b, sum
+	return m, sum
 }
 
 // bench is a Benchmark set and its macOS files as the fakes: bench-1 with
@@ -448,28 +448,36 @@ func newBench(t *testing.T) *bench {
 	dt := newFakeDevtools(t)
 	model, modelSHA := coreMLModel(t)
 	sh := func(s string) string { return "#!/bin/sh\n" + s }
+	prog := func(id, script string) []byte {
+		f, _ := set.File(sets.MacOS, id)
+		return tarGz(map[string]string{or(f.Entry, entries[id]): sh(script)})
+	}
 	web := func(id, content string) []byte {
 		f, _ := set.File(sets.MacOS, id)
 		return tarGz(map[string]string{filepath.Join(f.Root, f.Entry): content, filepath.Join(f.Root, "resources/x.js"): "1"})
 	}
+	aneFile, _ := set.File(sets.MacOS, "ane-bench")
+	ane := map[string]string{aneFile.Entry: sh(fakeANE(modelSHA))}
+	for p, b := range model {
+		ane["bench-ane-bench/"+p] = b
+	}
 	files := map[string][]byte{
-		"coremark":            tarGz(map[string]string{"coremark": sh(fakeCoreMark)}),
-		"7zip":                tarGz(map[string]string{"7zz": sh(fake7zz)}),
-		"chrome":              chromeZip(sh(fakeChrome(dt.port()))),
-		"motionmark":          web("motionmark", "<html>MotionMark 1.3</html>"),
-		"clpeak":              tarGz(map[string]string{"clpeak": sh(fakeClpeak)}),
-		"fio":                 tarGz(map[string]string{"fio": sh(fakeFio)}),
-		"stream":              tarGz(map[string]string{"stream": sh(fakeStream)}),
-		"speedometer":         web("speedometer", "<html>Speedometer 3.1</html>"),
-		"jetstream":           web("jetstream", "<html>JetStream 2.2</html>"),
-		"ffmpeg":              tarGz(map[string]string{"ffmpeg": sh(fakeFFmpeg)}),
-		"clip-h264-1080p":     []byte("not really a 1080p clip"),
-		"ane-bench":           tarGz(map[string]string{"ane-bench": sh(fakeANE(modelSHA))}),
-		"mobilenet-v1-coreml": model,
-		"llama.cpp":           tarGz(map[string]string{"llama-bench": sh(fakeLlama)}),
-		"llama-model":         []byte("a 3B Q4_K_M GGUF"),
-		"mlx-bench":           tarGz(map[string]string{"mlx-bench": sh(fakeMLX)}),
-		"smc-power":           tarGz(map[string]string{"smc-power": sh(fakeSMC)}),
+		"coremark":        prog("coremark", fakeCoreMark),
+		"7zip":            prog("7zip", fake7zz),
+		"chrome":          chromeZip(sh(fakeChrome(dt.port()))),
+		"motionmark":      web("motionmark", "<html>MotionMark 1.3</html>"),
+		"clpeak":          prog("clpeak", fakeClpeak),
+		"fio":             prog("fio", fakeFio),
+		"stream":          prog("stream", fakeStream),
+		"speedometer":     web("speedometer", "<html>Speedometer 3.1</html>"),
+		"jetstream":       web("jetstream", "<html>JetStream 2.2</html>"),
+		"ffmpeg":          prog("ffmpeg", fakeFFmpeg),
+		"clip-h264-1080p": []byte("not really a 1080p clip"),
+		"ane-bench":       tarGz(ane),
+		"llama.cpp":       prog("llama.cpp", fakeLlama),
+		"llama-model":     []byte("a 3B Q4_K_M GGUF"),
+		"mlx-bench":       prog("mlx-bench", fakeMLX),
+		"smc-power":       prog("smc-power", fakeSMC),
 	}
 	for i, f := range set.Files[sets.MacOS] {
 		b, ok := files[f.ID]

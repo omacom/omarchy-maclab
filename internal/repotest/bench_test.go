@@ -80,9 +80,10 @@ func TestBenchPins(t *testing.T) {
 func TestTheLabsOwnBenchmarkSources(t *testing.T) {
 	top := root(t)
 	for rel, wants := range map[string][]string{
-		"tools/bench-macos/ane-bench/main.swift":    {".cpuAndNeuralEngine", "MLComputePlan.load", "#available(macOS 14.4, *)", `"inferences_per_s"`, `"placement"`, `"model_sha256"`},
-		"tools/bench-macos/smc-power/smc-power.c":   {`IOServiceMatching("AppleSMC")`, `fourcc("PSTR")`, `"mean_watts"`, `"valid"`, `"no_pstr"`, "EXIT_NO_PSTR"},
-		"tools/bench-macos/mlx-bench/mlx-bench.cpp": {"mx::float16", "mx::matmul", "mx::synchronize", "mx::metal::is_available", `\"tflops\"`},
+		"tools/bench-macos/ane-bench/main.swift":      {".cpuAndNeuralEngine", "MLComputePlan.load", "#available(macOS 14.4, *)", `"inferences_per_s"`, `"placement"`, `"model_sha256"`},
+		"tools/bench-macos/ane-bench/mobilenet_v1.py": {"SPEC_VERSION", "<{count}e"},
+		"tools/bench-macos/smc-power/smc-power.c":     {`IOServiceMatching("AppleSMC")`, `fourcc("PSTR")`, `"mean_watts"`, `"valid"`, `"no_pstr"`, "EXIT_NO_PSTR"},
+		"tools/bench-macos/mlx-bench/mlx-bench.cpp":   {"mx::float16", "mx::matmul", "mx::synchronize", "mx::metal::is_available", `\"tflops\"`},
 	} {
 		src := read(t, top, rel)
 		for _, w := range wants {
@@ -90,6 +91,24 @@ func TestTheLabsOwnBenchmarkSources(t *testing.T) {
 				t.Errorf("%s lacks %s", rel, w)
 			}
 		}
+	}
+}
+
+// MobileNet v1 is the same bytes wherever it is written.
+func TestMobileNetIsAlwaysTheSameBytes(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("needs python3")
+	}
+	out := filepath.Join(t.TempDir(), "m.mlmodel")
+	if b, err := exec.Command("python3", "-I", filepath.Join(root(t), "tools/bench-macos/ane-bench/mobilenet_v1.py"), out).CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != "f88cb406f7fe4a6db0351b4857e4c1569a02d00441f67c18edbbc04d9cc4e1b0" {
+		t.Errorf("the model's sha256 is %s", got)
 	}
 }
 

@@ -317,7 +317,10 @@ class Case(unittest.TestCase):
         data = data if data is not None else b"pinned " + fid.encode()
         sha = hashlib.sha256(data).hexdigest()
         (self.cache / sha).write_bytes(data)
-        self.ctx.files[fid]["sha256"] = sha
+        f = self.ctx.files[fid]
+        f["sha256"] = sha
+        if files is not None and f.get("entry") not in files:
+            f.pop("entry", None)
         return sha
 
     def metric(self, mid):
@@ -498,7 +501,8 @@ class Video(Case):
         self.assertIn("-benchmark", run)
         self.assertNotIn("-re", run)
 
-    def test_hevc_clip_still_a_placeholder(self):
+    def test_a_clip_still_a_placeholder(self):
+        self.ctx.files["clip-hevc-4k"]["sha256"] = "placeholder"
         self.assertEqual(self.run1("decode-hevc-4k")["reason"], "placeholder_file")
 
     def test_software_decode_fell_back(self):
@@ -521,9 +525,13 @@ class Video(Case):
 
 class AI(Case):
     def test_neural_engine(self):
-        self.pin("mobilenet-v1")
         self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "no_driver")
         self.h.write("sys/class/accel/accel0/device/uevent", "DRIVER=apple-ane\nOF_NAME=ane\n")
+        self.h.tools["ane-bench"] = lambda c: "device: ane\ninferences/s: 1234.5\n"
+        self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "no_build")
+        del self.h.tools["ane-bench"]
+        self.ctx.files["mobilenet-v1"] = {"id": "mobilenet-v1", "kind": "file"}
+        self.pin("mobilenet-v1")
         self.assertEqual(self.run1("neural-engine-mobilenet-v1")["reason"], "no_build")
         self.h.tools["ane-bench"] = lambda c: "device: ane\ninferences/s: 1234.5\n"
         e = self.run1("neural-engine-mobilenet-v1")
@@ -818,7 +826,7 @@ class Output(Case):
         self.assertIn("alice", self.log.getvalue())
         self.assertEqual(code, 1)
         by = {r["metric"]: r["reason"] for r in rows}
-        self.assertEqual(by["fio-seq-read"], "placeholder_file")
+        self.assertEqual(by["fio-seq-read"], "error")
         self.assertEqual(by["boot-time"], "error")
         self.assertEqual(by["mlx-matmul-fp16"], "error")
         self.assertEqual(by["power-idle"], "no_comparable_sensor")

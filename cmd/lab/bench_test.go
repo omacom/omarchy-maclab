@@ -94,7 +94,7 @@ func TestBenchMirrorTakesEverySetsPinnedFilesOnce(t *testing.T) {
 	if names["bench-1/macos/speedometer"] {
 		t.Error("a file both systems share was mirrored again")
 	}
-	for _, n := range []string{"bench-1/macos/chrome: a placeholder", "bench-1/omarchy/coremark: a placeholder"} {
+	for _, n := range []string{"bench-1/macos/ane-bench: a placeholder"} {
 		if !strings.Contains(said.String(), n) {
 			t.Errorf("did not say %q: %s", n, said.String())
 		}

@@ -206,18 +206,18 @@ func TestBench1HoldsWhatRuns(t *testing.T) {
 	}
 	for _, id := range []string{"coremark", "stream", "clpeak"} {
 		for _, sys := range Systems {
-			if f, ok := s.File(sys, id); !ok || !f.LabBuilt || f.Pinned() {
-				t.Errorf("%s/%s is not a lab-built placeholder: %+v", sys, id, f)
+			if f, ok := s.File(sys, id); !ok || !f.LabBuilt || !f.Pinned() || f.Entry != "bench-"+id+"/bin/"+id {
+				t.Errorf("%s/%s is not a pinned lab-built archive: %+v", sys, id, f)
 			}
 		}
 	}
-	for _, id := range []string{"fio", "ane-bench", "smc-power", "mlx-bench"} {
-		if f, ok := s.File(MacOS, id); !ok || !f.LabBuilt || f.Pinned() {
-			t.Errorf("macos/%s is not a lab-built placeholder: %+v", id, f)
+	for _, id := range []string{"fio", "smc-power", "mlx-bench"} {
+		if f, ok := s.File(MacOS, id); !ok || !f.LabBuilt || !f.Pinned() || f.Entry != "bench-"+id+"/bin/"+id {
+			t.Errorf("macos/%s is not a pinned lab-built archive: %+v", id, f)
 		}
 	}
-	if len(s.Placeholders()) == 0 {
-		t.Error("bench-1 holds no placeholder")
+	if got := s.Placeholders(); !slices.Equal(got, []string{"macos/ane-bench"}) {
+		t.Errorf("bench-1 still holds the placeholders %v", got)
 	}
 	if c, err := Current(); err == nil && c.Name == "bench-1" {
 		t.Error("bench-1, with its placeholders, is the current set")
@@ -233,7 +233,7 @@ func TestFilesForTakesEachFileOnce(t *testing.T) {
 	for _, f := range s.FilesFor(Omarchy, s.List(Quick)) {
 		ids = append(ids, f.ID)
 	}
-	if !slices.Equal(ids, []string{"coremark", "chrome", "motionmark", "fio", "stream", "speedometer", "clip-h264-1080p", "mobilenet-v1"}) {
+	if !slices.Equal(ids, []string{"coremark", "chrome", "motionmark", "fio", "stream", "speedometer", "clip-h264-1080p"}) {
 		t.Errorf("Omarchy's Quick files %v", ids)
 	}
 }
