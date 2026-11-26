@@ -56,8 +56,8 @@ const (
 // enables, by name and by unit file, lab-agent.service first. Leaving and
 // uninstall both take all of them out.
 var (
-	labUnitNames = []string{"lab-agent.service", labBootDeadlineUnitName, labBootSessionUnitName, labBootLockUnitName}
-	labUnitPaths = []string{unitPath, labBootDeadlineUnitPath, labBootSessionUnitPath, labBootLockUnitPath}
+	labUnitNames = []string{"lab-agent.service", labBootDeadlineUnitName, labBootSessionUnitName, labBootLockUnitName, guardTimerName, guardUnitName}
+	labUnitPaths = []string{unitPath, labBootDeadlineUnitPath, labBootSessionUnitPath, labBootLockUnitPath, guardTimerPath, guardUnitPath}
 )
 
 // defaultLeaveLayout is the layout setup writes on a real Mac.

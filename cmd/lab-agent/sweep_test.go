@@ -41,6 +41,7 @@ var specTable = map[string]string{
 	"lab-boot-session":   "the running agent",
 	"lab-boot-lock":      "the running agent",
 	"lab-boot-deadlines": "the running agent",
+	"guard":              "added",
 }
 
 var helpCommandRE = regexp.MustCompile(`(?m)^  (?:sudo )?lab-agent ([a-z][a-z-]*)`)

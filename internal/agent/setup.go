@@ -43,6 +43,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+ExecStartPre=-/usr/local/lib/maclab/lab-agent-prev guard --start
 ExecStart=/usr/local/bin/lab-agent run
 Restart=always
 RestartSec=3
@@ -376,6 +377,12 @@ func (l *Linux) SetUp(ctx context.Context, o SetupOptions, cfg *Config) error {
 		return err
 	}
 	if err := os.WriteFile(labBootLockUnitPath, []byte(labBootLockUnit()), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(guardUnitPath, []byte(guardUnit), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(guardTimerPath, []byte(guardTimer), 0o644); err != nil {
 		return err
 	}
 	for _, args := range [][]string{{"daemon-reload"}, append([]string{"enable"}, labUnitNames...), {"restart", "lab-agent.service"}} {

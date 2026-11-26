@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,9 +21,9 @@ import (
 // A new lab-agent comes from the lab server only, and is trusted by its
 // signature, checked on the Mac against the release key pinned in the
 // lab-agent already running. One that is older than the one installed is
-// refused. `sudo lab-agent update` does it at the Mac; on a Lab-owned Mac a
-// Maintainer's `lab agent-update` has the running agent do the same. Nothing
-// pushes an agent to a Volunteer's Mac.
+// refused. `sudo lab-agent update` does it at the Mac; labd's Agent rollout,
+// or a Maintainer's `lab agent-update`, has the running agent do the same on
+// any Mac (rollout.go).
 
 // Self is the lab-agent installed on a Mac.
 type Self struct {
@@ -31,15 +32,22 @@ type Self struct {
 	Key     string // the release key it pins, as "type base64"
 	// Restart starts the installed lab-agent in place of the running one.
 	Restart func() error
+	// Prev is where the lab-agent a change replaces is kept, for the guard
+	// to return to; InstallGuard sets the guard up before a change.
+	Prev         string
+	InstallGuard func() error
 }
 
 // self is c.Self, or the real one: this program, installed by setup and run
 // by lab-agent.service.
 func (c *Config) self() Self {
-	s := Self{Path: binPath, Version: Version, Key: ReleaseKey, Restart: restartService}
+	s := Self{Path: binPath, Version: Version, Key: ReleaseKey, Restart: restartService, Prev: prevPath, InstallGuard: installGuardUnits}
 	if c.Self == nil {
 		return s
 	}
+	// A lab-agent of a test or the simulator keeps its previous one beside
+	// itself and has no systemd to set a guard up in.
+	s.Prev, s.InstallGuard = "", func() error { return nil }
 	if c.Self.Path != "" {
 		s.Path = c.Self.Path
 	}
@@ -52,6 +60,10 @@ func (c *Config) self() Self {
 	if c.Self.Restart != nil {
 		s.Restart = c.Self.Restart
 	}
+	s.Prev = cmp.Or(c.Self.Prev, s.Path+"-prev")
+	if c.Self.InstallGuard != nil {
+		s.InstallGuard = c.Self.InstallGuard
+	}
 	return s
 }
 
@@ -63,71 +75,88 @@ func restartService() error {
 }
 
 const (
-	neverPushed    = "lab-agent is never pushed to a Volunteer's Mac: its Volunteer runs `sudo lab-agent update` at the Mac"
 	nothingChanged = "Nothing was changed."
 	// agentSizeMax bounds the download; lab-agent is about 8 MB.
 	agentSizeMax = 256 << 20
 )
 
-// update takes the lab's lab-agent, checks it and installs it over the one
-// installed. It restarts nothing.
+// update takes the lab's lab-agent, checks it and puts it in place of the
+// one installed. It restarts nothing.
 func update(ctx context.Context, cfg *Config, sys System) (api.AgentUpdate, error) {
-	self := cfg.self()
-	res := api.AgentUpdate{From: self.Version, To: self.Version}
-	if self.Key == "" {
-		return res, errors.New("this lab-agent carries no release key (it was not built as part of a Lab release), so it cannot check a new lab-agent's signature. " + nothingChanged)
+	staged, res, err := stage(ctx, cfg, sys)
+	if err != nil || !res.Changed {
+		return res, err
 	}
-	if _, _, cmdline := sys.Identity(); IsLabBoot(cmdline) {
-		return res, errors.New("this Mac is on a Lab boot for a job: update lab-agent once it is back on its own system. " + nothingChanged)
-	}
-	dir := filepath.Dir(self.Path)
-	f, err := os.CreateTemp(dir, ".lab-agent-new-")
-	if err != nil {
+	if err := activate(cfg, staged, res); err != nil {
+		os.Remove(staged)
+		res.Changed = false
 		return res, fmt.Errorf("%w. %s", err, nothingChanged)
 	}
-	tmp := f.Name()
-	f.Close()
-	defer os.Remove(tmp)
+	return res, nil
+}
+
+// stagedName is the lab-agent staged beside the one installed, until it is
+// switched in or thrown away.
+const stagedName = ".lab-agent-staged"
+
+// stage takes the lab's lab-agent and checks it, leaving it staged beside
+// the one installed. With res.Changed false nothing is staged.
+func stage(ctx context.Context, cfg *Config, sys System) (staged string, res api.AgentUpdate, err error) {
+	self := cfg.self()
+	res = api.AgentUpdate{From: self.Version, To: self.Version}
+	if self.Key == "" {
+		return "", res, errors.New("this lab-agent carries no release key (it was not built as part of a Lab release), so it cannot check a new lab-agent's signature. " + nothingChanged)
+	}
+	if _, _, cmdline := sys.Identity(); IsLabBoot(cmdline) {
+		return "", res, errors.New("this Mac is on a Lab boot for a job: update lab-agent once it is back on its own system. " + nothingChanged)
+	}
+	tmp := filepath.Join(filepath.Dir(self.Path), stagedName)
+	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
+		return "", res, fmt.Errorf("%w. %s", err, nothingChanged)
+	}
+	defer func() {
+		if staged == "" {
+			os.Remove(tmp)
+		}
+	}()
 	c := cfg.client(cfg.transferTimeout())
 	base := strings.TrimRight(cfg.Server, "/") + "/api/agent/lab-agent"
 	if err := download(ctx, c, base, cfg.Secret, tmp, agentSizeMax); err != nil {
-		return res, fmt.Errorf("the lab did not hand out a lab-agent: %w. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("the lab did not hand out a lab-agent: %w. %s", err, nothingChanged)
 	}
 	sigReq, _ := http.NewRequestWithContext(ctx, "GET", base+".sig", nil)
 	sig, err := doBody(c, sigReq, cfg.Secret)
 	if err != nil {
-		return res, fmt.Errorf("the lab handed out a lab-agent with no signature (%w): refused. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("the lab handed out a lab-agent with no signature (%w): refused. %s", err, nothingChanged)
 	}
 	body, err := os.Open(tmp)
 	if err != nil {
-		return res, fmt.Errorf("%w. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("%w. %s", err, nothingChanged)
 	}
 	err = sshsig.Verify(self.Key, ReleaseNamespace, body, sig)
 	body.Close()
 	if err != nil {
-		return res, fmt.Errorf("the lab-agent the lab handed out is not signed by the release key this lab-agent pins (%w): refused. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("the lab-agent the lab handed out is not signed by the release key this lab-agent pins (%w): refused. %s", err, nothingChanged)
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
-		return res, fmt.Errorf("%w. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("%w. %s", err, nothingChanged)
 	}
 	number, release, err := versionOf(ctx, tmp)
 	if err != nil {
-		return res, fmt.Errorf("the lab-agent the lab handed out does not say its number (%w): refused. %s", err, nothingChanged)
+		return "", res, fmt.Errorf("the lab-agent the lab handed out does not say its number (%w): refused. %s", err, nothingChanged)
 	}
 	if !api.VersionAtLeast(number, self.Version) {
-		return res, fmt.Errorf("the lab handed out lab-agent %s, older than the %s installed: refused. %s", number, self.Version, nothingChanged)
+		return "", res, fmt.Errorf("the lab handed out lab-agent %s, older than the %s installed: refused. %s", number, self.Version, nothingChanged)
 	}
 	res.To, res.LabRelease = number, release
-	if have, err := fileSHA256(self.Path); err == nil {
-		if got, _ := fileSHA256(tmp); got == have {
-			return res, nil
-		}
+	if res.ToSHA256, err = fileSHA256(tmp); err != nil {
+		return "", res, fmt.Errorf("%w. %s", err, nothingChanged)
 	}
-	if err := os.Rename(tmp, self.Path); err != nil {
-		return res, fmt.Errorf("%w. %s", err, nothingChanged)
+	if have, err := fileSHA256(self.Path); err == nil && have == res.ToSHA256 {
+		return "", res, nil
 	}
 	res.Changed = true
-	return res, nil
+	return tmp, res, nil
 }
 
 // versionOf asks a lab-agent, whose signature has been checked, for its
@@ -218,10 +247,10 @@ type UpdateArgs struct {
 	RestartWithinMS int64 `json:"restart_within_ms,omitempty"`
 }
 
-// updateSelf is the lab's order to update, on a Lab-owned Mac that is idle.
-// The new agent starts once labd has heard the result, within the time labd
-// gave; one labd gave up waiting for, or heard too late, is installed and
-// not started.
+// updateSelf is the lab's order to update, on a Mac that is idle: the
+// Agent rollout's or a Maintainer's. The new lab-agent is staged, and put in
+// place and started only once labd has heard the result, within the time
+// labd gave; one labd gave up waiting for, or heard too late, is thrown away.
 func (a *Agent) updateSelf(ctx context.Context, c api.Command) (any, *afterAck, error) {
 	var args UpdateArgs
 	_ = json.Unmarshal(c.Args, &args)
@@ -243,15 +272,18 @@ func (a *Agent) updateSelf(ctx context.Context, c api.Command) (any, *afterAck, 
 		// The restart would cut it as it rewrites the boot entries.
 		return nil, nil, fmt.Errorf("%s is not idle: the lab's clean-up of leftover lab kernels runs on it. %s", a.cfg.Name, nothingChanged)
 	}
-	res, err := update(ctx, a.cfg, a.sys)
+	staged, res, err := stage(ctx, a.cfg, a.sys)
 	if err != nil || !res.Changed {
 		return res, nil, err
 	}
 	clock, within := a.cfg.clock(), time.Duration(args.RestartWithinMS)*time.Millisecond
 	var sent time.Time
-	// labd no longer holds the Mac for it: a restart now could cut whatever
-	// it has started since. The new one starts with the next.
-	notNow := func() { a.log.Printf("lab-agent %s is installed, and starts when lab-agent next restarts", res.To) }
+	// labd no longer holds the Mac for it: a switch now could cut whatever it
+	// has started since.
+	notNow := func() {
+		os.Remove(staged)
+		a.log.Printf("lab-agent %s was not put in place: labd no longer waited for it", res.To)
+	}
 	return res, &afterAck{check: func() error {
 		sent = clock.Now()
 		return nil
@@ -261,8 +293,13 @@ func (a *Agent) updateSelf(ctx context.Context, c api.Command) (any, *afterAck, 
 			notNow()
 			return
 		}
+		if err := activate(a.cfg, staged, res); err != nil {
+			os.Remove(staged)
+			a.log.Printf("lab-agent %s was not put in place: %v", res.To, err)
+			return
+		}
 		if err := a.cfg.self().Restart(); err != nil {
-			a.log.Printf("the new lab-agent is installed but was not started: %v", err)
+			a.log.Printf("the new lab-agent is in place but was not started: %v", err)
 		}
 	}, dropped: notNow}, nil
 }
