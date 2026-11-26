@@ -209,7 +209,11 @@ func (l *Linux) JoinFacts(token string) JoinFacts {
 		f.Bootloader = bootloaderStops(b)
 	}
 	f.Missing = missingTools(b)
-	f.Space = stageRoom(b)
+	var known string
+	if kg, err := l.knownGood(); err == nil {
+		known = kg.Kernel
+	}
+	f.Space = stageRoom(b, known)
 	f.Snapshot = l.SnapshotEligible()
 	f.OnBattery = onBattery("/sys/class/power_supply")
 	return f
