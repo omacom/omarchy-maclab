@@ -235,3 +235,23 @@ func TestATrialMacThatNeverSwitchedTriesAgain(t *testing.T) {
 		return bytes.Equal(now, handed)
 	})
 }
+
+// A chip the release gate does not cover yet still has a family for the
+// trial: its SoC, or the chip its model names.
+func TestEveryMacHasAChipFamilyForTheTrial(t *testing.T) {
+	for _, c := range []struct {
+		f    api.Facts
+		want string
+	}{
+		{api.Facts{DTModel: "Apple MacBook Air (13-inch, M3, 2024)", Compatible: []string{"apple,j613", "apple,t8122", "apple,arm-platform"}}, "m3"},
+		{api.Facts{DTModel: "Apple MacBook Pro (16-inch, M4 Pro)", Compatible: []string{"apple,j616s", "apple,t6040", "apple,arm-platform"}}, "t6040"},
+		{api.Facts{DTModel: "Apple MacBook Neo", Compatible: []string{"apple,j700", "apple,t8140", "apple,arm-platform"}}, "t8140"},
+		{api.Facts{DTModel: "Apple MacBook Air (15-inch, M5)"}, "m5"},
+		{api.Facts{DTModel: "Apple MacBook Pro (14-inch, M5 Max)"}, "m5-max"},
+		{api.Facts{DTModel: "Simulated Mac"}, ""},
+	} {
+		if got := rolloutFamily(c.f); got != c.want {
+			t.Errorf("%s: %q, want %q", c.f.DTModel, got, c.want)
+		}
+	}
+}
