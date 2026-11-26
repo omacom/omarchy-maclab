@@ -19,13 +19,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/omacom/omarchy-maclab/internal/agent"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -51,7 +51,7 @@ const (
 	// rolloutRestartsMax is how many times a trial Mac's new lab-agent may
 	// start again before its rollout stops.
 	rolloutRestartsMax = 3
-	rolloutEvery   = time.Minute
+	rolloutEvery       = time.Minute
 	// rolloutAtOnce is how many Macs take an update at the same time.
 	rolloutAtOnce = 3
 )
@@ -198,7 +198,7 @@ func (s *Server) rolloutHeardLocked(v *dev) {
 	r := s.rollout()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	t := r.trialLocked(sha, s.labAgent(), agent.LabRelease, now)
+	t := r.trialLocked(sha, s.labAgent(), s.cfg.Release, now)
 	changed := false
 	if d.Facts.AgentSHA256 == sha {
 		if _, ok := r.st.Due[d.Name]; ok {
@@ -209,7 +209,7 @@ func (s *Server) rolloutHeardLocked(v *dev) {
 		r.st.Due[d.Name] = now
 		changed = true
 	}
-	fam := orStr(family(d.Facts), "(unknown)")
+	fam := orStr(rolloutFamily(d.Facts), "(unknown)")
 	if o := d.Facts.AgentOutcome; o != nil && o.Outcome == api.AgentReturned && o.ToSHA256 == sha && t.State != rollStops && r.st.Sent[d.Name].SHA256 == sha {
 		s.stopRolloutLocked(t, now, fmt.Sprintf("a Mac of chip family %s returned to its previous lab-agent", fam))
 		s.log.Printf("agent rollout: %s returned to its previous lab-agent: %q", d.Name, o.Why)
@@ -222,7 +222,7 @@ func (s *Server) rolloutHeardLocked(v *dev) {
 			if m != nil && m.Boot == d.BootID {
 				restarts = m.Restarts + 1
 			}
-			m = &trialMac{Family: family(d.Facts), Start: v.agentStart, Since: now, Boot: d.BootID, Restarts: restarts}
+			m = &trialMac{Family: rolloutFamily(d.Facts), Start: v.agentStart, Since: now, Boot: d.BootID, Restarts: restarts}
 			t.Ran[d.Name] = m
 			changed = true
 		}
@@ -327,7 +327,7 @@ func (s *Server) reconcileRollout() {
 	}
 	r := s.rollout()
 	r.mu.Lock()
-	t := r.trialLocked(sha, s.labAgent(), agent.LabRelease, s.now())
+	t := r.trialLocked(sha, s.labAgent(), s.cfg.Release, s.now())
 	state := t.State
 	// taken is each family's trial Mac: one running the lab-agent, being
 	// updated, or sent it. A family stays taken from the moment its trial
@@ -361,7 +361,7 @@ func (s *Server) reconcileRollout() {
 			}
 			continue
 		}
-		fam := family(d.Facts)
+		fam := rolloutFamily(d.Facts)
 		if owner, ok := taken[fam]; state == trialOn && (d.IsVolunteer() || fam == "" || ok && owner != d.Name) {
 			continue
 		}
@@ -395,7 +395,7 @@ func (s *Server) rolloutSent(d api.Device, sha string) {
 	r := s.rollout()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.st.Sent[d.Name] = sentAgent{SHA256: sha, Family: family(d.Facts), At: s.now()}
+	r.st.Sent[d.Name] = sentAgent{SHA256: sha, Family: rolloutFamily(d.Facts), At: s.now()}
 	r.saveLocked()
 }
 
@@ -430,7 +430,7 @@ func (s *Server) rolloutProbe(v *dev, sha string) {
 	}
 	need := m != nil && !m.Answered
 	r.mu.Unlock()
-	if !need || !r.take(d.Name, family(d.Facts)) {
+	if !need || !r.take(d.Name, rolloutFamily(d.Facts)) {
 		return
 	}
 	go func() {
@@ -491,6 +491,25 @@ func (s *Server) rolloutRefusalLocked(v *dev) string {
 		return ""
 	case t == nil || t.State == trialOn:
 		return fmt.Sprintf("%s is a Volunteer's Mac, and the lab's lab-agent is still on trial on Lab-owned Macs: it reaches a Volunteer's Mac once it has run well there", v.d.Name)
+	}
+	return ""
+}
+
+var reAnyChip = regexp.MustCompile(`\bM([1-9])(?: (Pro|Max|Ultra))?[,)]`)
+
+// rolloutFamily is a Mac's chip family for the trial: the gate's, or, for
+// a chip the gate does not cover yet, its SoC or the chip its model names.
+func rolloutFamily(f api.Facts) string {
+	if fam := family(f); fam != "" {
+		return fam
+	}
+	for _, c := range f.Compatible {
+		if soc, ok := strings.CutPrefix(c, "apple,t"); ok && soc != "" {
+			return "t" + soc
+		}
+	}
+	if m := reAnyChip.FindStringSubmatch(f.DTModel); m != nil {
+		return strings.TrimSuffix(strings.ToLower("m"+m[1]+"-"+m[2]), "-")
 	}
 	return ""
 }
