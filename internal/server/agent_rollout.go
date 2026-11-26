@@ -31,9 +31,10 @@ import (
 
 const (
 	// rolloutMinAgent is the first lab-agent that stages a new one and
-	// returns to itself when that one does not run well. A Volunteer's Mac
-	// below it takes the rollout only after its Volunteer has run
-	// `sudo lab-agent update` once; a Lab-owned Mac needs agentUpdateMinAgent.
+	// returns to itself when that one does not run well: the rollout updates
+	// no older one, as nothing would bring such a Mac back. A Lab-owned Mac
+	// below it takes `lab agent-update` once, a Volunteer's Mac
+	// `sudo lab-agent update` at the Mac.
 	rolloutMinAgent = "0.11.0"
 	// rolloutFamilies is how many chip families the trial Macs cover.
 	rolloutFamilies = 2
@@ -95,6 +96,16 @@ type rolloutState struct {
 	Trials map[string]*agentTrial `json:"trials"`
 	// Due is when each Mac was first seen needing the lab's lab-agent.
 	Due map[string]time.Time `json:"due,omitempty"`
+	// Sent is each Mac labd had switch to the lab's lab-agent, by name: only
+	// such a Mac's word that it returned stops the rollout.
+	Sent map[string]sentAgent `json:"sent,omitempty"`
+}
+
+// sentAgent is a lab-agent labd had a Mac switch to.
+type sentAgent struct {
+	SHA256 string    `json:"sha256"`
+	Family string    `json:"family"`
+	At     time.Time `json:"at"`
 }
 
 type agentRollout struct {
@@ -115,6 +126,9 @@ func openAgentRollout(dir string) *agentRollout {
 	}
 	if r.st.Due == nil {
 		r.st.Due = map[string]time.Time{}
+	}
+	if r.st.Sent == nil {
+		r.st.Sent = map[string]sentAgent{}
 	}
 	return r
 }
@@ -140,6 +154,8 @@ func (r *agentRollout) trialLocked(sha, version, release string, now time.Time) 
 	if t == nil {
 		t = &agentTrial{SHA256: sha, Version: version, LabRelease: release, State: trialOn, Since: now, Ran: map[string]*trialMac{}}
 		r.st.Trials[sha] = t
+		r.st.Due = map[string]time.Time{} // waiting is counted for this lab-agent
+		r.st.Sent = map[string]sentAgent{}
 		// Only this Deploy's lab-agent is rolled out; older ones are history.
 		for k, o := range r.st.Trials {
 			if k != sha && o.State == trialOn {
@@ -194,9 +210,9 @@ func (s *Server) rolloutHeardLocked(v *dev) {
 		changed = true
 	}
 	fam := orStr(family(d.Facts), "(unknown)")
-	if o := d.Facts.AgentOutcome; o != nil && o.Outcome == api.AgentReturned && o.ToSHA256 == sha && t.State != rollStops {
-		s.stopRolloutLocked(t, now, fmt.Sprintf("a Mac of chip family %s returned to its previous lab-agent: %s", fam, o.Why))
-		s.log.Printf("agent rollout: %s returned to its previous lab-agent", d.Name)
+	if o := d.Facts.AgentOutcome; o != nil && o.Outcome == api.AgentReturned && o.ToSHA256 == sha && t.State != rollStops && r.st.Sent[d.Name].SHA256 == sha {
+		s.stopRolloutLocked(t, now, fmt.Sprintf("a Mac of chip family %s returned to its previous lab-agent", fam))
+		s.log.Printf("agent rollout: %s returned to its previous lab-agent: %q", d.Name, o.Why)
 		changed = true
 	}
 	if t.State == trialOn && !d.IsVolunteer() && d.Facts.AgentSHA256 == sha && v.factsStart == v.agentStart && v.agentStart != "" {
@@ -208,6 +224,10 @@ func (s *Server) rolloutHeardLocked(v *dev) {
 			}
 			m = &trialMac{Family: family(d.Facts), Start: v.agentStart, Since: now, Boot: d.BootID, Restarts: restarts}
 			t.Ran[d.Name] = m
+			changed = true
+		}
+		if now.Sub(m.Last) > rolloutSilent && !m.Last.IsZero() {
+			m.Since, m.Answered = now, false // an hour of silence is no hour of running well
 			changed = true
 		}
 		m.Last = now
@@ -271,17 +291,15 @@ func (s *Server) rolloutOverdueFor(d api.Device) bool {
 	defer r.mu.Unlock()
 	t := r.st.Trials[s.agentSHA256()]
 	due, ok := r.st.Due[d.Name]
+	if t != nil && t.At.After(due) {
+		due = t.At // it waits from the promotion
+	}
 	late := s.now().Sub(due)
 	return ok && t != nil && t.State == promoted && late > rolloutOverdue && late <= 2*rolloutOverdue
 }
 
 // rolloutMin is the oldest lab-agent of d that the rollout updates.
-func rolloutMin(d api.Device) string {
-	if d.IsVolunteer() {
-		return rolloutMinAgent
-	}
-	return agentUpdateMinAgent
-}
+func rolloutMin(api.Device) string { return rolloutMinAgent }
 
 func (s *Server) rolloutScheduler() {
 	if !s.cfg.AgentRollout {
@@ -319,6 +337,13 @@ func (s *Server) reconcileRollout() {
 	}
 	for _, fam := range r.busy {
 		tried[fam] = true
+	}
+	// A family stays taken from the moment its trial Mac was sent the
+	// lab-agent, whether or not that Mac has checked in with it since.
+	for _, sent := range r.st.Sent {
+		if sent.SHA256 == sha && sent.Family != "" {
+			tried[sent.Family] = true
+		}
 	}
 	r.mu.Unlock()
 	if state == rollStops {
@@ -358,6 +383,18 @@ func (s *Server) reconcileRollout() {
 			}
 		}()
 	}
+}
+
+// sent records that labd had the Mac d switch to sha.
+func (s *Server) rolloutSent(d api.Device, sha string) {
+	if !s.cfg.AgentRollout || sha == "" {
+		return
+	}
+	r := s.rollout()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.st.Sent[d.Name] = sentAgent{SHA256: sha, Family: family(d.Facts), At: s.now()}
+	r.saveLocked()
 }
 
 // take marks name, of chip family fam, as being updated, if fewer than
@@ -427,25 +464,17 @@ func (s *Server) rolloutNotNow(v *dev) string {
 	if why := v.notUpdatableLocked(signed); why != "" {
 		return why
 	}
-	min := rolloutMin(d)
-	switch {
-	case d.State == api.StateLeft || v.forgotten:
-		return "it is leaving the lab"
-	case !versionAtLeast(d.Facts.AgentVersion, min):
+	if min := rolloutMin(d); !versionAtLeast(d.Facts.AgentVersion, min) {
 		return fmt.Sprintf("it runs lab-agent %s, which takes the rollout from %s", orStr(d.Facts.AgentVersion, "(unknown)"), min)
-	case v.perfClaim != "":
-		return "a Performance run claims it"
-	case v.resetting || v.termsWait:
-		return "it is busy"
 	}
-	return v.windowHoldLocked(rolloutWindowLeft)
+	return ""
 }
 
 // rolloutRefusalLocked is why `lab agent-update` may not give v the lab's
 // lab-agent now: a Volunteer's Mac takes only a promoted one. Caller holds
 // v.mu.
 func (s *Server) rolloutRefusalLocked(v *dev) string {
-	if !s.cfg.AgentRollout || !v.d.IsVolunteer() {
+	if !s.cfg.AgentRollout {
 		return ""
 	}
 	sha := s.agentSHA256()
@@ -454,10 +483,12 @@ func (s *Server) rolloutRefusalLocked(v *dev) string {
 	defer r.mu.Unlock()
 	t := r.st.Trials[sha]
 	switch {
+	case t != nil && t.State == rollStops:
+		return fmt.Sprintf("the lab's lab-agent goes to no further Mac: %s", t.Why)
+	case !v.d.IsVolunteer():
+		return ""
 	case t == nil || t.State == trialOn:
 		return fmt.Sprintf("%s is a Volunteer's Mac, and the lab's lab-agent is still on trial on Lab-owned Macs: it reaches a Volunteer's Mac once it has run well there", v.d.Name)
-	case t.State == rollStops:
-		return fmt.Sprintf("the lab's lab-agent goes to no further Mac: %s", t.Why)
 	}
 	return ""
 }

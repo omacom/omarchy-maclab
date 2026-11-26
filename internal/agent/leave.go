@@ -97,7 +97,8 @@ func leaveCleanup(l leaveLayout) (leavePlan, error) {
 	remove(l.DropIns...)
 	remove(l.Config, l.Stage)
 	if l.WorkDir != "" {
-		remove(filepath.Join(l.WorkDir, "known-good.json"), filepath.Join(l.WorkDir, "known-good.json.prev"), filepath.Join(l.WorkDir, labBootDir))
+		remove(filepath.Join(l.WorkDir, "known-good.json"), filepath.Join(l.WorkDir, "known-good.json.prev"), filepath.Join(l.WorkDir, labBootDir),
+			filepath.Join(l.WorkDir, attemptFile), filepath.Join(l.WorkDir, outcomeFile), filepath.Join(l.WorkDir, lockFile), filepath.Join(l.WorkDir, filepath.Base(prevPath)))
 	}
 
 	if l.LimineConf != "" {

@@ -216,6 +216,7 @@ func (s *Server) updateAgent(ctx context.Context, v *dev, by string) (api.AgentU
 		v.endUpdating(mark) // nothing restarts
 		return res, 200, nil
 	}
+	s.rolloutSent(d, res.ToSHA256)
 	v.mu.Lock()
 	mark.switched = true
 	v.heardAgentLocked()
@@ -246,6 +247,12 @@ func (v *dev) notUpdatableLocked(signed bool) string {
 		return fmt.Sprintf("%s is not idle: the lab is removing leftover lab kernels from it. lab agent-update waits for no job and no Lease", d.Name)
 	case len(v.queue)+len(v.parked) > 0:
 		return fmt.Sprintf("%s is not idle: a job waits for it. lab agent-update waits for no job and no Lease", d.Name)
+	case v.perfClaim != "":
+		return fmt.Sprintf("%s is not idle: a Performance run claims it. lab agent-update waits for no job and no Lease", d.Name)
+	case v.resetting:
+		return fmt.Sprintf("%s is not idle: a Hard reset of it is under way. lab agent-update waits for no job and no Lease", d.Name)
+	case d.State == api.StateLeft || v.forgotten:
+		return fmt.Sprintf("%s is leaving the lab", d.Name)
 	case !v.aliveLocked():
 		return fmt.Sprintf("%s is offline, so its lab-agent cannot be updated now", d.Name)
 	case d.State != api.StateNew && d.State != api.StateReady:
@@ -260,7 +267,8 @@ func (v *dev) notUpdatableLocked(signed bool) string {
 	case v.agentStart == "":
 		return fmt.Sprintf("%s runs a lab-agent that sends no start number, so labd could not tell when a new one is back, nor keep it from restarting after labd let the Mac go: Join the Mac again to give it the lab's", d.Name)
 	}
-	return ""
+	// A Volunteer's Mac: on AC, not Paused, inside its window with time left.
+	return v.windowHoldLocked(rolloutWindowLeft)
 }
 
 // heardAgentLocked lets the Mac go once a lab-agent has checked in from a

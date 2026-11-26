@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -117,10 +118,11 @@ type Agent struct {
 	http *http.Client
 	log  *log.Logger
 
-	runID             string     // this run's api.Checkin.AgentStart
-	selfSHA           string     // the sha256 of the lab-agent this run is
-	ranWell           sync.Once  // this run told the guard it runs well
-	repMu             sync.Mutex // one report in flight at a time
+	runID             string       // this run's api.Checkin.AgentStart
+	selfSHA           string       // the sha256 of the lab-agent this run is
+	ranWell           sync.Once    // this run told the guard it runs well
+	unreachable       atomic.Int64 // check-ins that could not reach labd
+	repMu             sync.Mutex   // one report in flight at a time
 	mu                sync.Mutex
 	seen              map[string]bool
 	running           map[string]runningCmd
@@ -245,7 +247,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 		case <-a.clock().After(healthyAfter):
-			a.runsWell()
+			// Its loop runs and only the network fails it: a Mac out of
+			// reach says nothing against the agent.
+			if a.unreachable.Load() > 0 {
+				a.runsWell()
+			}
 		}
 	}()
 	go a.watchLeft(ctx)
@@ -295,6 +301,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		if err != nil && ctx.Err() == nil {
 			a.log.Printf("checkin: %v%s", err, certTimeHint(err, a.clock().Now()))
+			if ne := net.Error(nil); errors.As(err, &ne) {
+				a.unreachable.Add(1)
+			}
 			sleepCtx(ctx, a.clock(), 5*time.Second)
 		}
 		if err == nil {

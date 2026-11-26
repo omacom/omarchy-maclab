@@ -59,9 +59,9 @@ func (sl *softwareLab) reconcileUntil(what string, cond func() bool) {
 }
 
 func TestTheRolloutTriesTheLabsAgentOnALabOwnedMacThenPromotesItAfterTwoFamilies(t *testing.T) {
-	sl, handed := newRolloutLab(t, false, "0.10.0", "Apple MacBook Air (M1, 2020)")
+	sl, handed := newRolloutLab(t, false, "0.11.0", "Apple MacBook Air (M1, 2020)")
 	sl.baseline()
-	sl.waitAgent("0.10.0")
+	sl.waitAgent("0.11.0")
 
 	// The trial Mac of its family takes it by itself, and says it stays.
 	sl.reconcileUntil("the trial Mac takes the lab's lab-agent", func() bool {
@@ -132,9 +132,9 @@ func TestAVolunteersMacTakesTheLabsAgentOnlyOncePromotedAndInsideItsWindow(t *te
 // A Mac that returned to its previous lab-agent stops the rollout: Agents is
 // told once, and no further Mac takes it.
 func TestAMacReturningToItsPreviousAgentStopsTheRollout(t *testing.T) {
-	sl, _ := newRolloutLab(t, false, "0.10.0", "Apple MacBook Air (M1, 2020)")
+	sl, _ := newRolloutLab(t, false, "0.11.0", "Apple MacBook Air (M1, 2020)")
 	sl.baseline()
-	sl.waitAgent("0.10.0")
+	sl.waitAgent("0.11.0")
 	sha := sl.s.agentSHA256()
 	v := sl.s.dev(sl.name)
 	returned := func() {
@@ -145,6 +145,12 @@ func TestAMacReturningToItsPreviousAgentStopsTheRollout(t *testing.T) {
 		d := v.snapshot()
 		v.heartbeat(api.Checkin{BootID: d.BootID, Kernel: d.Kernel, Facts: &f})
 	}
+	// A Mac labd never had switch to it cannot stop it, whatever it says.
+	returned()
+	if st := sl.trial(); st.State != trialOn {
+		t.Fatalf("a return from a Mac labd sent nothing to stopped the rollout: %+v", st)
+	}
+	sl.s.rolloutSent(v.snapshot(), sha)
 	returned()
 	returned()
 	if st := sl.trial(); st.State != rollStops || !strings.Contains(st.Why, "m1") {
@@ -172,9 +178,9 @@ func TestAMacReturningToItsPreviousAgentStopsTheRollout(t *testing.T) {
 // A trial Mac whose new lab-agent keeps starting again in one boot stops the
 // rollout; a reboot, which starts it afresh, does not count.
 func TestATrialMacWhoseNewAgentKeepsRestartingStopsTheRollout(t *testing.T) {
-	sl, handed := newRolloutLab(t, false, "0.10.0", "Apple MacBook Air (M1, 2020)")
+	sl, handed := newRolloutLab(t, false, "0.11.0", "Apple MacBook Air (M1, 2020)")
 	sl.baseline()
-	sl.waitAgent("0.10.0")
+	sl.waitAgent("0.11.0")
 	sl.reconcileUntil("the trial Mac takes the lab's lab-agent", func() bool {
 		now, _ := os.ReadFile(sl.installed)
 		return bytes.Equal(now, handed)
@@ -198,5 +204,21 @@ func TestATrialMacWhoseNewAgentKeepsRestartingStopsTheRollout(t *testing.T) {
 	}
 	if st := sl.trial(); st.State != rollStops || !strings.Contains(st.Why, "in one boot") {
 		t.Fatalf("the rollout after restarts in one boot: %+v", st)
+	}
+}
+
+// A lab-agent too old to return to itself is updated by hand once: the
+// rollout leaves it alone, as nothing would bring the Mac back.
+func TestTheRolloutLeavesALabAgentThatCannotReturnToItself(t *testing.T) {
+	sl, _ := newRolloutLab(t, false, agentUpdateMinAgent, "Apple MacBook Air (M1, 2020)")
+	sl.baseline()
+	sl.waitAgent(agentUpdateMinAgent)
+	was, _ := os.ReadFile(sl.installed)
+	for range 5 {
+		sl.s.reconcileRollout()
+	}
+	time.Sleep(time.Second)
+	if now, _ := os.ReadFile(sl.installed); !bytes.Equal(now, was) || sl.restarts != 0 {
+		t.Fatal("the rollout updated a lab-agent with no way back")
 	}
 }

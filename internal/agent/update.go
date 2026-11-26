@@ -95,9 +95,9 @@ func update(ctx context.Context, cfg *Config, sys System) (api.AgentUpdate, erro
 	return res, nil
 }
 
-// stagedName is the lab-agent staged beside the one installed, until it is
-// switched in or thrown away.
-const stagedName = ".lab-agent-staged"
+// stagedPrefix names a lab-agent staged beside the one installed, until it
+// is switched in or thrown away: one file for each update.
+const stagedPrefix = ".lab-agent-staged-"
 
 // stage takes the lab's lab-agent and checks it, leaving it staged beside
 // the one installed. With res.Changed false nothing is staged.
@@ -110,10 +110,12 @@ func stage(ctx context.Context, cfg *Config, sys System) (staged string, res api
 	if _, _, cmdline := sys.Identity(); IsLabBoot(cmdline) {
 		return "", res, errors.New("this Mac is on a Lab boot for a job: update lab-agent once it is back on its own system. " + nothingChanged)
 	}
-	tmp := filepath.Join(filepath.Dir(self.Path), stagedName)
-	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(self.Path), stagedPrefix)
+	if err != nil {
 		return "", res, fmt.Errorf("%w. %s", err, nothingChanged)
 	}
+	tmp := f.Name()
+	f.Close()
 	defer func() {
 		if staged == "" {
 			os.Remove(tmp)
@@ -290,6 +292,18 @@ func (a *Agent) updateSelf(ctx context.Context, c api.Command) (any, *afterAck, 
 	}, run: func() {
 		if late := clock.Now().Sub(sent); within > 0 && late > within {
 			a.log.Printf("labd answered the update %s after its result went, past the %s it gave", late.Round(time.Millisecond), within)
+			notNow()
+			return
+		}
+		// A Volunteer may have Paused it, closed its window or unplugged it
+		// since: asked again at the switch.
+		if err := a.refuseOutsideWindow(c); err != nil {
+			a.log.Printf("%v", err)
+			notNow()
+			return
+		}
+		if a.volunteer() && a.sys.Health().OnBattery {
+			a.log.Printf("%s is on battery now", a.cfg.Name)
 			notNow()
 			return
 		}

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
@@ -22,6 +23,9 @@ const (
 	prevPath    = "/var/lib/maclab/lab-agent-prev"
 	attemptFile = "agent-update.json"  // in the work dir: the change on trial
 	outcomeFile = "agent-outcome.json" // in the work dir: how the last change ended
+	// lockFile, in the work dir, keeps a switch, the guard and the new
+	// lab-agent's word that it runs well from crossing.
+	lockFile = "agent-update.lock"
 	// guardStartsMax is how many starts the new lab-agent gets to run well.
 	guardStartsMax = 4
 	// guardWithin is how long after the switch the new lab-agent has to run well.
@@ -114,6 +118,20 @@ func installExecutable(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
+// withUpdateLock runs fn holding the work dir's lock on changes of lab-agent.
+func withUpdateLock(cfg *Config, fn func() error) error {
+	f, err := os.OpenFile(filepath.Join(cfg.workDir(), lockFile), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
 // activate switches the staged lab-agent in: the guard is set up first, the
 // running one is kept as the previous lab-agent, and the change is written
 // down for the guard. It restarts nothing.
@@ -122,6 +140,15 @@ func activate(cfg *Config, staged string, res api.AgentUpdate) error {
 	if err := self.InstallGuard(); err != nil {
 		return fmt.Errorf("the guard that returns the Mac to its lab-agent could not be set up: %w", err)
 	}
+	// The bytes put in place are the ones checked, whatever else touched
+	// the staged file since.
+	if got, err := fileSHA256(staged); err != nil || got != res.ToSHA256 {
+		return fmt.Errorf("the staged lab-agent is not the one checked (sha256 %s, want %s)", short(got), short(res.ToSHA256))
+	}
+	return withUpdateLock(cfg, func() error { return switchIn(cfg, self, staged, res) })
+}
+
+func switchIn(cfg *Config, self Self, staged string, res api.AgentUpdate) error {
 	from, err := fileSHA256(self.Path)
 	switch {
 	case os.IsNotExist(err):
@@ -148,15 +175,20 @@ func activate(cfg *Config, staged string, res api.AgentUpdate) error {
 // ranWell is the new lab-agent, running as sha, saying it runs well: the
 // change on trial, if it is this one, stayed.
 func ranWell(cfg *Config, sha string) bool {
-	var a agentAttempt
-	if sha == "" || !readJSONFile(cfg.attemptPath(), &a) || a.ToSHA256 != sha {
-		return false
-	}
-	o := api.AgentOutcome{To: a.To, ToSHA256: a.ToSHA256, LabRelease: a.LabRelease, Outcome: api.AgentStayed, At: cfg.clock().Now()}
-	if err := writeJSONFile(cfg.outcomePath(), o); err != nil {
-		return false
-	}
-	return os.Remove(cfg.attemptPath()) == nil
+	stayed := false
+	withUpdateLock(cfg, func() error {
+		var a agentAttempt
+		if sha == "" || !readJSONFile(cfg.attemptPath(), &a) || a.ToSHA256 != sha {
+			return nil
+		}
+		o := api.AgentOutcome{To: a.To, ToSHA256: a.ToSHA256, LabRelease: a.LabRelease, Outcome: api.AgentStayed, At: cfg.clock().Now()}
+		if err := writeJSONFile(cfg.outcomePath(), o); err != nil {
+			return err
+		}
+		stayed = os.Remove(cfg.attemptPath()) == nil
+		return nil
+	})
+	return stayed
 }
 
 // Guard is `lab-agent guard`, run by the previous lab-agent: before each
@@ -165,24 +197,43 @@ func ranWell(cfg *Config, sha string) bool {
 // guardWithin passed, without running well. It says what it did, "" for
 // nothing.
 func Guard(cfg *Config, start bool) (string, error) {
+	if HasLeft(cfg.workDir()) {
+		return "", nil // the Mac is leaving: nothing is started again
+	}
+	var done string
+	var restart bool
+	err := withUpdateLock(cfg, func() (err error) {
+		done, restart, err = guard(cfg, start)
+		return err
+	})
+	if err == nil && restart {
+		// Outside the lock: the restart runs the guard again, before the start.
+		if err := cfg.self().Restart(); err != nil {
+			return done, fmt.Errorf("%s, but it was not started: %w", done, err)
+		}
+	}
+	return done, err
+}
+
+func guard(cfg *Config, start bool) (string, bool, error) {
 	var a agentAttempt
 	if !readJSONFile(cfg.attemptPath(), &a) {
-		return "", nil
+		return "", false, nil
 	}
 	self := cfg.self()
 	cur, err := fileSHA256(self.Path)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if cur != a.ToSHA256 {
 		// Another lab-agent was put in place since: not this trial's to judge.
-		return "the lab-agent installed is not the one on trial: its trial ends", os.Remove(cfg.attemptPath())
+		return "the lab-agent installed is not the one on trial: its trial ends", false, os.Remove(cfg.attemptPath())
 	}
 	now := cfg.clock().Now()
 	if start {
 		a.Starts++
 		if err := writeJSONFile(cfg.attemptPath(), a); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
 	var why string
@@ -192,28 +243,23 @@ func Guard(cfg *Config, start bool) (string, error) {
 	case now.Sub(a.At) > guardWithin:
 		why = fmt.Sprintf("lab-agent %s had not run well %s after it was put in place", a.To, guardWithin)
 	default:
-		return "", nil
+		return "", false, nil
 	}
 	if _, err := os.Stat(self.Prev); err != nil {
-		return "", fmt.Errorf("%s, and there is no previous lab-agent to return to: %w", why, err)
+		return "", false, fmt.Errorf("%s, and there is no previous lab-agent to return to: %w", why, err)
 	}
 	if err := installExecutable(self.Prev, self.Path); err != nil {
-		return "", fmt.Errorf("%s, and returning to the previous one failed: %w", why, err)
+		return "", false, fmt.Errorf("%s, and returning to the previous one failed: %w", why, err)
 	}
 	o := api.AgentOutcome{To: a.To, ToSHA256: a.ToSHA256, LabRelease: a.LabRelease, Outcome: api.AgentReturned, At: now, Why: why}
 	if err := writeJSONFile(cfg.outcomePath(), o); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.Remove(cfg.attemptPath()); err != nil {
-		return "", err
+		return "", false, err
 	}
-	done := fmt.Sprintf("%s: returned to lab-agent %s", why, a.From)
-	if !start { // a start goes on with the one now in place
-		if err := self.Restart(); err != nil {
-			return done, fmt.Errorf("%s, but it was not started: %w", done, err)
-		}
-	}
-	return done, nil
+	// A start goes on with the one now in place; the timer restarts it.
+	return fmt.Sprintf("%s: returned to lab-agent %s", why, a.From), !start, nil
 }
 
 // installGuardUnits puts the guard in place on a real Mac: lab-agent.service
