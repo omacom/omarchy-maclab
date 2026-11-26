@@ -222,3 +222,16 @@ func TestTheRolloutLeavesALabAgentThatCannotReturnToItself(t *testing.T) {
 		t.Fatal("the rollout updated a lab-agent with no way back")
 	}
 }
+
+// A trial Mac that was sent the lab-agent but never switched (its answer
+// came too late) keeps its family, and tries again itself.
+func TestATrialMacThatNeverSwitchedTriesAgain(t *testing.T) {
+	sl, handed := newRolloutLab(t, false, "0.11.0", "Apple MacBook Air (M1, 2020)")
+	sl.baseline()
+	sl.waitAgent("0.11.0")
+	sl.s.rolloutSent(sl.s.dev(sl.name).snapshot(), sl.s.agentSHA256())
+	sl.reconcileUntil("the trial Mac that never switched tries again", func() bool {
+		now, _ := os.ReadFile(sl.installed)
+		return bytes.Equal(now, handed)
+	})
+}

@@ -243,6 +243,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.reportLoop(ctx)
 	go a.watchWindow(ctx)
 	a.selfSHA, _ = fileSHA256(a.cfg.self().Path)
+	started := a.clock().Now()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -303,6 +304,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.log.Printf("checkin: %v%s", err, certTimeHint(err, a.clock().Now()))
 			if ne := net.Error(nil); errors.As(err, &ne) {
 				a.unreachable.Add(1)
+				// One that times out after healthyAfter counts as well.
+				if a.clock().Now().Sub(started) >= healthyAfter {
+					a.runsWell()
+				}
 			}
 			sleepCtx(ctx, a.clock(), 5*time.Second)
 		}

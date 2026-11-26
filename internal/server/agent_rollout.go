@@ -329,20 +329,22 @@ func (s *Server) reconcileRollout() {
 	r.mu.Lock()
 	t := r.trialLocked(sha, s.labAgent(), agent.LabRelease, s.now())
 	state := t.State
-	tried := map[string]bool{} // families with a trial Mac, or one being updated
-	for _, m := range t.Ran {
+	// taken is each family's trial Mac: one running the lab-agent, being
+	// updated, or sent it. A family stays taken from the moment its trial
+	// Mac was sent the lab-agent, checked in or not; that Mac alone may try
+	// again when it never switched.
+	taken := map[string]string{}
+	for name, m := range t.Ran {
 		if m.Family != "" {
-			tried[m.Family] = true
+			taken[m.Family] = name
 		}
 	}
-	for _, fam := range r.busy {
-		tried[fam] = true
+	for name, fam := range r.busy {
+		taken[fam] = name
 	}
-	// A family stays taken from the moment its trial Mac was sent the
-	// lab-agent, whether or not that Mac has checked in with it since.
-	for _, sent := range r.st.Sent {
+	for name, sent := range r.st.Sent {
 		if sent.SHA256 == sha && sent.Family != "" {
-			tried[sent.Family] = true
+			taken[sent.Family] = name
 		}
 	}
 	r.mu.Unlock()
@@ -360,7 +362,7 @@ func (s *Server) reconcileRollout() {
 			continue
 		}
 		fam := family(d.Facts)
-		if state == trialOn && (d.IsVolunteer() || fam == "" || tried[fam]) {
+		if owner, ok := taken[fam]; state == trialOn && (d.IsVolunteer() || fam == "" || ok && owner != d.Name) {
 			continue
 		}
 		if why := s.rolloutNotNow(v); why != "" {
@@ -370,7 +372,7 @@ func (s *Server) reconcileRollout() {
 			continue
 		}
 		if state == trialOn {
-			tried[fam] = true
+			taken[fam] = d.Name
 		}
 		go func() {
 			defer r.done(d.Name)
