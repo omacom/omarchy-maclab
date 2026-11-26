@@ -35,15 +35,6 @@ var (
 
 func isBench(builtin string) bool { _, ok := bench.Builtins[builtin]; return ok }
 
-// benchTimeout covers the first run's fetch of the list's pinned files from
-// labd as well as the list itself (at most 45 minutes for the Full list).
-func benchTimeout(builtin string) time.Duration {
-	if bench.Builtins[builtin] == sets.Full {
-		return 75 * time.Minute
-	}
-	return 30 * time.Minute
-}
-
 func (l *Linux) runBench(ctx context.Context, job string, t api.TestSpec, fetch Fetcher, quiet Quieter, outDir string) api.TestResult {
 	res := api.TestResult{Name: t.Name, ExitCode: -1}
 	fail := func(err error) api.TestResult { res.Error = err.Error(); return res }

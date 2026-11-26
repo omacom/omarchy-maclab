@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -38,8 +39,8 @@ func testTimeout(t api.TestSpec) time.Duration {
 	if t.TimeoutSec > 0 {
 		return time.Duration(t.TimeoutSec) * time.Second
 	}
-	if isBench(t.Builtin) {
-		return benchTimeout(t.Builtin)
+	if d, ok := bench.Timeout(t.Builtin); ok {
+		return d
 	}
 	return 5 * time.Minute
 }
