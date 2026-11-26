@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
 )
@@ -18,6 +19,19 @@ var Runner []byte
 
 // Builtins are the bench builtins and the list of the set each runs.
 var Builtins = map[string]string{"bench": sets.Quick, "bench-extended": sets.Full}
+
+// Timeout is how long a bench builtin with no timeout of its own may run:
+// the first run's fetch of the list's pinned files from labd, then the list
+// (at most 45 minutes for the Full list). ok is false for any other test.
+func Timeout(builtin string) (d time.Duration, ok bool) {
+	switch Builtins[builtin] {
+	case sets.Quick:
+		return 30 * time.Minute, true
+	case sets.Full:
+		return 75 * time.Minute, true
+	}
+	return 0, false
+}
 
 // Set is the Benchmark set the builtins run: the current set, or the newest
 // while no set is current, whose metrics with a placeholder file read

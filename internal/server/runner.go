@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent"
+	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench"
 	"github.com/omacom/omarchy-maclab/internal/api"
 	"github.com/omacom/omarchy-maclab/internal/detect"
 	"github.com/omacom/omarchy-maclab/internal/installed"
@@ -1103,6 +1104,9 @@ func (r *jobRun) testTimeout(t api.TestSpec) time.Duration {
 	timeout := time.Duration(t.TimeoutSec)*time.Second + r.s.cfg.TestGrace
 	if t.TimeoutSec == 0 {
 		timeout = 7 * time.Minute
+		if d, ok := bench.Timeout(t.Builtin); ok {
+			timeout = d + r.s.cfg.TestGrace
+		}
 	}
 	return timeout + r.s.guiWait(t)
 }
