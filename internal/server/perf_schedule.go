@@ -232,6 +232,8 @@ func (v *dev) perfIdleLocked(length time.Duration) string {
 		return "a Performance run claims it"
 	case v.termsWait || v.updating != nil || v.resetting || v.proving:
 		return "it is busy"
+	case v.s.rolloutOverdueFor(*d):
+		return "it waits for the lab's lab-agent"
 	case d.Health.OnBattery:
 		return "it is on battery"
 	case !d.Facts.PreflightOK:

@@ -516,8 +516,12 @@ func TestAnAttendedMacsRunIsDroppedWithNobodyInADay(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if pr := l.perfRunOf(run.PerfRun); pr.State != perf.Cancelled {
-		t.Errorf("its attempt: %+v", pr)
+	// The attempt is cancelled just after the drop.
+	for pr := l.perfRunOf(run.PerfRun); pr.State != perf.Cancelled; pr = l.perfRunOf(run.PerfRun) {
+		if time.Now().After(deadline) {
+			t.Fatalf("its attempt: %+v", pr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if resp, _ := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/macos/at-mac", nil); resp.StatusCode != 409 {
 		t.Errorf("at the Mac after the drop: %d", resp.StatusCode)

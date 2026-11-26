@@ -187,6 +187,8 @@ type labConfig struct {
 	prefix string
 	// agent adjusts the simulated Mac's lab-agent before it starts.
 	agent func(*agent.Config)
+	// model is the simulated Mac's device-tree model, which says its chip.
+	model string
 	// silent is for a test that silences the Mac on purpose: labd writes it
 	// off after quietGrace on the lab's clock, not after the wall time a
 	// lab on the sped-up clock otherwise gives a silent Mac.
@@ -213,6 +215,7 @@ func newLabWith(t *testing.T, c labConfig) *lab {
 	l := &lab{t: t, cancel: cancel, name: name, ctx: ctx, logs: &logBuf{}}
 	sim := agent.NewSim(t.TempDir())
 	sim.RebootDelay = 300 * time.Millisecond
+	sim.Model = c.model
 	if sc, ok := clock.(*agent.ScaledClock); ok {
 		sim.Clock = sc
 	}

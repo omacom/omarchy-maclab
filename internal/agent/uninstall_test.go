@@ -38,6 +38,8 @@ var labMacFiles = map[string]string{
 	labBootDeadlineUnitPath:       labBootDeadlineUnit(),
 	labBootSessionUnitPath:        labBootSessionUnit(),
 	labBootLockUnitPath:           labBootLockUnit(),
+	guardTimerPath:                guardTimer,
+	guardUnitPath:                 guardUnit,
 	sysctlPath:                    "kernel.panic = 10\n",
 	watchdogCfg:                   "[Manager]\nRuntimeWatchdogSec=30s\n",
 	journaldCfg:                   "[Journal]\nStorage=persistent\n",
@@ -151,7 +153,7 @@ func TestUninstallLimine(t *testing.T) {
 	m.kept(t, "/usr/lib/modules/7.1-good", "/usr/lib/modules/7.0-running", "/usr/lib/modules/6.9-arch", "/etc/sysctl.d/10-other.conf")
 	want := []string{
 		"systemctl disable --now lab-agent.service",
-		"systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service",
+		"systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service lab-agent-guard.timer lab-agent-guard.service",
 		"systemctl daemon-reload",
 		"systemctl daemon-reexec",
 		"systemctl restart systemd-journald",
@@ -218,7 +220,7 @@ func TestUninstallDryRunListsEveryUnit(t *testing.T) {
 	out := strings.Join(m.out, "\n")
 	for _, want := range []string{
 		"would run systemctl disable --now lab-agent.service",
-		"would run systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service",
+		"would run systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service lab-agent-guard.timer lab-agent-guard.service",
 	} {
 		if !slices.Contains(m.out, want) {
 			t.Errorf("the dry run doesn't say %q:\n%s", want, out)
@@ -257,7 +259,7 @@ func TestUninstallLeftoverAndMissingUnits(t *testing.T) {
 	if err := m.u.uninstall(); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(m.calls, "systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service") ||
+	if !slices.Contains(m.calls, "systemctl disable --now maclab-lab-boot-deadlines.service maclab-lab-boot-session.service maclab-lab-boot-lock.service lab-agent-guard.timer lab-agent-guard.service") ||
 		slices.Contains(m.calls, "systemctl disable --now lab-agent.service") || !slices.Contains(m.calls, "systemctl daemon-reload") {
 		t.Errorf("leftover units: ran\n%s", strings.Join(m.calls, "\n"))
 	}

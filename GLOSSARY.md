@@ -220,7 +220,11 @@ _Avoid_: Candidate set (the name an Omarchy image carries), beta, pre-release
 
 **Deploy**:
 Putting one Lab release on the lab server, started by the owner. The lab's services restart; the server does not.
-_Avoid_: Maintenance run (which restarts the server and may include a Deploy), update, rollout
+_Avoid_: Maintenance run (which restarts the server and may include a Deploy), update, Agent rollout (which puts lab-agent on the Macs)
+
+**Agent rollout**:
+The lab putting a Deploy's lab-agent on every enrolled Mac by itself: first on one Lab-owned Mac of each chip family, then, once it has run well there, on every Mac when it is idle. A Mac whose new lab-agent does not run well returns to its previous one by itself.
+_Avoid_: Push, auto-update, Deploy (which puts a Lab release on the lab server)
 
 **Restore drill**:
 A scheduled rehearsal that restores the lab's backups somewhere harmless and checks them against the live lab.

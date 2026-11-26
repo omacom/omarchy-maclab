@@ -575,6 +575,7 @@ var noticeWordings = []*regexp.Regexp{
 	regexp.MustCompile(`^Job [a-z0-9-]+ is done \([a-z_-]+\)\. The lab is finished with this Mac for now: you can reboot it or use it\. Open My Macs\.$`),
 	regexp.MustCompile(`^The lab's terms changed\. This Mac is waiting for you: open My Macs\.$`),
 	regexp.MustCompile(`^An update is waiting for this Mac\. Open My Macs\.$`),
+	regexp.MustCompile(`^The lab updated its own software on this Mac\. Open My Macs\.$`),
 	regexp.MustCompile(`^The lab would like this Mac's macOS result\. It waits a day for someone at the Mac: if that is you, open My Macs and say you are at it\.$`),
 }
 
@@ -613,9 +614,9 @@ func checkNotice(t *testing.T, p ntfyPost, mac string, never ...string) {
 	}
 }
 
-func TestOnlyTheSixWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T) {
-	if len(noticeKinds) != 6 {
-		t.Fatalf("%d kinds of Notice, want the six", len(noticeKinds))
+func TestOnlyTheSevenWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T) {
+	if len(noticeKinds) != 7 {
+		t.Fatalf("%d kinds of Notice, want the seven", len(noticeKinds))
 	}
 	pub, _ := ParsePublicURL("https://lab.example.org")
 	s := &Server{cfg: Config{PublicURL: pub}}
@@ -636,9 +637,9 @@ func TestOnlyTheSixWordingsExistAndNoneAsksForAPasswordOrACommand(t *testing.T) 
 		}
 	}
 	// two restarts, one ending, a job starting and done, terms, an update,
-	// a macOS result due
-	if len(seen) != 8 {
-		t.Errorf("%d bodies, want 8: %v", len(seen), seen)
+	// a macOS result due, a lab-agent the lab changed
+	if len(seen) != 9 {
+		t.Errorf("%d bodies, want 9: %v", len(seen), seen)
 	}
 }
 

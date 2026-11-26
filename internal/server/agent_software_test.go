@@ -140,10 +140,10 @@ func (sl *softwareLab) needsNewerAgent() (int, string) {
 	return resp.StatusCode, body
 }
 
-// An update of lab-agent is never pushed to a Volunteer's Mac. My Macs and
-// one Notice tell its Volunteer, who runs one line at the Mac; until then
-// the lab refuses what needs the newer agent.
-func TestAVolunteersMacGetsANewAgentOnlyWhenItsVolunteerRunsTheLine(t *testing.T) {
+// A Volunteer's Mac whose lab-agent is too old to take the Agent rollout
+// needs its Volunteer once: My Macs and one Notice tell them, and they run
+// one line at the Mac; until then the lab refuses what needs the newer agent.
+func TestAVolunteersMacTooOldForTheRolloutGetsANewAgentWhenItsVolunteerRunsTheLine(t *testing.T) {
 	k := sshsigtest.NewKey(t)
 	handed := signedAgent(t, k, agent.Version)
 	sl := newSoftwareLab(t, k, true, "0.8.0", func(c *Config) { c.AgentBinary = handed })
@@ -175,10 +175,10 @@ func TestAVolunteersMacGetsANewAgentOnlyWhenItsVolunteerRunsTheLine(t *testing.T
 		}
 	}
 
-	// Nothing pushes it: a Maintainer's lab agent-update is refused by labd,
-	// and no command reaches the Mac.
+	// The lab cannot do it for them: a Maintainer's lab agent-update is
+	// refused by labd, and no command reaches the Mac.
 	resp, body := sl.post("/api/devices/"+sl.name+"/agent-update", nil)
-	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "never pushed to a Volunteer's Mac") || !strings.Contains(body, "sudo lab-agent update") {
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "takes the lab's from "+rolloutMinAgent) || !strings.Contains(body, "sudo lab-agent update") {
 		t.Errorf("lab agent-update on a Volunteer's Mac: %d %s", resp.StatusCode, body)
 	}
 	if now, _ := os.ReadFile(sl.installed); !bytes.Equal(now, was) || sl.restarts != 0 {
@@ -297,7 +297,10 @@ func TestAMaintainerUpdatesALabOwnedMacsAgentWhileItIsIdle(t *testing.T) {
 	sl.waitAgent(agentUpdateMinAgent)
 	resp, body := sl.post(path, nil)
 	var res api.AgentUpdate
-	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &res) != nil || res != (api.AgentUpdate{From: agentUpdateMinAgent, To: "0.11.0", LabRelease: "v0.2.0-rc.2", Changed: true}) {
+	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &res) != nil || res.ToSHA256 != sl.s.agentSHA256() {
+		t.Fatalf("agent-update: %d %s", resp.StatusCode, body)
+	}
+	if res.ToSHA256 = ""; res != (api.AgentUpdate{From: agentUpdateMinAgent, To: "0.11.0", LabRelease: "v0.2.0-rc.2", Changed: true}) {
 		t.Fatalf("agent-update: %d %s", resp.StatusCode, body)
 	}
 	if d := sl.waitAgent("0.11.0"); d.LabAgent != "" {
@@ -1155,10 +1158,11 @@ func TestAgentUpdateWaitsForAStartNumberHeardSinceLabdStarted(t *testing.T) {
 }
 
 // labd's answer to the update's result can come late (the agent waits up to
-// two minutes for it). The new lab-agent starts only within the time labd
-// gave with the update, counted from when the agent sent its result: one
-// started later could cut what labd has given the Mac since it let it go.
-func TestAnUpdateWhoseAnswerComesPastTheHoldRestartsNothing(t *testing.T) {
+// two minutes for it). The new lab-agent is put in place only within the
+// time labd gave with the update, counted from when the agent sent its
+// result: one switched later could cut what labd has given the Mac since.
+// It is thrown away, and the Mac keeps the lab-agent it has.
+func TestAnUpdateWhoseAnswerComesPastTheHoldSwitchesNothing(t *testing.T) {
 	k := sshsigtest.NewKey(t)
 	handed := signedAgent(t, k, "0.11.0")
 	slow := make(chan struct{})
@@ -1196,7 +1200,8 @@ func TestAnUpdateWhoseAnswerComesPastTheHoldRestartsNothing(t *testing.T) {
 	if resp.StatusCode != 200 || json.Unmarshal([]byte(body), &res) != nil || !res.Changed {
 		t.Fatalf("agent-update: %d %s", resp.StatusCode, body)
 	}
-	for end := time.Now().Add(15 * time.Second); !strings.Contains(sl.logs.String(), "starts when lab-agent next restarts"); time.Sleep(50 * time.Millisecond) {
+	was, _ := os.ReadFile(sl.installed)
+	for end := time.Now().Add(15 * time.Second); !strings.Contains(sl.logs.String(), "was not put in place"); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(end) || sl.restarts != 0 {
 			t.Fatalf("an update whose answer came past labd's hold: restarts %d\n%s", sl.restarts, sl.logs.String())
 		}
@@ -1204,6 +1209,9 @@ func TestAnUpdateWhoseAnswerComesPastTheHoldRestartsNothing(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if sl.restarts != 0 {
 		t.Fatalf("an update whose answer came past labd's hold restarted lab-agent %d times", sl.restarts)
+	}
+	if now, _ := os.ReadFile(sl.installed); !bytes.Equal(now, was) {
+		t.Fatal("an update whose answer came past labd's hold put the new lab-agent in place")
 	}
 }
 

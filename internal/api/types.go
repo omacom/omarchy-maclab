@@ -211,6 +211,8 @@ type Device struct {
 	// UpdateNoticed is the number of the lab's lab-agent the Mac's Volunteer
 	// was last sent a Notice about. labd keeps it and shows it to nobody.
 	UpdateNoticed string `json:"update_noticed,omitempty"`
+	// AgentNoticed is the last change of lab-agent its Volunteer was told of.
+	AgentNoticed time.Time `json:"agent_noticed,omitzero"`
 	// TermsNoticed is the sha256 of the terms the Mac's Volunteer was last
 	// sent a Notice about. labd keeps it and shows it to nobody.
 	TermsNoticed string `json:"terms_noticed,omitempty"`
@@ -319,12 +321,16 @@ type Facts struct {
 	PanicTimeout  int      `json:"panic_timeout"`
 	GUIUser       string   `json:"gui_user,omitempty"`
 	AgentVersion  string   `json:"agent_version"`
-	LabRelease    string   `json:"lab_release,omitempty"` // the tag of the Lab release the agent came from
-	MesaStaged    bool     `json:"mesa_staged,omitempty"`
-	MesaOfficial  bool     `json:"mesa_official,omitempty"`
-	PreflightOK   bool     `json:"preflight_ok"`
-	Problems      []string `json:"problems,omitempty"` // each one holds jobs back
-	Warnings      []string `json:"warnings,omitempty"` // costs evidence, not the Mac: jobs still run
+	// AgentSHA256 is the sha256 of the lab-agent installed; AgentOutcome is
+	// how its last change ended.
+	AgentSHA256  string        `json:"agent_sha256,omitempty"`
+	AgentOutcome *AgentOutcome `json:"agent_outcome,omitempty"`
+	LabRelease   string        `json:"lab_release,omitempty"` // the tag of the Lab release the agent came from
+	MesaStaged   bool          `json:"mesa_staged,omitempty"`
+	MesaOfficial bool          `json:"mesa_official,omitempty"`
+	PreflightOK  bool          `json:"preflight_ok"`
+	Problems     []string      `json:"problems,omitempty"` // each one holds jobs back
+	Warnings     []string      `json:"warnings,omitempty"` // costs evidence, not the Mac: jobs still run
 	// Stack is the installed version (pkgver-pkgrel) of each package of the
 	// Omarchy Mac stack (StackPackage), as pacman -Q lists it: what lab set
 	// capture records.
@@ -548,7 +554,26 @@ type AgentUpdate struct {
 	LabRelease string `json:"lab_release,omitempty"`
 	// Changed is false when the lab's lab-agent was the one installed.
 	Changed bool `json:"changed"`
+	// ToSHA256 is the new lab-agent's sha256: the bytes the Agent rollout
+	// tracks, as the number may stay the same.
+	ToSHA256 string `json:"to_sha256,omitempty"`
 }
+
+// AgentOutcome is how the Mac's last change of lab-agent ended: the new
+// one stayed, or the Mac returned to its previous one.
+type AgentOutcome struct {
+	To         string    `json:"to"`
+	ToSHA256   string    `json:"to_sha256"`
+	LabRelease string    `json:"lab_release,omitempty"`
+	Outcome    string    `json:"outcome"` // AgentStayed or AgentReturned
+	At         time.Time `json:"at"`
+	Why        string    `json:"why,omitempty"` // why it returned
+}
+
+const (
+	AgentStayed   = "stayed"
+	AgentReturned = "returned"
+)
 
 // InstallTimeout is how long labd gives a Mac to install a Release: fetching
 // its packages and running the installer's hooks.

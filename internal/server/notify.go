@@ -62,14 +62,16 @@ const (
 	noticeTerms                     // the lab's terms changed
 	noticeUpdate                    // an update is waiting
 	noticeMacOS                     // an Attended Mac's macOS result is due
+	noticeAgent                     // the lab changed the Mac's lab-agent
 )
 
 // noticeKinds are all of them, for the test that holds every wording to the
 // rules.
-var noticeKinds = []noticeKind{noticeRestart, noticeEnded, noticeJob, noticeTerms, noticeUpdate, noticeMacOS}
+var noticeKinds = []noticeKind{noticeRestart, noticeEnded, noticeJob, noticeTerms, noticeUpdate, noticeMacOS, noticeAgent}
 
 const (
 	updateNotice = "An update is waiting for this Mac. Open My Macs."
+	agentNotice  = "The lab updated its own software on this Mac. Open My Macs."
 	termsNotice  = "The lab's terms changed. This Mac is waiting for you: open My Macs."
 	endedNotice  = "This Mac's enrollment in Omarchy Mac Lab was ended. Open My Macs."
 	macOSNotice  = "The lab would like this Mac's macOS result. It waits a day for someone at the Mac: if that is you, open My Macs and say you are at it."
@@ -113,6 +115,8 @@ func noticeText(d api.Device, k noticeKind, job jobWording) string {
 		said = updateNotice
 	case noticeMacOS:
 		said = macOSNotice
+	case noticeAgent:
+		said = agentNotice
 	}
 	return d.Name + ": " + said
 }

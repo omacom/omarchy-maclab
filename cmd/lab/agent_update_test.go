@@ -10,10 +10,10 @@ import (
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
-// lab agent-update <mac> has a Lab-owned Mac take the lab's lab-agent; what
-// labd refuses it prints as labd said it.
+// lab agent-update <mac> has a Mac take the lab's lab-agent; what labd
+// refuses it prints as labd said it.
 func TestAgentUpdateSaysWhatChangedAndPrintsARefusalAsItIs(t *testing.T) {
-	const volunteers = "vol-air is a Volunteer's Mac, and lab-agent is never pushed to a Volunteer's Mac: its Volunteer runs `sudo lab-agent update` at the Mac, and My Macs shows them the line"
+	const volunteers = "vol-air is a Volunteer's Mac, and the lab's lab-agent is still on trial on Lab-owned Macs: it reaches a Volunteer's Mac once it has run well there"
 	var asked []string
 	c := labAt(t, func(w http.ResponseWriter, r *http.Request) {
 		asked = append(asked, r.Method+" "+r.URL.RequestURI())

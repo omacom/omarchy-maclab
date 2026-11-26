@@ -394,6 +394,15 @@ func (u *uninstaller) uninstall() error {
 		func() error { return u.remove(u.path(labBootAutologinLink), " (the Lab-boot autologin link)") },
 		func() error { return u.remove(u.path(filepath.Dir(ConfigPath)), " (the device secret)") },
 		func() error { return u.remove(u.path(binPath+".new"), "") },
+		func() error {
+			staged, _ := filepath.Glob(u.path(filepath.Join(filepath.Dir(binPath), stagedPrefix+"*")))
+			for _, p := range staged {
+				if err := u.remove(p, ""); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 		func() error { return u.remove(u.path(binPath), "") },
 	} {
 		if err := step(); err != nil {

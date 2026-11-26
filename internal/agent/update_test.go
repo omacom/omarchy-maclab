@@ -131,8 +131,16 @@ func TestUpdateTakesTheAgentFromTheLabAndChecksItAgainstTheKeyTheRunningAgentPin
 	if got := l.requests(); len(got) != 2 || got[0] != "GET /api/agent/lab-agent" || got[1] != "GET /api/agent/lab-agent.sig" {
 		t.Errorf("update asked the lab for %v, want the agent and its signature", got)
 	}
-	if ents, _ := os.ReadDir(filepath.Dir(m.installed)); len(ents) != 1 {
+	// The one it replaced is kept for the guard, and the change is on trial.
+	if got, _ := os.ReadFile(m.installed + "-prev"); !bytes.Equal(got, m.was) {
+		t.Error("the replaced lab-agent was not kept as the previous one")
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(m.installed)); len(ents) != 2 {
 		t.Errorf("the update left files beside the installed lab-agent: %v", ents)
+	}
+	var a agentAttempt
+	if !readJSONFile(m.cfg.attemptPath(), &a) || a.From != "0.9.0" || a.To != "0.10.0" || a.ToSHA256 == "" || a.FromSHA256 == a.ToSHA256 {
+		t.Errorf("the change on trial: %+v", a)
 	}
 }
 
@@ -213,10 +221,9 @@ func TestUpdateIsRefusedByAnAgentThatPinsNoKeyAndOnALabBoot(t *testing.T) {
 	m.unchanged(t, "a Lab boot")
 }
 
-// The lab's own order to update (lab agent-update) is a Lab-owned Mac's
-// alone: a Volunteer's Mac refuses it whatever labd thought, downloads
-// nothing and writes the refusal in its Audit log.
-func TestAnAgentIsNeverPushedToAVolunteersMac(t *testing.T) {
+// The lab's order to update reaches a Volunteer's Mac as any other: inside
+// its Availability window, and refused outside it with nothing downloaded.
+func TestAVolunteersMacTakesTheLabsAgentInsideItsWindowOnly(t *testing.T) {
 	k := sshsigtest.NewKey(t)
 	next := agentFile("0.10.0", "v0.2.0-rc.2")
 	l := newUpdateLab(t, next, k.Sign(ReleaseNamespace, next))
@@ -225,16 +232,22 @@ func TestAnAgentIsNeverPushedToAVolunteersMac(t *testing.T) {
 	a := New(m.cfg, m.sim, log.New(io.Discard, "", 0))
 
 	_, after, err := a.exec(context.Background(), api.Command{ID: "c1", Kind: api.CmdAgentUpdate, Maintainer: "ravi"})
-	if err == nil || after != nil || !strings.Contains(err.Error(), "never pushed to a Volunteer's Mac") || !strings.Contains(err.Error(), "sudo lab-agent update") {
-		t.Fatalf("a pushed update on a Volunteer's Mac: %v", err)
+	if err == nil || after != nil || !strings.Contains(err.Error(), "Availability window") {
+		t.Fatalf("an update outside the window: %v", err)
 	}
-	m.unchanged(t, "a pushed update")
+	m.unchanged(t, "an update outside the window")
 	if got := l.requests(); len(got) != 0 {
 		t.Errorf("the Volunteer's Mac asked the lab for %v", got)
 	}
-	es, err := readAudit(m.cfg.workDir(), 0, 0)
-	if err != nil || len(es) != 1 || es[0].Maintainer != "ravi" || es[0].Action != "update lab-agent" || !strings.Contains(es[0].Refused, "never pushed") {
-		t.Errorf("the Audit log: %+v, %v", es, err)
+
+	openWindow(t, m.cfg)
+	out, after, err := a.exec(context.Background(), api.Command{ID: "c2", Kind: api.CmdAgentUpdate})
+	if err != nil || after == nil {
+		t.Fatalf("an update inside the window: %v %v", out, err)
+	}
+	after.run()
+	if got, _ := os.ReadFile(m.installed); !bytes.Equal(got, next) || m.restarts != 1 {
+		t.Errorf("inside the window the lab's lab-agent is not in place and started (restarts %d)", m.restarts)
 	}
 }
 
@@ -252,19 +265,29 @@ func TestALabOwnedMacUpdatesWhenTheLabSaysSoAndRestartsOnceTheLabHeard(t *testin
 	}
 	b, _ := json.Marshal(out)
 	var res api.AgentUpdate
-	if json.Unmarshal(b, &res) != nil || res != (api.AgentUpdate{From: "0.9.0", To: "0.10.0", LabRelease: "v0.2.0-rc.2", Changed: true}) {
+	if json.Unmarshal(b, &res) != nil || res != (api.AgentUpdate{From: "0.9.0", To: "0.10.0", LabRelease: "v0.2.0-rc.2", Changed: true, ToSHA256: sha256Hex(next)}) {
 		t.Errorf("the result: %s", b)
 	}
-	if got, _ := os.ReadFile(m.installed); !bytes.Equal(got, next) {
-		t.Error("the installed lab-agent is not the one the lab handed out")
+	// Staged, not yet in place: a result labd never heard switches nothing.
+	if got, _ := os.ReadFile(m.installed); !bytes.Equal(got, m.was) {
+		t.Error("the new lab-agent was put in place before the lab heard")
 	}
 	if m.restarts != 0 || after == nil {
 		t.Fatalf("restarts before the lab heard: %d (after: %v)", m.restarts, after)
 	}
 	after.run()
-	if m.restarts != 1 {
-		t.Errorf("restarts once the lab heard: %d", m.restarts)
+	if got, _ := os.ReadFile(m.installed); !bytes.Equal(got, next) || m.restarts != 1 {
+		t.Errorf("once the lab heard, the lab's lab-agent is not in place and started (restarts %d)", m.restarts)
 	}
+
+	// labd gave up waiting: the staged lab-agent is thrown away.
+	m = newUpdatingMac(t, l.URL, k.Public)
+	a = New(m.cfg, m.sim, log.New(io.Discard, "", 0))
+	if _, after, err = a.exec(context.Background(), api.Command{ID: "c5", Kind: api.CmdAgentUpdate}); err != nil || after == nil {
+		t.Fatal(err)
+	}
+	after.dropped()
+	m.unchanged(t, "an update labd gave up on")
 
 	// With a job's command running, the Mac is not idle.
 	m = newUpdatingMac(t, l.URL, k.Public)

@@ -65,6 +65,8 @@ const usage = `lab-agent: the Mac side of Omarchy Mac Lab
   lab-agent lab-boot-lock         lock that session at once
   lab-agent lab-boot-deadlines    reboot a Lab boot that misses its deadline (started early in boot by
                                   maclab-lab-boot-deadlines.service)
+  lab-agent guard [--start]       return to the previous lab-agent when a new one does not run well (run by
+                                  systemd from the previous lab-agent: lab-agent.service and lab-agent-guard.timer)
   lab-agent sim --server .. --token ..   a simulated Mac, to try the lab without hardware
   lab-agent version               its own number, the Lab release it came from and the release key it trusts
 `
@@ -216,6 +218,15 @@ func main() {
 		cfg.Self = &agent.Self{Path: filepath.Join(dir, "lab-agent"), Restart: func() error { return nil }}
 		log.Printf("simulated Mac enrolled as %s", cfg.Name)
 		err = agent.New(cfg, sim, nil).Run(ctx)
+	case "guard":
+		// Run by systemd from the previous lab-agent, never by hand; it needs
+		// no agent.json, which a broken new lab-agent may have left unread.
+		start := fs.Bool("start", false, "run before a start of lab-agent.service")
+		fs.Parse(os.Args[2:])
+		var did string
+		if did, err = agent.Guard(&agent.Config{}, *start); did != "" {
+			log.Printf("guard: %s", did)
+		}
 	case "version":
 		fmt.Println(agent.Version)
 		fmt.Println("Lab release", agent.LabRelease)

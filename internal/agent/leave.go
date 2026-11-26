@@ -56,8 +56,8 @@ const (
 // enables, by name and by unit file, lab-agent.service first. Leaving and
 // uninstall both take all of them out.
 var (
-	labUnitNames = []string{"lab-agent.service", labBootDeadlineUnitName, labBootSessionUnitName, labBootLockUnitName}
-	labUnitPaths = []string{unitPath, labBootDeadlineUnitPath, labBootSessionUnitPath, labBootLockUnitPath}
+	labUnitNames = []string{"lab-agent.service", labBootDeadlineUnitName, labBootSessionUnitName, labBootLockUnitName, guardTimerName, guardUnitName}
+	labUnitPaths = []string{unitPath, labBootDeadlineUnitPath, labBootSessionUnitPath, labBootLockUnitPath, guardTimerPath, guardUnitPath}
 )
 
 // defaultLeaveLayout is the layout setup writes on a real Mac.
@@ -97,7 +97,8 @@ func leaveCleanup(l leaveLayout) (leavePlan, error) {
 	remove(l.DropIns...)
 	remove(l.Config, l.Stage)
 	if l.WorkDir != "" {
-		remove(filepath.Join(l.WorkDir, "known-good.json"), filepath.Join(l.WorkDir, "known-good.json.prev"), filepath.Join(l.WorkDir, labBootDir))
+		remove(filepath.Join(l.WorkDir, "known-good.json"), filepath.Join(l.WorkDir, "known-good.json.prev"), filepath.Join(l.WorkDir, labBootDir),
+			filepath.Join(l.WorkDir, attemptFile), filepath.Join(l.WorkDir, outcomeFile), filepath.Join(l.WorkDir, lockFile), filepath.Join(l.WorkDir, filepath.Base(prevPath)))
 	}
 
 	if l.LimineConf != "" {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,7 +32,7 @@ import (
 	"github.com/omacom/omarchy-maclab/internal/labhttp"
 )
 
-const Version = "0.10.0"
+const Version = "0.11.0"
 
 type Config struct {
 	Server   string `json:"server"`
@@ -117,8 +118,11 @@ type Agent struct {
 	http *http.Client
 	log  *log.Logger
 
-	runID             string     // this run's api.Checkin.AgentStart
-	repMu             sync.Mutex // one report in flight at a time
+	runID             string       // this run's api.Checkin.AgentStart
+	selfSHA           string       // the sha256 of the lab-agent this run is
+	ranWell           sync.Once    // this run told the guard it runs well
+	unreachable       atomic.Int64 // check-ins that could not reach labd
+	repMu             sync.Mutex   // one report in flight at a time
 	mu                sync.Mutex
 	seen              map[string]bool
 	running           map[string]runningCmd
@@ -238,6 +242,19 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.sys.WatchSleep(ctx, a.sleeping)
 	go a.reportLoop(ctx)
 	go a.watchWindow(ctx)
+	a.selfSHA, _ = fileSHA256(a.cfg.self().Path)
+	started := a.clock().Now()
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-a.clock().After(healthyAfter):
+			// Its loop runs and only the network fails it: a Mac out of
+			// reach says nothing against the agent.
+			if a.unreachable.Load() > 0 {
+				a.runsWell()
+			}
+		}
+	}()
 	go a.watchLeft(ctx)
 	var pollMu sync.Mutex
 	var pollCancel context.CancelFunc
@@ -285,13 +302,38 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		if err != nil && ctx.Err() == nil {
 			a.log.Printf("checkin: %v%s", err, certTimeHint(err, a.clock().Now()))
+			if ne := net.Error(nil); errors.As(err, &ne) {
+				a.unreachable.Add(1)
+				// One that times out after healthyAfter counts as well.
+				if a.clock().Now().Sub(started) >= healthyAfter {
+					a.runsWell()
+				}
+			}
 			sleepCtx(ctx, a.clock(), 5*time.Second)
+		}
+		if err == nil {
+			a.runsWell()
 		}
 	}
 	if a.hasLeft.Load() {
 		return nil
 	}
 	return ctx.Err()
+}
+
+// runsWell tells the guard, once, that this lab-agent runs well: labd
+// answered it, or it has run healthyAfter. A change of lab-agent on trial
+// that is this one stays, and the next check-in says so.
+func (a *Agent) runsWell() {
+	a.ranWell.Do(func() {
+		if ranWell(a.cfg, a.selfSHA) {
+			a.log.Printf("lab-agent %s runs well: it stays", a.cfg.self().Version)
+			a.mu.Lock()
+			a.factsRevision++
+			a.mu.Unlock()
+			a.poke()
+		}
+	})
 }
 
 // holdWatchdog takes the hardware watchdog on a test boot and feeds it until
@@ -507,6 +549,7 @@ func (a *Agent) poll(ctx context.Context) error {
 		f := a.sys.Facts()
 		f.AgentVersion = a.cfg.self().Version
 		f.LabRelease = LabRelease
+		f.AgentSHA256, f.AgentOutcome = a.selfSHA, a.cfg.lastOutcome()
 		_, f.MesaStaged = a.sys.(interface {
 			StageMesa(context.Context, string, api.MesaStageArgs, Fetcher) (api.MesaStageResult, error)
 		})
@@ -926,14 +969,7 @@ type afterAck struct {
 // exec runs one command. The returned afterAck runs only after the result
 // reaches labd, so a reboot never swallows its own acknowledgement.
 func (a *Agent) exec(ctx context.Context, c api.Command) (any, *afterAck, error) {
-	var refused error
-	if c.Kind == api.CmdAgentUpdate && a.volunteer() {
-		// Whatever its window and Access level are.
-		refused = fmt.Errorf("%w: %s", errAccessLevel, neverPushed)
-	}
-	if refused == nil {
-		refused = a.refuseOutsideWindow(c)
-	}
+	refused := a.refuseOutsideWindow(c)
 	if refused == nil {
 		refused = a.refuseByAccess(c)
 	}
