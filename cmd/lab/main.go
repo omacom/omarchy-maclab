@@ -46,9 +46,10 @@ const usage = `lab: run kernels and tests on the Macs of Omarchy Mac Lab
   lab remove <mac>                    end a Mac's enrollment: its device secret stops working at once, and lab-agent
                                       removes the lab from the Mac at its next check-in (a Volunteer is told)
   lab device <name> [--label ..] [--model ..]
-  lab agent-update <mac>              update a Lab-owned Mac's lab-agent to the lab's, while the Mac is idle
-                                      (Maintainers). The Mac checks the new agent's signature itself. A
-                                      Volunteer's Mac is never sent one: its Volunteer runs sudo lab-agent update
+  lab agent-update <mac>              update a Mac's lab-agent to the lab's now, while the Mac is idle
+                                      (Maintainers); the Agent rollout does it by itself. The Mac checks the new
+                                      agent's signature itself. A Volunteer's Mac takes only one that ran well on
+                                      Lab-owned Macs, inside its Availability window
   lab macos enroll <mac>              a Mac's macOS runner (Maintainers): prints the one-time line to run in macOS on
                                       the Mac, after its install.sh, good for 1 hour; then labd's macOS runs reach it
   lab macos at-mac <mac>              you are at the Attended Mac whose macOS run waits for a person: labd boots

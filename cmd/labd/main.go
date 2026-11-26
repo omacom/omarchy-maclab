@@ -62,6 +62,7 @@ func main() {
 	var sourceHosts hostList
 	flag.Var(&sourceHosts, "source-host", "a host a build's public source may come from beside github.com, such as git.kernel.org (repeatable)")
 	partsAtOnce := flag.Int("parts-at-once", 1, "how many parts of an upload labd tells a client to send at the same time: 1 or 4")
+	rollout := flag.Bool("agent-rollout", true, "put this labd's lab-agent on every Mac by itself, Volunteers' too: first on trial on a Lab-owned Mac of each chip family, then on every Mac when idle (the Agent rollout). Off, only lab agent-update and sudo lab-agent update at the Mac do")
 	omt := flag.Bool("omt", true, "run omarchy-m-test (github.com/maralcbr/omarchy-m-testing) in every job on Macs with a desktop user, and compare it with the known-good kernel")
 	omtPublish := flag.Bool("omt-publish", true, "publish by itself the Known-good runs that became a Mac's Reference: each baseline, and a scheduled refresh once a week. Off, a report is published only by hand (lab publish, --publish)")
 	omtEvery := flag.Duration("omt-every", 7*24*time.Hour, "refresh each idle Mac's Reference this often: omarchy-m-test on its known-good kernel (reboots the Mac); 0 never")
@@ -167,7 +168,7 @@ func main() {
 		BootTimeout: *bootTimeout, OfflineAfter: *offlineAfter, AliveWindow: *aliveWindow, QuietGrace: *quietGrace, StageTimeout: *stageTimeout, WatchdogOpenTimeout: *watchdogOpenTimeout, RebootWarning: *rebootWarning, NtfyURL: *ntfy, NotifyCmd: *notifyCmd,
 		SourceHosts: hosts, ArtifactBudget: *artifactGB << 30, Transfers: server.Transfers{AtOnce: *partsAtOnce},
 		ReleaseKey:  releaseKey,
-		AgentBinary: filepath.Join(filepath.Dir(exe), "lab-agent-linux-arm64")}, nil)
+		AgentBinary: filepath.Join(filepath.Dir(exe), "lab-agent-linux-arm64"), AgentRollout: *rollout}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}

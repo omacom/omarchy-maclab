@@ -395,7 +395,6 @@ func (u *uninstaller) uninstall() error {
 		func() error { return u.remove(u.path(filepath.Dir(ConfigPath)), " (the device secret)") },
 		func() error { return u.remove(u.path(binPath+".new"), "") },
 		func() error { return u.remove(u.path(filepath.Join(filepath.Dir(binPath), stagedName)), "") },
-		func() error { return u.remove(u.path(filepath.Dir(prevPath)), " (the previous lab-agent)") },
 		func() error { return u.remove(u.path(binPath), "") },
 	} {
 		if err := step(); err != nil {

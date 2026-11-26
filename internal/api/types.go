@@ -211,6 +211,8 @@ type Device struct {
 	// UpdateNoticed is the number of the lab's lab-agent the Mac's Volunteer
 	// was last sent a Notice about. labd keeps it and shows it to nobody.
 	UpdateNoticed string `json:"update_noticed,omitempty"`
+	// AgentNoticed is the last change of lab-agent its Volunteer was told of.
+	AgentNoticed time.Time `json:"agent_noticed,omitzero"`
 	// TermsNoticed is the sha256 of the terms the Mac's Volunteer was last
 	// sent a Notice about. labd keeps it and shows it to nobody.
 	TermsNoticed string `json:"terms_noticed,omitempty"`

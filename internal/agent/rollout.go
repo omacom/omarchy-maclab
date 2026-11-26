@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	prevPath    = "/usr/local/lib/maclab/lab-agent-prev"
+	prevPath    = "/var/lib/maclab/lab-agent-prev"
 	attemptFile = "agent-update.json"  // in the work dir: the change on trial
 	outcomeFile = "agent-outcome.json" // in the work dir: how the last change ended
 	// guardStartsMax is how many starts the new lab-agent gets to run well.
@@ -123,7 +123,11 @@ func activate(cfg *Config, staged string, res api.AgentUpdate) error {
 		return fmt.Errorf("the guard that returns the Mac to its lab-agent could not be set up: %w", err)
 	}
 	from, err := fileSHA256(self.Path)
-	if err != nil {
+	switch {
+	case os.IsNotExist(err):
+		// Nothing installed to keep, nor to return to: the change is not on trial.
+		return os.Rename(staged, self.Path)
+	case err != nil:
 		return err
 	}
 	if err := installExecutable(self.Path, self.Prev); err != nil {

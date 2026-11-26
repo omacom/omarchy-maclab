@@ -43,7 +43,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStartPre=-/usr/local/lib/maclab/lab-agent-prev guard --start
+ExecStartPre=-/var/lib/maclab/lab-agent-prev guard --start
 ExecStart=/usr/local/bin/lab-agent run
 Restart=always
 RestartSec=3

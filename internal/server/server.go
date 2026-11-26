@@ -119,6 +119,9 @@ type Config struct {
 	// command, and to an enrolled Mac that updates. Its signature is the
 	// file beside it with ".sig", as a Lab release's bundle holds them.
 	AgentBinary string
+	// AgentRollout has labd put AgentBinary on every Mac by itself (the
+	// Agent rollout); off, only lab agent-update and the Mac's own update do.
+	AgentRollout bool
 	// LabAgent is the number of that lab-agent; "" is the one labd was
 	// built with, which is the one its bundle holds.
 	LabAgent string
@@ -174,6 +177,9 @@ type Server struct {
 	// macos is the macOS runs (macos.go), opened by macOS().
 	macos     *macosRuns
 	macosOnce sync.Once
+	// agentRollout is the Agent rollout (agent_rollout.go), opened by rollout().
+	agentRollout *agentRollout
+	rolloutOnce  sync.Once
 	// perfWake asks the Performance scheduler to look again now
 	// (perf_schedule.go).
 	perfWake chan struct{}
@@ -531,6 +537,7 @@ func New(ctx context.Context, cfg Config, logger *log.Logger) (*Server, error) {
 	go s.gcLoop()
 	go s.omtScheduler()
 	go s.perfScheduler()
+	go s.rolloutScheduler()
 	go s.callerLogLoop()
 	go s.sightLoop()
 	go s.recoverAfterStart(wasUp)

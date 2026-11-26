@@ -412,6 +412,7 @@ func (v *dev) heartbeat(ci api.Checkin) {
 		v.d.Facts, v.factsStart = *ci.Facts, ci.AgentStart
 	}
 	v.heardAgentLocked()
+	v.s.rolloutHeardLocked(v)
 	if v.noticeUpdateLocked() {
 		persist = true
 	}
