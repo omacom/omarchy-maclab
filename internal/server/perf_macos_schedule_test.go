@@ -93,7 +93,7 @@ func TestAnUnattendedMacsMacOSRunTakesTheSlotAfterItsOmarchySide(t *testing.T) {
 	if r := l.s.macOS().run(l.name); r.State != api.MacOSDone || r.Job != j.ID {
 		t.Errorf("run: %+v", r)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 2 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, testMacOSBuild); len(kept) != 2 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	d := l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.ActiveJob == "" })
@@ -144,7 +144,7 @@ func TestTheSchedulerWaitsForAPersonAtAnAttendedMac(t *testing.T) {
 	if booted.Load() != 1 || j.Spec.Holder != macosScheduled {
 		t.Errorf("macOS booted %d times, by %q", booted.Load(), j.Spec.Holder)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 1 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, testMacOSBuild); len(kept) != 1 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.ActiveJob == "" })

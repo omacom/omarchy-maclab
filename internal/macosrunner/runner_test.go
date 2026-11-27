@@ -3,6 +3,7 @@ package macosrunner
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -391,6 +392,25 @@ func TestWorkThatDidNotRunWhereItSaysFellBack(t *testing.T) {
 			}
 		})
 	}
+	t.Run("frames short of the set's count", func(t *testing.T) {
+		b := newBench(t)
+		for i, m := range b.set.Metrics {
+			if m.ID == "decode-h264-1080p" || m.ID == "power-playback-1080p" {
+				b.set.Metrics[i].Settings = maps.Clone(m.Settings)
+				b.set.Metrics[i].Settings["frames"] = float64(601)
+			}
+		}
+		h := newFakeHost()
+		lab := newFakeLab(t, startedRun(h, "mos-2", api.TierExtended), b.files)
+		r, _ := newRunner(t, lab, h, b)
+		r.Boot(context.Background())
+		m := byMetric(lab.got.Entries)
+		for _, id := range []string{"decode-h264-1080p", "power-playback-1080p"} {
+			if res := m[id]; res.Value != nil || res.Reason != Error {
+				t.Errorf("%s with 600 of 601 frames: %+v", id, res)
+			}
+		}
+	})
 	t.Run("no OpenCL platform", func(t *testing.T) {
 		t.Setenv("FAKE_CL_PLATFORM", "")
 		b := newBench(t)

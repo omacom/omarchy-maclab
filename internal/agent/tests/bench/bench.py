@@ -157,27 +157,39 @@ def _clpeak_section(text, head):
 
 
 def parse_clpeak_fp32(text):
-    """The best single-precision GFLOPS. clpeak 1.x heads the section
-    "(GFLOPS)"; 3.x gives each value its own unit."""
-    sect = _clpeak_section(text, "Single-precision compute")
+    """The best single-precision GFLOPS of the physical GPU. clpeak 1.x heads
+    the section "(GFLOPS)"; 3.x gives each value its own unit."""
+    sect = _clpeak_section(clpeak_gpu(text) or "", "Single-precision compute")
     return max(round(float(v) * CLPEAK_SCALE[u], 3)
                for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])FLOPS)?", sect))
 
 
 def parse_clpeak_bandwidth(text):
-    """The best global memory bandwidth in GB/s, "(GBPS)" in the heading or
-    a unit on each value."""
-    sect = _clpeak_section(text, "Global memory bandwidth")
+    """The best global memory bandwidth of the physical GPU in GB/s, "(GBPS)"
+    in the heading or a unit on each value."""
+    sect = _clpeak_section(clpeak_gpu(text) or "", "Global memory bandwidth")
     return max(round(float(v) * CLPEAK_SCALE[u], 3)
                for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])B(?:PS|/s))?", sect))
 
 
-def clpeak_device(text):
-    m = re.search(r"Device(?: \d+)?\s*:\s*(.+)", text)
-    return m.group(1).strip() if m else None
-
-
 SOFTWARE = re.compile(r"llvmpipe|softpipe|swrast|swiftshader|lavapipe|software|\bcpu\b", re.I)
+# A GPU of Apple Silicon by the name its driver gives it: "Apple M2 Max (G14C
+# B1)" from Rusticl and Honeykrisp, "Apple M5 Max" from Apple's own.
+APPLE_GPU = re.compile(r"^Apple [AM]\d")
+
+
+def clpeak_devices(text):
+    """(device name, what clpeak measured on it) for each device it ran on."""
+    parts = re.split(r"^[ \t]*Device(?: \d+)?[ \t]*:[ \t]*(.+)$", text, flags=re.M)
+    return [(parts[i].strip(), parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+
+
+def clpeak_gpu(text):
+    """What clpeak measured on the Mac's own GPU, None when it ran on none."""
+    for dev, body in clpeak_devices(text):
+        if APPLE_GPU.match(dev) and not SOFTWARE.search(dev):
+            return body
+    return None
 
 
 def clpeak_verdict(code, text):
@@ -186,8 +198,7 @@ def clpeak_verdict(code, text):
         return "no_driver"
     if code != 0:
         return "error"
-    dev = clpeak_device(text)
-    if not dev or SOFTWARE.search(dev):
+    if clpeak_gpu(text) is None:
         return "fell_back"
     return None
 
@@ -537,6 +548,13 @@ class Ctx:
         self.files = {f["id"]: f for f in bset["files"].get(SYSTEM, [])}
         self.cache, self.work, self.logf = pathlib.Path(cache), pathlib.Path(work), log
         self.power_interval = 1.0
+        self.filled = None
+
+    def done(self):
+        """What the run leaves for its later benchmarks goes: the scratch file."""
+        if self.filled:
+            shutil.rmtree(self.filled.parent, ignore_errors=True)
+            self.filled = None
 
     def log(self, what, ran=None):
         if ran is None:
@@ -936,12 +954,13 @@ def disk_bytes(host):
     return max(sizes) if sizes else None
 
 
-def storage_room(host, work, file_size):
-    """The capacity entry, with the file in place; disk_too_full when less
-    than STORAGE_FREE of the disk would stay free."""
+def storage_room(host, work, file_size, have=0):
+    """The capacity entry, with the file in place (have bytes of it there
+    already); disk_too_full when less than STORAGE_FREE of the disk would
+    stay free."""
     st = host.statvfs(str(work))
     total = st.f_blocks * st.f_frsize
-    after = st.f_bavail * st.f_frsize - file_size
+    after = st.f_bavail * st.f_frsize - max(file_size - have, 0)
     cap = {"bytes": disk_bytes(host), "fill_percent": round(100 * (1 - after / total), 1) if total else None}
     if total <= 0 or after < STORAGE_FREE * total:
         raise Reason("disk_too_full", capacity=cap)
@@ -983,22 +1002,33 @@ def fill_args(exe, path, size, out):
             "--ioengine=psync", "--thread", "--iodepth=1", "--refill_buffers", "--output-format=json", f"--output={out}"]
 
 
+FILL_ONCE = "once per run"
+
+
 def fio(ctx, m):
     """One fio test on a scratch file filled before timing, in the work
-    folder on the system's disk, removed however the test ends."""
+    folder on the system's disk. A set whose file is filled "once per run"
+    keeps the file for the run's other Storage tests, as the macOS runner
+    does, and it goes when the run ends; otherwise it goes when the test
+    ends. However a test fails, the file goes with it."""
     s = m["settings"]
     exe = ctx.program("fio", "fio")
     env = ctx.libs("fio")
     size = size_bytes(s["file"])
-    cap = storage_room(ctx.host, ctx.work, size)
-    d = ctx.work / "fio"
+    d = ctx.work / "fio-scratch"
     path, out = d / "scratch", d / "fio.json"
+    once = s.get("filled") == FILL_ONCE
+    filled = once and ctx.filled == path and path.exists()
+    cap = storage_room(ctx.host, ctx.work, size, path.stat().st_size if filled else 0)
+    keep = False
     try:
-        d.mkdir(exist_ok=True)
-        path.touch()
-        if ctx.host.which("chattr"):
-            ctx.run("chattr", ["chattr", "+m", path], timeout=30)
-        _ok(ctx.run("fio fill", fill_args(exe, path, s["file"], d / "fill.json"), timeout=1800, env=env), "fio fill")
+        if not filled:
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir()
+            path.touch()
+            if ctx.host.which("chattr"):
+                ctx.run("chattr", ["chattr", "+m", path], timeout=30)
+            _ok(ctx.run("fio fill", fill_args(exe, path, s["file"], d / "fill.json"), timeout=1800, env=env), "fio fill")
         r = ctx.run(f"fio {s['rw']}", fio_args(exe, path, s, out), timeout=1800, env=env)
         try:
             text = out.read_text()
@@ -1008,15 +1038,20 @@ def fio(ctx, m):
         _ok(r, "fio")
         got = parse_fio(text, s["rw"])
         res = cached_bytes(ctx, path)
+        if res is None and once:
+            raise Reason("error", "cannot tell whether direct I/O bypassed the page cache", capacity=cap)
         if res is not None and res > CACHED_LIMIT * size:
             raise Reason("fell_back", "direct I/O went through the page cache", capacity=cap)
+        keep = once
     except Reason as e:
         e.capacity = e.capacity or cap
         raise
     except Exception as e:
         raise Reason("error", f"{type(e).__name__}: {e}", capacity=cap)
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        ctx.filled = path if keep else None
+        if not keep:
+            shutil.rmtree(d, ignore_errors=True)
     if m["unit"] == "MB/s":
         return Value(got["mbs"], got["mbs_spread"], cap)
     return Value(got["kiops"], got["kiops_spread"], cap)
@@ -1081,24 +1116,107 @@ def decode_args(ff, clip, realtime=False):
             "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "null", "-"]
 
 
-def hw_decode(ctx, clip_id, realtime=False):
-    """Every frame of the clip through the hardware decoder: (frames, frames/s)."""
+def apple_render_node(host):
+    """/dev/dri/renderD* of the Mac's own GPU, by its device tree's name;
+    None when it has none."""
+    for rel in host.glob("sys/class/drm/renderD*/device/uevent"):
+        if re.search(r"^OF_COMPATIBLE_\d+=apple,agx", host.read(rel) or "", re.M):
+            return "/dev/dri/" + rel.split("/")[3]
+    return None
+
+
+def vaapi(ctx):
+    """FFmpeg and the Apple GPU's render node, for VA-API over V4L2 request."""
+    ff = ctx.host.which("ffmpeg")
+    if not ff:
+        raise Reason("no_build", "no ffmpeg on this Mac")
+    r = ctx.run("ffmpeg -hwaccels", [ff, "-hide_banner", "-hwaccels"], timeout=60)
+    if "vaapi" not in r.out.split():
+        raise Reason("no_build", "ffmpeg has no vaapi hwaccel")
+    node = apple_render_node(ctx.host)
+    if not node:
+        raise Reason("no_driver", "no render node of the Apple GPU")
+    if not ctx.host.glob("dev/media*"):
+        raise Reason("no_driver", "no media device")
+    return ff, node
+
+
+def vaapi_args(ff, node, clip, realtime=False):
+    return [ff, "-hide_banner", "-nostdin", "-v", "verbose", "-benchmark", *(["-re"] if realtime else []),
+            "-hwaccel", "vaapi", "-hwaccel_device", node, "-hwaccel_output_format", "vaapi", "-i", clip,
+            "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "null", "-"]
+
+
+VAAPI_V4L2 = re.compile(r"VAAPI driver: v4l2-request\b", re.I)
+VAAPI_FRAMES = re.compile(r"\] w:\d+ h:\d+ pixfmt:(\w+)")
+
+
+def vaapi_verdict(code, text):
+    """None when the V4L2 request VA driver decoded in hardware: every frame
+    FFmpeg passed on was a VA surface, else the reason."""
+    if DECODE_NO_DEVICE.search(text):
+        return "no_driver"
+    if code != 0:
+        return "error"
+    if not VAAPI_V4L2.search(text) or DECODE_FALLBACK.search(text):
+        return "fell_back"
+    fmts = VAAPI_FRAMES.findall(text)
+    if not fmts or any(f != "vaapi" for f in fmts):
+        return "fell_back"
+    return None
+
+
+def parse_decoded(text):
+    """(frames decoded, decode errors, frames per second of wall time), from
+    FFmpeg's own count at -v verbose."""
+    m = re.findall(r"\(video\): \d+ packets read \(\d+ bytes\); (\d+) frames decoded; (\d+) decode errors", text)
+    rtime = re.search(r"bench:.*rtime=([\d.]+)s", text)
+    if not m or not rtime or float(rtime.group(1)) <= 0:
+        raise ParseError("no frame count or rtime from ffmpeg")
+    n, errors = (int(x) for x in m[-1])
+    return n, errors, round(n / float(rtime.group(1)), 3)
+
+
+def decoder(ctx, m, clip_id, realtime=False):
+    """Ready to decode every frame of the clip in hardware: what decodes it
+    and gives (frames, frames/s). What it needs is looked at first, so that
+    power is sampled over the decode alone. A set that pins the clip's frame
+    count decodes through VA-API; one that does not, through FFmpeg's own
+    V4L2 request hwaccel against ffprobe's count."""
+    want = (m.get("settings") or {}).get("frames")
+    if want:
+        ff, node = vaapi(ctx)
+        clip = ctx.file(clip_id)
+
+        def go():
+            r = ctx.run("ffmpeg decode", vaapi_args(ff, node, clip, realtime), timeout=900)
+            why = vaapi_verdict(r.code, r.out)
+            if why:
+                raise Reason(why)
+            got, errors, fps = parse_decoded(r.out)
+            if got != want or errors:
+                raise Reason("error", f"decoded {got} of {want} frames, {errors} decode errors")
+            return got, fps
+        return go
     ff, probe = ffmpeg(ctx)
     clip = ctx.file(clip_id)
     want = clip_frames(ctx, probe, clip)
-    r = ctx.run("ffmpeg decode", decode_args(ff, clip, realtime), timeout=900)
-    why = decode_verdict(r.code, r.out)
-    if why:
-        raise Reason(why)
-    got, fps = parse_ffmpeg(r.out)
-    if got != want:
-        raise Reason("error", f"decoded {got} of {want} frames")
-    return got, fps
+
+    def go():
+        r = ctx.run("ffmpeg decode", decode_args(ff, clip, realtime), timeout=900)
+        why = decode_verdict(r.code, r.out)
+        if why:
+            raise Reason(why)
+        got, fps = parse_ffmpeg(r.out)
+        if got != want:
+            raise Reason("error", f"decoded {got} of {want} frames")
+        return got, fps
+    return go
 
 
 def decode(clip_id):
     def fn(ctx, m):
-        return Value(hw_decode(ctx, clip_id)[1])
+        return Value(decoder(ctx, m, clip_id)()[1])
     return fn
 
 
@@ -1150,7 +1268,7 @@ def llama(gpu):
     return fn
 
 
-MLX_PROBE = r"""
+MLX_STACK = r"""
 import json, sys, time
 try:
     import mlx.core as mx
@@ -1162,6 +1280,30 @@ except Exception:
     ok = False
 if not ok:
     print(json.dumps({"status": "no_build"})); sys.exit(0)
+"""
+# omarchy-mlx's own MLX: its Vulkan backend on the Honeykrisp driver it
+# packages, which it refuses to swap for another; the device it names is the
+# Mac's own GPU, or the row fell back.
+MLX_OMARCHY = r"""
+import json, re, sys, time
+def say(status):
+    print(json.dumps({"status": status})); sys.exit(0)
+try:
+    import mlx.core as mx
+except Exception:
+    say("no_build")
+try:
+    ok, info = mx.is_available(mx.gpu), mx.device_info()
+except Exception:
+    say("no_driver")
+if not ok:
+    say("no_driver")
+print("device:", info.get("device_name"), info.get("driver"), info.get("icd_source"), file=sys.stderr)
+if info.get("driver") != "Honeykrisp" or info.get("icd_source") != "packaged" \
+        or not re.match(r"Apple [AM][0-9]", str(info.get("device_name", ""))):
+    say("fell_back")
+"""
+MLX_TIME = r"""
 mx.set_default_device(mx.gpu)
 n, warmup, reps = (int(a) for a in sys.argv[1:4])
 a = mx.random.normal((n, n)).astype(mx.float16)
@@ -1180,17 +1322,33 @@ dt = time.perf_counter() - t
 gpu = "gpu" in str(mx.default_device()).lower()
 print(json.dumps({"status": "ok" if gpu else "fell_back", "tflops": 2 * n ** 3 * reps / dt / 1e12}))
 """
+MLX_PROBE = MLX_STACK + MLX_TIME
+MLX_OMARCHY_PROBE = MLX_OMARCHY + MLX_TIME
 # As tools/bench-macos/mlx-bench times it, so both systems time the same work.
 MLX_SIZE, MLX_WARMUP, MLX_REPS = 4096, 5, 50
+# omarchy-mlx's interpreter, with its own MLX in its own venv.
+MLX_OMARCHY_PYTHON = "usr/lib/omarchy-mlx/venv/bin/python"
 
 
 def mlx(ctx, m):
-    py = ctx.host.which("python3")
-    if not py:
-        raise Reason("no_build", "no python3")
-    r = _ok(ctx.run("mlx", [py, "-c", MLX_PROBE, str(MLX_SIZE), str(MLX_WARMUP), str(MLX_REPS)], timeout=900), "mlx")
+    """The Stack's MLX through python3; a set whose Omarchy API names
+    omarchy-mlx, through that package's own interpreter alone (-I, and no
+    environment but PATH and HOME, so no user's module or Vulkan override
+    takes part)."""
+    sizes = [str(MLX_SIZE), str(MLX_WARMUP), str(MLX_REPS)]
+    if "omarchy-mlx" in (m.get(SYSTEM) or {}).get("api", ""):
+        py = ctx.host.path(MLX_OMARCHY_PYTHON)
+        if not os.path.exists(py):
+            raise Reason("no_build", "no omarchy-mlx on this Mac")
+        argv = ["env", "-i", "PATH=/usr/bin", f"HOME={ctx.work}", py, "-I", "-c", MLX_OMARCHY_PROBE, *sizes]
+    else:
+        py = ctx.host.which("python3")
+        if not py:
+            raise Reason("no_build", "no python3")
+        argv = [py, "-c", MLX_PROBE, *sizes]
+    r = _ok(ctx.run("mlx", argv, timeout=900), "mlx")
     got = parse_mlx(r.out)
-    if got.get("status") in ("no_build", "fell_back"):
+    if got.get("status") in ("no_build", "no_driver", "fell_back"):
         raise Reason(got["status"])
     if got.get("status") != "ok" or not isinstance(got.get("tflops"), (int, float)):
         raise ParseError("the MLX probe gave no TFLOPS")
@@ -1278,7 +1436,7 @@ def energy(ctx, rel, work):
 
 def power_playback(ctx, m):
     rel = power_sensor(ctx)
-    return energy(ctx, rel, lambda: hw_decode(ctx, "clip-h264-1080p", realtime=True))
+    return energy(ctx, rel, decoder(ctx, m, "clip-h264-1080p", realtime=True))
 
 
 def power_all_core(ctx, m):
@@ -1394,8 +1552,16 @@ def run_list(metrics, ctx, cool=None, impl=None, out=None):
     """Each metric once, in order, into out: a cancelled run keeps what it
     measured before."""
     impl = METRICS if impl is None else impl
-    h = ctx.host
     out = [] if out is None else out
+    try:
+        _run_list(metrics, ctx, cool, impl, out)
+    finally:
+        ctx.done()
+    return out
+
+
+def _run_list(metrics, ctx, cool, impl, out):
+    h = ctx.host
     for m in metrics:
         start = h.now()
         cd = None
@@ -1419,7 +1585,6 @@ def run_list(metrics, ctx, cool=None, impl=None, out=None):
             ctx.log(f"{m['id']}: error\n{traceback.format_exc()}")
             e = entry(ctx.set, m, seconds=h.now() - start, cool=cd, reason="error")
         out.append(clean(e))
-    return out
 
 
 def exit_code(results):

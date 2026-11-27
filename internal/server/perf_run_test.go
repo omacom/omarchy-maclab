@@ -44,7 +44,7 @@ func perfLab(t *testing.T, c labConfig, setup func(l *lab)) (*lab, *perfAnswers)
 	old := perfCurrentSet
 	// The set's own files are not mirrored here: its Omarchy files are
 	// placeholders, which the bench builtin answers for itself.
-	bench, err := sets.Load("bench-1")
+	bench, err := sets.Load(testSet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func (l *lab) noMorePerf(have int) {
 
 func bench1(t *testing.T, list string) []string {
 	t.Helper()
-	set, err := sets.Load("bench-1")
+	set, err := sets.Load(testSet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func (l *lab) qualify(release string) {
 func TestAFrozenReleaseIsMeasuredAsACandidateBoot(t *testing.T) {
 	l, a := perfLab(t, labConfig{}, nil)
 	hold := l.sim.HoldTests()
-	rel := l.perfRelease("7.3", l.s.now(), []string{l.name}, "libane=0.2.0-1")
+	rel := l.perfRelease("7.3", l.s.now(), []string{l.name}, "omarchy-ane=0.5.6-1")
 	l.waitDevice(func(d api.Device) bool { return d.ActiveJob != "" })
 	if r, body := l.as(harnessToken, "POST", "/api/devices/"+l.name+"/lease", api.LeaseRequest{Holder: "tester"}); r.StatusCode != 409 || !strings.Contains(body, "Performance run") {
 		t.Errorf("a Lease while a Performance run claims the Mac: %s %s", r.Status, body)
@@ -190,14 +190,14 @@ func TestAFrozenReleaseIsMeasuredAsACandidateBoot(t *testing.T) {
 	if ps.Release != "7.3" || ps.List != sets.Quick || !slices.Equal(ps.Metrics, bench1(t, sets.Quick)) || ps.Packages.Name != "release-7.3" || ps.ManifestSHA256 != rel.ManifestSHA256 {
 		t.Errorf("spec %+v", ps)
 	}
-	if res.Kernel != candidateKernel || res.Booted["linux-aurora"] != candidateKernel || res.Booted["libane"] != "0.2.0-1" || res.State != perf.Succeeded {
+	if res.Kernel != candidateKernel || res.Booted["linux-aurora"] != candidateKernel || res.Booted["omarchy-ane"] != "0.5.6-1" || res.State != perf.Succeeded {
 		t.Errorf("result %+v", res)
 	}
-	att, err := l.s.store.perfAttempts(l.name, "bench-1", perf.SideOmarchy, "7.3")
-	if err != nil || len(att) != 1 || att[0].Run.Booted["libane"] != "0.2.0-1" || !slices.Equal(att[0].Run.Metrics, ps.Metrics) {
+	att, err := l.s.store.perfAttempts(l.name, testSet, perf.SideOmarchy, "7.3")
+	if err != nil || len(att) != 1 || att[0].Run.Booted["omarchy-ane"] != "0.5.6-1" || !slices.Equal(att[0].Run.Metrics, ps.Metrics) {
 		t.Fatalf("attempts %+v (%v)", att, err)
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 	if len(cur) != len(ps.Metrics) {
 		t.Errorf("%d current values, want %d", len(cur), len(ps.Metrics))
 	}
@@ -242,7 +242,7 @@ func TestLabAgentRunsAPerformanceRunsMetricsAndLabdTakesTheUpload(t *testing.T) 
 		up.State != perf.Succeeded || up.Results != len(quick) || up.Tries != 1 {
 		t.Fatalf("the test's result: %+v, upload %+v", tr, up)
 	}
-	att, err := l.s.store.perfAttempts(l.name, "bench-1", perf.SideOmarchy, "7.3")
+	att, err := l.s.store.perfAttempts(l.name, testSet, perf.SideOmarchy, "7.3")
 	if err != nil || len(att) != 1 || att[0].Run.State != perf.Succeeded {
 		t.Fatalf("attempts %+v (%v)", att, err)
 	}
@@ -258,7 +258,7 @@ func TestLabAgentRunsAPerformanceRunsMetricsAndLabdTakesTheUpload(t *testing.T) 
 			t.Errorf("%s: %+v, want %v", r.Metric, r, value(r.Metric))
 		}
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 	if len(cur) != len(quick) {
 		t.Errorf("%d current values, want %d", len(cur), len(quick))
 	}
@@ -320,7 +320,7 @@ func TestAFailedBenchmarkRunsOnceMoreAlone(t *testing.T) {
 	if runs := a.runs(); len(runs) != 3 || !slices.Equal(runs[1], []string{"fio-seq-read"}) || !slices.Equal(runs[2], []string{"stream-triad"}) {
 		t.Fatalf("runs %v", runs)
 	}
-	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	cur, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 	for _, c := range cur {
 		switch c.Metric {
 		case "fio-seq-read":
@@ -342,7 +342,7 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 	l.perfRelease("7.3", l.s.now(), []string{l.name})
 	l.expect(l.nthPerfJob(1), api.OutcomePass)
 	l.noMorePerf(1)
-	before, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	before, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 
 	m := l.member("grace")
 	if r, body := l.as(m.Token, "POST", "/api/perf/rerun", api.PerfRerunRequest{Mac: l.name, Release: "7.3"}); r.StatusCode != 403 {
@@ -366,13 +366,13 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 	if !j.UnderLease || !j.Spec.Performance.Rerun || !j.Spec.Performance.LeaseTaken {
 		t.Errorf("the rerun: under a Lease %v, %+v", j.UnderLease, j.Spec.Performance)
 	}
-	after, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	after, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 	for i := range after {
 		if after[i].Run != before[i].Run || *after[i].Value != 100 {
 			t.Errorf("%s: %+v, was %+v", after[i].Metric, after[i], before[i])
 		}
 	}
-	att, _ := l.s.store.perfAttempts(l.name, "bench-1", perf.SideOmarchy, "7.3")
+	att, _ := l.s.store.perfAttempts(l.name, testSet, perf.SideOmarchy, "7.3")
 	if len(att) != 2 || att[1].Run.State != perf.Failed || len(att[1].Results) != len(before) {
 		t.Errorf("attempts kept: %+v", att)
 	}
@@ -386,7 +386,7 @@ func TestAFailedRerunKeepsTheOldValues(t *testing.T) {
 		t.Fatalf("rerun: %s %s", r.Status, body)
 	}
 	l.expect(l.wait(decodeInto[api.Job](t, body).ID, 90*time.Second), api.OutcomePass)
-	after, _ = l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "7.3")
+	after, _ = l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "7.3")
 	for _, c := range after {
 		if *c.Value != 60 || c.Attempt != 3 {
 			t.Errorf("a rerun that succeeds replaces the values: %+v", c)

@@ -380,6 +380,13 @@ func decodeArgs(clip string, realtime bool) []string {
 	return append(a, "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", clip, "-map", "0:v:0", "-f", "null", "-")
 }
 
+// allFrames is whether FFmpeg decoded the clip's every frame, by the count
+// the set pins for the metric; a set that pins none takes any.
+func allFrames(s *session, metric string, frames int) bool {
+	want := int(s.setting(metric, "frames", 0))
+	return want == 0 || frames == want
+}
+
 // decoded is the frames decoded, and whether in hardware.
 func decoded(stderr string) (frames int, hardware bool) {
 	if m := reFrame.FindAllStringSubmatch(stderr, -1); m != nil {
@@ -407,7 +414,7 @@ func decodeStep(metric, clip string) func(*session, context.Context) map[string]
 			return all([]string{metric}, because(FellBack))
 		}
 		rt := reRTime.FindStringSubmatch(stderr)
-		if frames == 0 || rt == nil || num(rt[1]) <= 0 {
+		if frames == 0 || rt == nil || num(rt[1]) <= 0 || !allFrames(s, metric, frames) {
 			return all([]string{metric}, because(Error))
 		}
 		return map[string]outcome{metric: measured(float64(frames) / num(rt[1]))}
@@ -738,7 +745,7 @@ func powerPlayback(s *session, ctx context.Context) map[string]outcome {
 		secs := time.Since(start).Seconds()
 		frames, hw := decoded(stderr)
 		switch {
-		case err != nil || frames == 0:
+		case err != nil || frames == 0 || !allFrames(s, id, frames):
 			return 0, Error
 		case !hw:
 			return 0, FellBack

@@ -142,7 +142,7 @@ func (s *Sim) StageCandidate(ctx context.Context, job string, a api.CandidateSta
 	cmdline := testCmdline(base+" rootflags=subvol="+api.CandidateSubvolume, api.StageArgs{BootTimeoutSec: a.BootTimeoutSec, WatchdogOpenTimeoutSec: a.WatchdogOpenTimeoutSec}, job)
 	e := simEntry{krel: krel, behavior: behavior, cmdline: cmdline, stack: map[string]string{}}
 	for _, p := range a.Set.Packages {
-		if api.StackPackage(p.Name) {
+		if api.BootedPackage(p.Name) {
 			e.stack[p.Name] = p.Version
 		}
 	}

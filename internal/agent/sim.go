@@ -251,9 +251,10 @@ func (s *Sim) Facts() api.Facts {
 	return f
 }
 
-// simStack is what a simulated Mac has installed of the stack.
+// simStack is what a simulated Mac has installed of the stack, and FFmpeg,
+// which it reports but is no part of the stack.
 var simStack = map[string]string{"linux-aurora": "6.17.5.aurora1-1", "linux-aurora-headers": "6.17.5.aurora1-1",
-	"m1n1-aurora": "1.5.2-1", "mesa": "25.3.0-1"}
+	"m1n1-aurora": "1.5.2-1", "mesa": "25.3.0-1", "ffmpeg": "2:9.0.2-2"}
 
 // SetPreflight makes the Mac's preflight find problems and warnings, from its
 // next check-in on, as lab-agent reports them.

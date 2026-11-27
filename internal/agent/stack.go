@@ -16,12 +16,13 @@ func installedStack() map[string]string {
 	return stackOf(out)
 }
 
-// stackOf reads pacman -Q's "name version" lines, keeping the stack's.
+// stackOf reads pacman -Q's "name version" lines, keeping those a Mac
+// reports (api.BootedPackage).
 func stackOf(out []byte) map[string]string {
 	var m map[string]string
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 2 || !api.StackPackage(f[0]) {
+		if len(f) != 2 || !api.BootedPackage(f[0]) {
 			continue
 		}
 		if m == nil {

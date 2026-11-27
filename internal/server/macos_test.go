@@ -88,7 +88,7 @@ func TestAMacOSRunGoesFromQueuedToItsResults(t *testing.T) {
 
 	reportBuild(t, l, secret, testMacOSVersion, testMacOSBuild)
 	run := l.s.macOS().run(l.name)
-	if run == nil || run.State != api.MacOSQueued || run.Set != "bench-1" || run.PerfRun == 0 || len(run.Artifacts) == 0 {
+	if run == nil || run.State != api.MacOSQueued || run.Set != testSet || run.PerfRun == 0 || len(run.Artifacts) == 0 {
 		t.Fatalf("queued: %+v", run)
 	}
 	sha := run.Artifacts[0].SHA256
@@ -185,7 +185,7 @@ func TestMacOSRunsAreKeptInTheDataDir(t *testing.T) {
 	if _, err := m.sayAttendance("mos_x", true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.queueRun(&api.MacOSRun{Mac: "m2-max", Tier: api.TierExtended, Set: "bench-1", PerfRun: 3}, time.Now()); err != nil {
+	if _, err := m.queueRun(&api.MacOSRun{Mac: "m2-max", Tier: api.TierExtended, Set: testSet, PerfRun: 3}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	m2 := openMacOSRuns(dir)
