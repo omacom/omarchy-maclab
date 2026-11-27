@@ -633,6 +633,7 @@
     }
   ],
   "files": {
+    "/var/lib/omarchy/install-receipt": null,
     "/proc/device-tree/compatible": {
       "text": "apple,j314s\u0000apple,t6000\u0000apple,arm-platform\u0000"
     },

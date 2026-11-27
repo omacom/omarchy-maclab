@@ -125,6 +125,31 @@ class ImageRecordTest(unittest.TestCase):
 
         self.assertEqual(report["system"]["image"], {"format": "1", "platform": "apple-silicon"})
 
+    def test_a_release_image_records_which_release_it_is(self):
+        rec = copy.deepcopy(M2_MAX)
+        rec["files"][TARGET] = None
+        rec["files"][BOOTED] = {"text": "format=1\nplatform=apple-silicon\nchannel_set=omarchy-stable-ee11c8a6b5a8\n"
+                                        "lane=edge\nimage_profile=release\nbuilt=2026-11-05T04:46:43Z\n"}
+        rec["files"]["/var/lib/omarchy/install-receipt"] = {"text": "format=1\nimage=omarchy-mac-4.5.0-r2-2026.11.05-08c81abcef4f\n"
+                                                                    "release_tag=v4.5.0\nmac_revision=2\nlane=stable\ncatalog_channel=stable\n"
+                                                                    "omarchy_mirror=stable\nbuilt=2026-11-05T04:46:43Z\n"}
+        _, report = run(rec)
+
+        self.assertEqual(errors(SCHEMA, report), [])
+        self.assertEqual(report["system"]["image"], {  # the receipt's lane, not the target's
+            "format": "1", "platform": "apple-silicon", "image_profile": "release", "built": "2026-11-05T04:46:43Z",
+            "channel_set": "omarchy-stable-ee11c8a6b5a8", "lane": "stable", "release_tag": "v4.5.0", "mac_revision": "2",
+        })
+
+    def test_a_release_key_of_any_other_shape_is_left_out(self):
+        rec = copy.deepcopy(M2_MAX)
+        rec["files"][TARGET] = None
+        rec["files"][BOOTED] = {"text": "format=1\nchannel_set=marcelos-mini\n"}
+        rec["files"]["/var/lib/omarchy/install-receipt"] = {"text": "release_tag=192.168.0.10\nlane=aa-bb-cc\nmac_revision=two\n"}
+        _, report = run(rec)
+
+        self.assertEqual(report["system"]["image"], {"format": "1"})
+
     def test_every_key_of_a_new_images_record_reaches_the_report(self):
         mac, system = self.with_target(SPEC_RECORD, BOOTED)  # retired by the first boot, still read
 

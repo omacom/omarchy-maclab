@@ -690,7 +690,7 @@ func TestHowAReportArrivedIsOnReportsAndThePublicPageSaysRunByTheLab(t *testing.
 		t.Fatalf("%d %s", tool.status, tool.raw)
 	}
 	byTool := tool.body["id"].(string)
-	if _, err := l.s.omtPublish(l.ran("j-itself", "m2-max", 0, labReport(t, "m2-max", lrKnownGood, unattended), func(j *api.Job) { j.Spec.Baseline = true }), Person{}); err != nil {
+	if _, err := l.s.omtPublish(l.ran("j-itself", "m2-max", 0, labReport(t, "m2-max", lrKnownGood, unattended), func(j *api.Job) { j.Spec.Baseline, j.Maintainer = true, "ravi" }), Person{}); err != nil {
 		t.Fatal(err)
 	}
 	byItself := ravi.jobSaid("j-itself").Result.OMT.ReportID
@@ -700,8 +700,8 @@ func TestHowAReportArrivedIsOnReportsAndThePublicPageSaysRunByTheLab(t *testing.
 	list := parseHTML(t, ravi.page("/reports"))
 	for id, want := range map[string]string{
 		byTool:   "the Mac's own tool",
-		byItself: "the lab by itself, job j-itself",
-		byHand:   "the lab, job j-by-hand, asked by @edith",
+		byItself: "the lab by itself, from m2-max's job j-itself queued by @ravi",
+		byHand:   "the lab, from m2-max's job j-by-hand queued by @edith, asked by @edith",
 	} {
 		row := list.sole(t, `tr[id="admin-report-`+id+`"]`)
 		if got := row.sole(t, "td.arrived").words(); got != want {
@@ -1218,5 +1218,35 @@ func TestASecondTestOfTheSameNameDoesNotChangeWhatIsPublished(t *testing.T) {
 	ravi.notPublished("j-two", http.StatusConflict, "not the one its verdict was computed from")
 	if n := len(l.everyReport()); n != 0 {
 		t.Errorf("%d reports were published", n)
+	}
+}
+
+// A Lab-owned Mac whose Machine key is not signed in as an M team member
+// makes Community runs; Maintainers are told why, the M team is not.
+func TestALabOwnedMacNotSignedInIsToldToMaintainers(t *testing.T) {
+	l := publishLab(t, nil)
+	l.lrMaintainer()
+	l.lrMember(edithID)
+	v := l.lrMac("m2-max", "j416c", nil)
+	maintainer, member := caller{maintainer: "ravi"}, caller{team: "edith"}
+	if got := l.s.viewFor(maintainer, v).SignIn; got != "" {
+		t.Errorf("before any report the lab knows no key, but says %q", got)
+	}
+	if _, err := l.s.omtPublish(l.ran("j-base", "m2-max", 0, nil, func(j *api.Job) { j.Spec.Baseline, j.DeviceID = true, "d-m2-max" }), Person{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.s.viewFor(maintainer, v).SignIn; got != "not signed in" {
+		t.Errorf("a Mac nobody signed in: %q", got)
+	}
+	if got := l.s.viewFor(member, v).SignIn; got != "" {
+		t.Errorf("the M team is told %q", got)
+	}
+	l.mustMacSignIn("m2-max", graceID)
+	if got := l.s.viewFor(maintainer, v).SignIn; !strings.HasSuffix(got, ", who is not on the M team") {
+		t.Errorf("a Mac signed in off the M team: %q", got)
+	}
+	l.mustMacSignIn("m2-max", edithID)
+	if got := l.s.viewFor(maintainer, v).SignIn; got != "" {
+		t.Errorf("a Mac signed in as an M team member: %q", got)
 	}
 }

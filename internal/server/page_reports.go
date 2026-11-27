@@ -49,6 +49,9 @@ type arrivedView struct {
 	Job, JobHref string
 	// Asked is who asked, "" when the lab published the report by itself.
 	Asked string
+	// Mac and Queued are the job's Mac and who queued the job, read from the
+	// job as it is kept; both "" when the job is gone.
+	Mac, Queued string
 }
 
 func (s *Server) arrived(report *reports.Report) arrivedView {
@@ -61,6 +64,12 @@ func (s *Server) arrived(report *reports.Report) arrivedView {
 		v.Asked = "@" + report.AskedHandle
 	case report.AskedAccountID != 0:
 		v.Asked = "a person whose name is not kept"
+	}
+	if j, err := s.store.job(report.LabJob); err == nil {
+		v.Mac, v.Queued = j.Spec.Device, "the lab"
+		if j.Maintainer != "" {
+			v.Queued = "@" + j.Maintainer
+		}
 	}
 	return v
 }

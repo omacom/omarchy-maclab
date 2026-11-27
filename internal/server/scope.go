@@ -270,7 +270,30 @@ func (s *Server) viewFor(c caller, v *dev) DeviceView {
 	if c.team != "" {
 		d.Contact, d.NtfyTopic, d.NtfyOwnURL, d.NoticeTopicRefused, d.LinkedLogin = "", "", "", "", ""
 	}
+	if c.maintainer != "" && !d.IsVolunteer() {
+		d.SignIn = s.signInGap(v.snapshot().MachineID)
+	}
 	return d
+}
+
+// signInGap is why a Lab-owned Mac's runs are Community runs: its Machine key
+// is not signed in, or is signed in as someone off the M team. "" when its
+// runs are Verified runs, or before its first report gave the lab its key.
+func (s *Server) signInGap(machineID string) string {
+	if machineID == "" || s.reports == nil {
+		return ""
+	}
+	signIn, err := s.reports.SignInOf(machineID)
+	switch {
+	case err != nil:
+		s.log.Printf("the sign-in of a Mac: %v", err)
+		return ""
+	case signIn == nil:
+		return "not signed in"
+	case !s.onMTeam(signIn.AccountID):
+		return "signed in as @" + signIn.Handle + ", who is not on the M team"
+	}
+	return ""
 }
 
 // forTeam is a Mac's view as the stream carries it, without what is its

@@ -790,6 +790,7 @@
     }
   ],
   "files": {
+    "/var/lib/omarchy/install-receipt": null,
     "/proc/device-tree/model": {
       "text": "Apple MacBook Pro (16-inch, M2 Max, 2023)\u0000"
     },

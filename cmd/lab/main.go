@@ -1265,6 +1265,11 @@ func showDevices(ctx context.Context, c *client.Client) error {
 		}
 	}
 	for _, d := range devs {
+		if d.SignIn != "" {
+			fmt.Printf("%s is %s, so its runs are Community runs: a Maintainer signs it in at the Mac, as its GUI user: omarchy-m-test --sign-in\n", d.Name, d.SignIn)
+		}
+	}
+	for _, d := range devs {
 		if d.Action != nil {
 			fmt.Printf("\n>>> %s\n%s\n", strings.ToUpper(d.Action.Title), indent(d.Action.Text()))
 		}
@@ -1373,6 +1378,9 @@ func showDevice(ctx context.Context, c *client.Client, name string) error {
 		fmt.Printf("  lab-agent:   %s, older than the lab's %s (%s)\n", d.Facts.AgentVersion, d.LabAgent, agentUpdateBy(*d))
 	} else {
 		fmt.Printf("  lab-agent:   %s\n", orDash(d.Facts.AgentVersion, "unknown"))
+	}
+	if d.SignIn != "" {
+		fmt.Printf("  sign-in:     %s, so its runs are Community runs (at the Mac, as its GUI user: omarchy-m-test --sign-in)\n", d.SignIn)
 	}
 	fmt.Printf("  last seen:   %s, uptime %.0fs, systemd %s\n", ago(d.LastSeen), d.Health.Uptime, d.Health.SystemState)
 	if d.BootID != "" {

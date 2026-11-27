@@ -25,7 +25,7 @@
       <dt>catalogue</dt><dd>feature catalogue v{{.CatalogueVersion}}</dd>
       <dt>uploaded</dt><dd>{{.Uploaded}}</dd>
       {{- if .Uploader}}
-      <dt>uploaded by</dt><dd id="uploader" title="Who the Mac was signed in as when the report came. Maintainers alone see this.">{{.Uploader}}</dd>
+      <dt>signed in as</dt><dd id="uploader" title="Who the Mac was signed in as when the report came. Maintainers alone see this.">{{.Uploader}}</dd>
       {{- end}}
       <dt>results</dt><dd>{{with .Counts}}<span class="ok">{{.Pass}} pass</span> · <span class="bad">{{.Fail}} fail</span>{{if .Gap}} · <span class="gap" title="Failures the feature catalogue expects on this Mac: not yet supported, or no such hardware">{{.Gap}} gap</span>{{end}} · <span class="dim">{{.Skip}} skip</span>{{end}}</dd>
       {{- if .Unattended}}

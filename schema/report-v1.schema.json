@@ -57,7 +57,7 @@
         "encryption": { "description": "Whether the root filesystem is on an encrypted volume.", "enum": ["on", "off", "unknown"] },
         "candidate_set": { "description": "The candidate set a candidate image was built from: the candidate_set of the image's target record (image/target or, after first boot, image/target.booted), else of the factory seal. Absent without a target record.", "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
         "image": {
-          "description": "The image's own build record: these keys of its target record (/var/lib/omarchy/image/target, or image/target.booted after the first boot), as the image builder writes them. Absent without a target record; older images have only format and platform.",
+          "description": "The image's own build record: these keys of its target record (/var/lib/omarchy/image/target, or image/target.booted after the first boot) and its install receipt, as the image builder writes them. Absent without a target record; older images have only format and platform.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -69,7 +69,11 @@
             "builder_tree_clean": { "description": "Whether the builder's tree was clean.", "type": "string", "pattern": "^(true|false|yes|no)$" },
             "image_profile": { "description": "lab, test or release.", "type": "string", "pattern": "^[a-z]{1,20}$" },
             "package_set_sha256": { "description": "The digest of the image's installed package set, as its release's IMAGE and PROVENANCE give it; with built, it names the release asset.", "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "built": { "description": "When the image was built, UTC.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
+            "built": { "description": "When the image was built, UTC.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+            "channel_set": { "description": "The package channel set the image was built from, its lane first, e.g. omarchy-stable-ee11c8a6b5a8.", "type": "string", "pattern": "^omarchy-(stable|rc|edge)-[0-9a-f]{12,64}$" },
+            "lane": { "description": "From a stable or rc image's install receipt (/var/lib/omarchy/install-receipt): its release lane.", "type": "string", "pattern": "^(stable|rc|edge)$" },
+            "release_tag": { "description": "From the install receipt: the Omarchy release, e.g. v4.5.0.", "type": "string", "pattern": "^v[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}(-rc[0-9]{1,3})?$" },
+            "mac_revision": { "description": "From the install receipt: the Mac revision of that release, e.g. 2 for 4.5.0-r2.", "type": "string", "pattern": "^[0-9]{1,3}$" }
           }
         },
         "packages": {

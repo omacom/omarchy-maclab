@@ -6,6 +6,7 @@
     {"argv": ["uname", "-m"], "returncode": 0, "stdout": "x86_64\n", "stderr": ""}
   ],
   "files": {
+    "/var/lib/omarchy/install-receipt": null,
     "/proc/device-tree/model": null,
     "/proc/device-tree/compatible": null
   },
