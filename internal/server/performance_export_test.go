@@ -15,7 +15,7 @@ func TestThePerformanceDataTakesItsSetReleaseAndVolunteers(t *testing.T) {
 	key := func(c byte) string { return strings.Repeat(string(c), 32) }
 	at := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
 	value := func(mac, side, release, metric string, v float64) reports.PerfValue {
-		pv := reports.PerfValue{Mac: mac, Set: "bench-1", Side: side, Release: release, Metric: metric, Value: &v, Unit: "iterations/s", Measured: at}
+		pv := reports.PerfValue{Mac: mac, Set: testSet, Side: side, Release: release, Metric: metric, Value: &v, Unit: "iterations/s", Measured: at}
 		if side == "macos" {
 			pv.Release, pv.MacOSVersion, pv.MacOSBuild = "", "27.2.1", "27C101"
 		}
@@ -81,16 +81,16 @@ func TestThePerformanceDataTakesItsSetReleaseAndVolunteers(t *testing.T) {
 	}
 
 	d := get("/api/v1/performance.json")
-	if d.Set != "bench-1" || d.Release.Kernel != "6.18.1-1" || d.Release.Verdict != reports.PerfQualified || len(d.Configs) != 2 || ratio(d, "j314s") != 90 || ratio(d, "j313") != 80 {
+	if d.Set != testSet || d.Release.Kernel != "6.18.1-1" || d.Release.Verdict != reports.PerfQualified || len(d.Configs) != 2 || ratio(d, "j314s") != 90 || ratio(d, "j313") != 80 {
 		t.Errorf("the default: %+v", d)
 	}
 	if !d.Configs[0].Headline.Volunteer || d.Configs[1].Headline.MacOSBuild != "27C101" || d.Configs[1].Headline.MacsPaired != 1 {
 		t.Errorf("the headlines: %+v", d.Configs)
 	}
-	if d = get("/api/v1/performance.json?set=1&release=6.18.2-1"); d.Release.Verdict != reports.PerfNoVerdictYet || ratio(d, "j314s") != 95 || ratio(d, "j313") != -1 {
+	if d = get("/api/v1/performance.json?set=" + testSet + "&release=6.18.2-1"); d.Release.Verdict != reports.PerfNoVerdictYet || ratio(d, "j314s") != 95 || ratio(d, "j313") != -1 {
 		t.Errorf("release=6.18.2-1: %+v", d)
 	}
-	if d = get("/api/v1/performance.json?set=bench-1&volunteers=false"); len(d.Configs) != 1 || d.Configs[0].Board != "j314s" {
+	if d = get("/api/v1/performance.json?set=" + testSet + "&volunteers=false"); len(d.Configs) != 1 || d.Configs[0].Board != "j314s" {
 		t.Errorf("volunteers=false: %+v", d)
 	}
 	for _, target := range []string{"/api/v1/performance.json?set=99", "/api/v1/performance.json?release=6.0"} {

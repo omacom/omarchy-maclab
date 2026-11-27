@@ -14,7 +14,7 @@ RELEASE_CONTROLLER="lab-controller-darwin-arm64.tar.gz"
 # bench-PROGRAM/: for macOS, built on the macOS runner, and for Omarchy, on
 # the arm64 Linux one.
 RELEASE_BENCH_DARWIN=(coremark stream clpeak fio ane-bench smc-power mlx-bench)
-RELEASE_BENCH_LINUX=(coremark stream clpeak)
+RELEASE_BENCH_LINUX=(coremark stream clpeak fio)
 release_bench() {
   local p
   for p in "${RELEASE_BENCH_DARWIN[@]}"; do printf 'bench-%s-darwin-arm64.tar.gz\n' "$p"; done

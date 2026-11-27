@@ -31,9 +31,24 @@ func TestStackPackage(t *testing.T) {
 			t.Errorf("%s is not part of the stack", p)
 		}
 	}
-	for _, p := range []string{"linux", "firefox", "bash", "libva", "linux-firmware", "m1n1x"} {
+	for _, p := range []string{"linux", "firefox", "bash", "libva", "linux-firmware", "m1n1x", "omarchy-mlx", "ffmpeg"} {
 		if StackPackage(p) {
 			t.Errorf("%s is part of the stack", p)
+		}
+	}
+}
+
+// A Mac reports the stack and, by name, what a Performance run records it
+// booted; capture keeps to the stack.
+func TestBootedPackage(t *testing.T) {
+	for _, p := range []string{"mesa-aurora", "libane", "omarchy-ane", "omarchy-ane-dkms", "mil-hwx-compiler", "omarchy-mlx", "omarchy-mlx-vulkan", "avd-fw", "ffmpeg", "libva", "ocl-icd", "opencl-aurora"} {
+		if !BootedPackage(p) {
+			t.Errorf("%s is not reported", p)
+		}
+	}
+	for _, p := range []string{"bash", "python", "ffmpeg4.4", "omarchy", "libane-tools"} {
+		if BootedPackage(p) {
+			t.Errorf("%s is reported", p)
 		}
 	}
 }

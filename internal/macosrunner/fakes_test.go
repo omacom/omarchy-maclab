@@ -363,7 +363,7 @@ Output #0, null, to 'pipe:':
   Stream #0:0: Video: wrapped_avframe, $fmt(tv, bt709), 1920x1080
 frame=  120 fps=0.0 q=-0.0 size=N/A
 frame=  600 fps=300 q=-0.0 Lsize=N/A
-bench: utime=0.500s stime=0.100s rtime=2.000s
+bench: utime=${FAKE_FFMPEG_UTIME:-0.500}s stime=0.100s rtime=2.000s
 EOF
 `
 	fakeLlama = `echo "llama-bench $*" >> "$FAKE_TOOLS_LOG"

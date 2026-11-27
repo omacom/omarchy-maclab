@@ -27,7 +27,7 @@ func perfStore(t *testing.T) *store {
 // a reason code in place of one.
 func perfEntry(t *testing.T, metric string, value float64, reason string) map[string]any {
 	t.Helper()
-	set, err := sets.Load("bench-1")
+	set, err := sets.Load(testSet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func perfChecked(t *testing.T, side, state string, entries ...map[string]any) pe
 		b, _ := json.Marshal(e)
 		up.Entries = append(up.Entries, b)
 	}
-	set, _ := sets.Load("bench-1")
+	set, _ := sets.Load(testSet)
 	c, err := perf.Check(up, set, side)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ var perfNow = time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
 
 func openOmarchy(t *testing.T, st *store, mac, release, list string) perf.Run {
 	t.Helper()
-	r, err := st.openPerfRun(perf.Run{Mac: mac, Enrollment: "enr-" + mac, Set: "bench-1", Side: perf.SideOmarchy, Release: release, List: list}, perfNow)
+	r, err := st.openPerfRun(perf.Run{Mac: mac, Enrollment: "enr-" + mac, Set: testSet, Side: perf.SideOmarchy, Release: release, List: list}, perfNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,19 +105,19 @@ func TestARerunSupersedesTheCurrentValuesOnlyWhenItSucceeds(t *testing.T) {
 
 	r2 := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r2.ID, perfChecked(t, perf.SideOmarchy, "", perfEntry(t, "coremark-single", 120, "")))
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if c := current(t, got, "coremark-single"); c != "100@1" {
 		t.Fatalf("a running rerun's value is current: %s", c)
 	}
 	take(t, st, r2.ID, perfChecked(t, perf.SideOmarchy, perf.Failed, perfEntry(t, "speedometer", 0, perf.Error)))
-	got, _ = st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ = st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if a, b := current(t, got, "coremark-single"), current(t, got, "speedometer"); a != "100@1" || b != "20@1" {
 		t.Fatalf("a failed rerun replaced the values: %s %s", a, b)
 	}
 
 	r3 := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r3.ID, perfChecked(t, perf.SideOmarchy, perf.Succeeded, perfEntry(t, "coremark-single", 130, "")))
-	got, _ = st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ = st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if a, b := current(t, got, "coremark-single"), current(t, got, "speedometer"); a != "130@3" || b != "20@1" {
 		t.Fatalf("after a rerun that succeeded: %s %s", a, b)
 	}
@@ -125,7 +125,7 @@ func TestARerunSupersedesTheCurrentValuesOnlyWhenItSucceeds(t *testing.T) {
 		t.Fatalf("%d current values, want one per metric: %+v", len(got), got)
 	}
 	// Another Release has values of its own.
-	if got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.12"); len(got) != 0 {
+	if got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.12"); len(got) != 0 {
 		t.Fatalf("another Release: %+v", got)
 	}
 }
@@ -135,13 +135,13 @@ func TestAFailedAttemptFillsOnlyAMetricWithNoValue(t *testing.T) {
 	r1 := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r1.ID, perfChecked(t, perf.SideOmarchy, perf.Failed,
 		perfEntry(t, "stream-triad", 90, ""), perfEntry(t, "motionmark", 0, perf.Error)))
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if a, b := current(t, got, "stream-triad"), current(t, got, "motionmark"); a != "90@1" || b != "error@1" {
 		t.Fatalf("a failed first attempt: %s %s", a, b)
 	}
 	r2 := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r2.ID, perfChecked(t, perf.SideOmarchy, perf.Succeeded, perfEntry(t, "motionmark", 800, "")))
-	got, _ = st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ = st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if a, b := current(t, got, "stream-triad"), current(t, got, "motionmark"); a != "90@1" || b != "800@2" {
 		t.Fatalf("the retry: %s %s", a, b)
 	}
@@ -151,7 +151,7 @@ func TestAFailedAttemptFillsOnlyAMetricWithNoValue(t *testing.T) {
 	if err := st.endPerfRun(r3.ID, perf.Cancelled, perfNow); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ = st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if c := current(t, got, "7zip"); c != "none" {
 		t.Fatalf("a cancelled run's value is current: %s", c)
 	}
@@ -165,7 +165,7 @@ func TestAFailedAttemptPutsAValueWhereThereIsOnlyAReason(t *testing.T) {
 	r2 := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r2.ID, perfChecked(t, perf.SideOmarchy, perf.Failed,
 		perfEntry(t, "coremark-single", 100, ""), perfEntry(t, "speedometer", 0, perf.Error)))
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if a, b := current(t, got, "coremark-single"), current(t, got, "speedometer"); a != "100@2" || b != "not_idle@1" {
 		t.Fatalf("after the second attempt: %s %s", a, b)
 	}
@@ -176,35 +176,35 @@ func TestAFailedAttemptPutsAValueWhereThereIsOnlyAReason(t *testing.T) {
 func TestAReusedNameStartsWithNoResults(t *testing.T) {
 	st := perfStore(t)
 	for i := 0; i < 2; i++ {
-		old := perf.Run{Mac: "m1", Enrollment: "enr-old", Set: "bench-1", Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick, Metrics: []string{"coremark-single"}}
+		old := perf.Run{Mac: "m1", Enrollment: "enr-old", Set: testSet, Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick, Metrics: []string{"coremark-single"}}
 		r, err := st.openPerfRun(old, perfNow)
 		if err != nil {
 			t.Fatal(err)
 		}
 		take(t, st, r.ID, perfChecked(t, perf.SideOmarchy, perf.Succeeded, perfEntry(t, "coremark-single", 100, "")))
-		mos := perf.Run{Mac: "m1", Enrollment: "enr-old", Set: "bench-1", Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Full}
+		mos := perf.Run{Mac: "m1", Enrollment: "enr-old", Set: testSet, Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Full}
 		if r, err = st.openPerfRun(mos, perfNow); err != nil {
 			t.Fatal(err)
 		}
 		take(t, st, r.ID, perfChecked(t, perf.SideMacOS, perf.Failed, perfEntry(t, "coremark-single", 0, perf.Error)))
 	}
-	cur, tries, err := st.perfTries("m1", "enr-m1", "bench-1", "2026.11")
+	cur, tries, err := st.perfTries("m1", "enr-m1", testSet, "2026.11")
 	if err != nil || len(cur) != 0 || len(tries) != 0 {
 		t.Fatalf("the new enrollment has %v, tried %v (%v)", cur, tries, err)
 	}
-	if n, err := st.macOSTries("m1", "enr-m1", "bench-1", "27C101"); err != nil || n != 0 {
+	if n, err := st.macOSTries("m1", "enr-m1", testSet, "27C101"); err != nil || n != 0 {
 		t.Fatalf("the new enrollment's macOS attempts: %d (%v)", n, err)
 	}
-	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", "bench-1", "27C101"); len(got) != 0 {
+	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", testSet, "27C101"); len(got) != 0 {
 		t.Fatalf("the new enrollment's macOS result: %+v", got)
 	}
 	r := openOmarchy(t, st, "m1", "2026.11", sets.Quick)
 	take(t, st, r.ID, perfChecked(t, perf.SideOmarchy, perf.Failed, perfEntry(t, "coremark-single", 0, perf.Error)))
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if c := current(t, got, "coremark-single"); c != "error@3" {
 		t.Fatalf("its own first attempt: %s", c)
 	}
-	if got, _ = st.perfCurrent("m1", "enr-old", "bench-1", "2026.11"); current(t, got, "coremark-single") != "100@2" {
+	if got, _ = st.perfCurrent("m1", "enr-old", testSet, "2026.11"); current(t, got, "coremark-single") != "100@2" {
 		t.Fatalf("the old enrollment's: %+v", got)
 	}
 }
@@ -237,11 +237,11 @@ func TestAnUploadIsTakenOncePerAttemptAndMetric(t *testing.T) {
 	if _, err := st.takePerf(r.ID, perfChecked(t, perf.SideOmarchy, perf.Failed), perfNow); !errors.Is(err, errPerfEnded) {
 		t.Fatalf("an end over the end: %v", err)
 	}
-	a, _ := st.perfAttempts("m1", "bench-1", perf.SideOmarchy, "2026.11")
+	a, _ := st.perfAttempts("m1", testSet, perf.SideOmarchy, "2026.11")
 	if len(a) != 1 || len(a[0].Results) != 2 || *a[0].Results[0].Value != 100 {
 		t.Fatalf("attempts: %+v", a)
 	}
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if c := current(t, got, "coremark-single"); c != "100@1" {
 		t.Fatalf("current: %s", c)
 	}
@@ -266,19 +266,19 @@ func TestEveryAttemptIsKept(t *testing.T) {
 	if r := openOmarchy(t, st, "m1", "2026.12", sets.Quick); r.Attempt != 1 {
 		t.Fatalf("another Release's attempt %d", r.Attempt)
 	}
-	if _, err := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: "bench-1", Side: perf.SideOmarchy, Release: "2026.12", List: sets.Full}, perfNow); !errors.Is(err, errPerfRunning) {
+	if _, err := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: testSet, Side: perf.SideOmarchy, Release: "2026.12", List: sets.Full}, perfNow); !errors.Is(err, errPerfRunning) {
 		t.Fatalf("a second run beside a running one: %v", err)
 	}
-	mos, err := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: "bench-1", Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Quick}, perfNow)
+	mos, err := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: testSet, Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Quick}, perfNow)
 	if err != nil || mos.Attempt != 1 {
 		t.Fatalf("macOS: %+v %v", mos, err)
 	}
 	take(t, st, mos.ID, perfChecked(t, perf.SideMacOS, perf.Succeeded, perfEntry(t, "coremark-single", 150, "")))
-	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", "bench-1", "27C101"); current(t, got, "coremark-single") != "150@1" {
+	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", testSet, "27C101"); current(t, got, "coremark-single") != "150@1" {
 		t.Fatalf("the macOS result: %+v", got)
 	}
 
-	a, err := st.perfAttempts("m1", "bench-1", perf.SideOmarchy, "2026.11")
+	a, err := st.perfAttempts("m1", testSet, perf.SideOmarchy, "2026.11")
 	if err != nil || len(a) != 3 {
 		t.Fatalf("%d attempts %v", len(a), err)
 	}
@@ -292,11 +292,11 @@ func TestEveryAttemptIsKept(t *testing.T) {
 	if a[0].Run.State != perf.Failed || a[1].Run.State != perf.Succeeded || a[2].Run.State != perf.Failed {
 		t.Errorf("states: %s %s %s", a[0].Run.State, a[1].Run.State, a[2].Run.State)
 	}
-	got, _ := st.perfCurrent("m1", "enr-m1", "bench-1", "2026.11")
+	got, _ := st.perfCurrent("m1", "enr-m1", testSet, "2026.11")
 	if c := current(t, got, "coremark-single"); c != "101@2" {
 		t.Fatalf("current: %s", c)
 	}
-	if m, _ := st.perfAttempts("m1", "bench-1", perf.SideMacOS, "27C101"); len(m) != 1 || m[0].Run.MacOSVersion != "27.2.1" {
+	if m, _ := st.perfAttempts("m1", testSet, perf.SideMacOS, "27C101"); len(m) != 1 || m[0].Run.MacOSVersion != "27.2.1" {
 		t.Fatalf("macOS attempts: %+v", m)
 	}
 }
@@ -309,21 +309,21 @@ func TestAnAttemptWithAnErrorCannotSucceed(t *testing.T) {
 	if !errors.Is(err, errPerfErrorRun) {
 		t.Fatalf("succeeded with an error: %v", err)
 	}
-	if a, _ := st.perfAttempts("m1", "bench-1", perf.SideOmarchy, "2026.11"); len(a[0].Results) != 0 || a[0].Run.State != perf.Running {
+	if a, _ := st.perfAttempts("m1", testSet, perf.SideOmarchy, "2026.11"); len(a[0].Results) != 0 || a[0].Run.State != perf.Running {
 		t.Fatalf("a refused upload left: %+v", a)
 	}
 }
 
 func TestResultsThatComeAfterNeedsHandsAreTaken(t *testing.T) {
 	st := perfStore(t)
-	r, _ := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: "bench-1", Side: perf.SideMacOS, MacOSBuild: "27C101", List: sets.Quick}, perfNow)
+	r, _ := st.openPerfRun(perf.Run{Mac: "m1", Enrollment: "enr-m1", Set: testSet, Side: perf.SideMacOS, MacOSBuild: "27C101", List: sets.Quick}, perfNow)
 	if err := st.endPerfRun(r.ID, perf.NeedsHands, perfNow); err != nil {
 		t.Fatal(err)
 	}
 	if tk := take(t, st, r.ID, perfChecked(t, perf.SideMacOS, perf.Succeeded, perfEntry(t, "speedometer", 25, ""))); tk.Taken != 1 || tk.State != perf.Succeeded {
 		t.Fatalf("late: %+v", tk)
 	}
-	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", "bench-1", "27C101"); current(t, got, "speedometer") != "25@1" {
+	if got, _ := st.perfCurrentMacOS("m1", "enr-m1", testSet, "27C101"); current(t, got, "speedometer") != "25@1" {
 		t.Fatalf("current: %+v", got)
 	}
 }
@@ -331,7 +331,7 @@ func TestResultsThatComeAfterNeedsHandsAreTaken(t *testing.T) {
 func TestThePerformanceUploadsRefuseWhatIsNotTheirs(t *testing.T) {
 	l := newLab(t, false)
 	enr := l.s.dev(l.name).snapshot().ID
-	run, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enr, Set: "bench-1", Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick}, l.s.now())
+	run, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enr, Set: testSet, Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick}, l.s.now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestThePerformanceUploadsRefuseWhatIsNotTheirs(t *testing.T) {
 			t.Errorf("%s: %d %s", name, resp.StatusCode, body)
 		}
 	}
-	if a, _ := l.s.store.perfAttempts(l.name, "bench-1", perf.SideOmarchy, "2026.11"); len(a[0].Results) != 0 {
+	if a, _ := l.s.store.perfAttempts(l.name, testSet, perf.SideOmarchy, "2026.11"); len(a[0].Results) != 0 {
 		t.Fatalf("a refused upload left results: %+v", a[0].Results)
 	}
 
@@ -366,7 +366,7 @@ func TestThePerformanceUploadsRefuseWhatIsNotTheirs(t *testing.T) {
 	if tk := decodeInto[perf.Taken](t, body); resp.StatusCode != 200 || tk.Already != 1 || tk.State != perf.Succeeded {
 		t.Fatalf("again, ending it: %d %s", resp.StatusCode, body)
 	}
-	if got, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "2026.11"); current(t, got, "coremark-single") != "100@1" {
+	if got, _ := l.s.store.perfCurrent(l.name, l.s.dev(l.name).snapshot().ID, testSet, "2026.11"); current(t, got, "coremark-single") != "100@1" {
 		t.Fatalf("current: %+v", got)
 	}
 	if resp, _ := l.as(l.secret, "POST", path, map[string]any{"entries": []any{perfEntry(t, "speedometer", 20, "")}}); resp.StatusCode != 409 {
@@ -379,7 +379,7 @@ func TestThePerformanceUploadsRefuseWhatIsNotTheirs(t *testing.T) {
 	if resp, _ := l.as(secret, "POST", fmt.Sprintf("/api/macos/runner/performance/%d/results", run.ID), up); resp.StatusCode != 404 {
 		t.Errorf("the runner on an Omarchy run: %d", resp.StatusCode)
 	}
-	mos, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enr, Set: "bench-1", Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Quick}, l.s.now())
+	mos, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enr, Set: testSet, Side: perf.SideMacOS, MacOSVersion: "27.2.1", MacOSBuild: "27C101", List: sets.Quick}, l.s.now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestThePerformanceUploadsRefuseWhatIsNotTheirs(t *testing.T) {
 	if resp.StatusCode != 200 || decodeInto[perf.Taken](t, body).Taken != 1 {
 		t.Fatalf("macOS upload: %d %s", resp.StatusCode, body)
 	}
-	if got, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", "27C101"); current(t, got, "coremark-single") != "100@1" {
+	if got, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, "27C101"); current(t, got, "coremark-single") != "100@1" {
 		t.Fatalf("macOS current: %+v", got)
 	}
 	if resp, _ := l.as(l.secret, "POST", "/api/agent/performance/999999/results", up); resp.StatusCode != 404 {

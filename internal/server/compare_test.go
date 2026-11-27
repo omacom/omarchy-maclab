@@ -169,10 +169,10 @@ func TestCompareCurrentAgainstASet(t *testing.T) {
 		t.Errorf("B's failed units: %v", b.FailedUnits)
 	}
 
-	if j.Spec.Compare.Bench != "bench-1" || res.Bench != "bench-1" {
+	if j.Spec.Compare.Bench != testSet || res.Bench != testSet {
 		t.Errorf("the job's Benchmark set: %q, the report's %q", j.Spec.Compare.Bench, res.Bench)
 	}
-	set, _ := sets.Load("bench-1")
+	set, _ := sets.Load(testSet)
 	var ids []string
 	for _, r := range res.Rows {
 		ids = append(ids, r.Name)
@@ -487,8 +487,10 @@ func TestCompareWithMacOS(t *testing.T) {
 	if c := rowOf(t, res, "coremark-single"); !near(c.MacOSDelta, 2) || c.MacOSVerdict != api.VerdictNoChange {
 		t.Errorf("CoreMark in macOS: %+v", c)
 	}
+	set, _ := sets.Load(testSet)
+	dm, _ := set.Metric("decode-h264-1080p")
 	if d := rowOf(t, res, "decode-h264-1080p"); !near(d.MacOSDelta, 50) || d.MacOSVerdict != api.VerdictBetter ||
-		d.MacOSNote != "API differs: V4L2 request on Omarchy, VideoToolbox on macOS" {
+		d.MacOSNote != "API differs: "+dm.Omarchy.API+" on Omarchy, VideoToolbox on macOS" {
 		t.Errorf("H.264 decode in macOS: %+v", d)
 	}
 	if m := rowOf(t, res, "motionmark"); m.MacOS != nil || m.MacOSVerdict != api.VerdictNotCompared || m.MacOSNote != perf.NoBuild {
@@ -555,7 +557,7 @@ func TestCompareVerdictsByTheSetsTolerance(t *testing.T) {
 // A metric a side did not run, or ran with a reason code, is not compared,
 // with the reason.
 func TestCompareRowsNotComparedSayWhy(t *testing.T) {
-	set, err := sets.Load("bench-1")
+	set, err := sets.Load(testSet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,8 +618,8 @@ func TestABootLoaderSetNeedsASightingFromTheStart(t *testing.T) {
 // The runner of a Benchmark set writes metric ids and reason codes.
 func TestCompareReadsABenchmarkSetsEntries(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "bench.json")
-	os.WriteFile(p, []byte(`[{"set":"bench-1","metric":"7zip","category":"CPU","version":"26.06","value":50450,"unit":"MIPS","higher_is_better":true,"spread":null,"seconds":60,"cool_down":null,"api":null,"capacity":null,"reason":null},
-{"set":"bench-1","metric":"clpeak-fp32","category":"GPU","version":"3.0.5","value":null,"unit":"GFLOPS","higher_is_better":true,"spread":null,"seconds":2,"cool_down":{"seconds":0,"temp_c":41.0},"api":"Rusticl","capacity":null,"reason":"fell_back"}]`), 0o644)
+	os.WriteFile(p, []byte(`[{"set":"`+testSet+`","metric":"7zip","category":"CPU","version":"26.06","value":50450,"unit":"MIPS","higher_is_better":true,"spread":null,"seconds":60,"cool_down":null,"api":null,"capacity":null,"reason":null},
+{"set":"`+testSet+`","metric":"clpeak-fp32","category":"GPU","version":"3.0.5","value":null,"unit":"GFLOPS","higher_is_better":true,"spread":null,"seconds":2,"cool_down":{"seconds":0,"temp_c":41.0},"api":"Rusticl","capacity":null,"reason":"fell_back"}]`), 0o644)
 	rs := readBench(p)
 	if len(rs) != 2 || rs[0].Name != "7zip" || rs[0].Value == nil || *rs[0].Value != 50450 || rs[0].Note != "" {
 		t.Fatalf("read %+v", rs)

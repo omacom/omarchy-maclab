@@ -131,7 +131,8 @@ func TestAPackageSetRefusesWhatItCannotResolve(t *testing.T) {
 	}
 }
 
-// lab set capture records the stack a Mac last reported installed.
+// lab set capture records the stack a Mac last reported installed, and
+// nothing else it reported.
 func TestCaptureRecordsTheStackAMacReported(t *testing.T) {
 	l := newLab(t, false)
 	l.waitDevice(func(d api.Device) bool { return len(d.Facts.Stack) > 0 })

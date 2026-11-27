@@ -2,6 +2,7 @@ package reports
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -672,10 +673,17 @@ func TestThePerformanceDataNamesNoMacAndAReleaseByKernelAndVerdict(t *testing.T)
 }
 
 func TestPerfSetIsNamedByNumberOrName(t *testing.T) {
-	for _, name := range []string{"", "1", "bench-1"} {
+	for _, name := range []string{"1", "bench-1"} {
 		if s, err := PerfSet(name); err != nil || s.Name != "bench-1" {
 			t.Errorf("%q: %v %v", name, s, err)
 		}
+	}
+	want, err := sets.Current()
+	if errors.Is(err, sets.ErrNoSet) {
+		want, err = sets.Newest()
+	}
+	if s, err2 := PerfSet(""); err != nil || err2 != nil || s.Name != want.Name {
+		t.Errorf(`"": %v %v, want %s`, s, err2, want.Name)
 	}
 	if _, err := PerfSet("bench-99"); err == nil {
 		t.Error("bench-99 is a set")

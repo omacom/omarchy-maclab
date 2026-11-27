@@ -201,7 +201,9 @@ func (s *Server) hCaptureSet(w http.ResponseWriter, r *http.Request) {
 	set := &api.PackageSet{Name: req.Name, CapturedFrom: req.Mac}
 	names := make([]string, 0, len(stack))
 	for name := range stack {
-		names = append(names, name)
+		if api.StackPackage(name) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	for _, name := range names {

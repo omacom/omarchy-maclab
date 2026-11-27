@@ -155,6 +155,7 @@ func TestReleaseFiles(t *testing.T) {
 		"bench-fio-darwin-arm64.tar.gz", "bench-ane-bench-darwin-arm64.tar.gz", "bench-smc-power-darwin-arm64.tar.gz",
 		"bench-mlx-bench-darwin-arm64.tar.gz",
 		"bench-coremark-linux-arm64.tar.gz", "bench-stream-linux-arm64.tar.gz", "bench-clpeak-linux-arm64.tar.gz",
+		"bench-fio-linux-arm64.tar.gz",
 	}
 	if got := strings.Fields(out); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("a Lab release's files are\n%q\nwant\n%q", got, want)

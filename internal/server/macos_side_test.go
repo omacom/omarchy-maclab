@@ -21,7 +21,7 @@ import (
 // store, the current set a macOS result is taken of.
 func macOSResultSet(t *testing.T, l *lab) *sets.Set {
 	t.Helper()
-	set, err := sets.Load("bench-1")
+	set, err := sets.Load(testSet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestAFailedMacOSResultIsMeasuredOnceMore(t *testing.T) {
 	if third, err := l.s.queueMacOSSide(l.name); err != nil || third != nil {
 		t.Fatalf("a third run: %+v (%v)", third, err)
 	}
-	got, _ := l.s.store.perfCurrentMacOS(l.name, enrollment, "bench-1", testMacOSBuild)
+	got, _ := l.s.store.perfCurrentMacOS(l.name, enrollment, testSet, testMacOSBuild)
 	if c := current(t, got, "coremark-single"); c != "30000@1" {
 		t.Errorf("the first attempt's value: %s", c)
 	}
@@ -383,7 +383,7 @@ func TestAMacOSRunPastItsHourNeedsHandsAndItsLateResultsAreTaken(t *testing.T) {
 	if r := l.s.macOS().run(l.name); r.State != api.MacOSDone {
 		t.Errorf("the run after its late results: %+v", r)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 1 || *kept[0].Value != 31000 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, testMacOSBuild); len(kept) != 1 || *kept[0].Value != 31000 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 }
@@ -458,7 +458,7 @@ func TestAnAttendedMacsRunBootsMacOSOnlyOnceAPersonIsAtTheMac(t *testing.T) {
 	if r := l.s.macOS().run(l.name); r.State != api.MacOSDone {
 		t.Errorf("run: %+v", r)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 2 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, testMacOSBuild); len(kept) != 2 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.Kernel == agent.SimKnownGood })
@@ -531,7 +531,7 @@ func TestAnAttendedMacsRunIsDroppedWithNobodyInADay(t *testing.T) {
 	}
 
 	// The Mac's next Omarchy side ends: the macOS side is due again.
-	om, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: v.snapshot().ID, Set: "bench-1", Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick}, l.s.now())
+	om, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: v.snapshot().ID, Set: testSet, Side: perf.SideOmarchy, Release: "2026.11", List: sets.Quick}, l.s.now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestCompareUsesAKeptMacOSResult(t *testing.T) {
 
 	j := l.mustCompare(api.CompareRequest{Before: api.CompareCurrent, After: "7.3", MacOS: true})
 	l.expect(j, api.OutcomePass)
-	if j.Spec.Compare.Bench != "bench-1" {
+	if j.Spec.Compare.Bench != testSet {
 		t.Errorf("the job's set: %q", j.Spec.Compare.Bench)
 	}
 	m := j.Result.Compare.Side(api.SideMacOS)
@@ -684,7 +684,7 @@ func TestACompareWithNoKeptMacOSResultMeasuresOneAndKeepsIt(t *testing.T) {
 	}
 	enrollment := l.s.dev(l.name).snapshot().ID
 	for i := 0; i < macOSTriesMax; i++ {
-		pr, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enrollment, Set: "bench-1", Side: perf.SideMacOS,
+		pr, err := l.s.store.openPerfRun(perf.Run{Mac: l.name, Enrollment: enrollment, Set: testSet, Side: perf.SideMacOS,
 			MacOSVersion: testMacOSVersion, MacOSBuild: testMacOSBuild, List: sets.Full}, l.s.now())
 		if err != nil {
 			t.Fatal(err)
@@ -725,10 +725,10 @@ func TestACompareWithNoKeptMacOSResultMeasuresOneAndKeepsIt(t *testing.T) {
 		t.Errorf("Speedometer in macOS: %+v", sp)
 	}
 	run := l.s.macOS().run(l.name)
-	if pr := l.perfRunOf(run.PerfRun); pr.Side != perf.SideMacOS || pr.Set != "bench-1" || pr.MacOSBuild != testMacOSBuild || pr.State != perf.Succeeded || pr.Attempt != macOSTriesMax+1 {
+	if pr := l.perfRunOf(run.PerfRun); pr.Side != perf.SideMacOS || pr.Set != testSet || pr.MacOSBuild != testMacOSBuild || pr.State != perf.Succeeded || pr.Attempt != macOSTriesMax+1 {
 		t.Errorf("its attempt: %+v", pr)
 	}
-	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, "bench-1", testMacOSBuild); len(kept) != 2 {
+	if kept, _ := l.s.store.perfCurrentMacOS(l.name, l.s.dev(l.name).snapshot().ID, testSet, testMacOSBuild); len(kept) != 2 {
 		t.Errorf("the macOS result: %+v", kept)
 	}
 	l.waitDevice(func(d api.Device) bool { return d.State == api.StateReady && d.ActiveJob == "" })

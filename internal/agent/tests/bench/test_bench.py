@@ -452,7 +452,7 @@ class Storage(Case):
         e = self.run1("fio-seq-write")
         self.assertEqual(e["reason"], "error")
         self.assertIsNotNone(e["capacity"])
-        self.assertFalse((self.work / "fio").exists())
+        self.assertFalse((self.work / "fio-scratch").exists())
 
     def test_the_file_goes_when_the_run_is_cancelled(self):
         def cancel():
@@ -461,7 +461,7 @@ class Storage(Case):
         with self.assertRaises(bench.Cancelled):
             self.run1("fio-rand-read-4k")
         self.assertTrue(self.seen)
-        self.assertFalse((self.work / "fio").exists())
+        self.assertFalse((self.work / "fio-scratch").exists())
 
     def test_direct_io_through_the_page_cache_fell_back(self):
         self.h.tools["fincore"] = lambda c: str(8 << 30)
@@ -943,6 +943,275 @@ class Output(Case):
         src = (HERE / "bench.py").read_text()
         for gone in ("glmark2", "vkmark", "vkpeak", "kernel_compile", "rtcwake", "geekbench", "chromium"):
             self.assertIsNone(re.search(gone, src, re.I), gone)
+
+
+SET2 = json.loads((HERE / "sets" / "bench-2.json").read_text())
+
+# FFmpeg 9 at -v verbose decoding through VA-API on the V4L2 request driver,
+# as m2-max printed it (2026-11-27), trimmed.
+VAAPI_LOG = """[VAAPI @ 0xa] libva: Trying to open /usr/lib/dri/asahi_drv_video.so
+[VAAPI @ 0xa] VAAPI driver: v4l2-request (omarchy-m1-video 1.3.r11).
+[h264 @ 0xb] Reinit context to 1920x1088, pix_fmt: vaapi
+[graph -1 input from stream 0:0 @ 0xc] w:1920 h:1080 pixfmt:vaapi tb:1/15360 fr:60/1 sar:1/1 csp:unknown range:unknown alpha:unspecified
+[out#0/null @ 0xd]   Output stream #0:0 (video): 600 frames encoded; 600 packets muxed (254400 bytes);
+bench: utime=0.064s stime=0.100s rtime=1.200s
+[in#0/mov,mp4,m4a,3gp,3g2,mj2 @ 0xe]   Input stream #0:0 (video): 600 packets read (5232146 bytes); 600 frames decoded; 0 decode errors;
+"""
+GPU_UEVENT = "DRIVER=asahi\nOF_NAME=gpu\nOF_COMPATIBLE_0=apple,agx-t6021\nOF_COMPATIBLE_1=apple,agx-g14x\nOF_COMPATIBLE_N=2\n"
+
+
+class Case2(Case):
+    """A case on bench-2."""
+
+    def setUp(self):
+        super().setUp()
+        self.set = copy.deepcopy(SET2)
+        self.ctx = bench.Ctx(self.h, self.set, self.cache, self.work, log=self.log)
+
+
+def framemd5(cmd, sums):
+    """What FFmpeg's framemd5 muxer writes, into the file the command names."""
+    pathlib.Path(cmd[-1]).write_text("#format: frame checksums\n" + "".join(f"0, {i}, {i}, 1, 3110400, {s}\n" for i, s in enumerate(sums)))
+    return ""
+
+
+class VAAPI(Case2):
+    def setUp(self):
+        super().setUp()
+        self.out = VAAPI_LOG
+        self.hw_sums = self.sw_sums = [f"{i:032x}" for i in range(bench.DECODE_CHECK_FRAMES)]
+        self.h.tools["ffmpeg"] = self.ff
+        self.h.write("sys/class/drm/renderD128/device/uevent", GPU_UEVENT)
+        self.h.write("dev/media0", "")
+        self.pin("clip-h264-1080p")
+
+    def ff(self, c):
+        if "-hwaccels" in c:
+            return " vaapi\n vulkan\n"
+        if "framemd5" in c:
+            return framemd5(c, self.hw_sums if "hwdownload,format=nv12" in c else self.sw_sums) + (self.out if "-hwaccel" in c else "")
+        return self.out
+
+    def decode_argv(self):
+        return [c for c in self.h.argv("ffmpeg") if "-hwaccels" not in c and "framemd5" not in c][-1]
+
+    def test_frames_read_back_must_be_ffmpegs_own_decoders(self):
+        e = self.run1("decode-h264-1080p")
+        self.assertIsNone(e["reason"])
+        hw, sw = [c for c in self.h.argv("ffmpeg") if "framemd5" in c]
+        self.assertEqual(hw[hw.index("-frames:v") + 1], str(bench.DECODE_CHECK_FRAMES))
+        self.assertIn("hwdownload,format=nv12", hw)
+        self.assertNotIn("-hwaccel", sw)
+        self.assertFalse((self.work / "decode-check").exists())
+        self.hw_sums = self.hw_sums[:-1] + ["f" * 32]
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "error")
+        self.hw_sums = self.sw_sums[:-1]
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "error")
+
+    def test_a_decode_spent_on_the_cpu_fell_back(self):
+        self.out = VAAPI_LOG.replace("utime=0.064s", "utime=4.800s")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "fell_back")
+
+    def test_h264_decoded_by_the_v4l2_request_va_driver_on_the_apple_gpu(self):
+        e = self.run1("decode-h264-1080p")
+        self.assertEqual((e["value"], e["api"], e["reason"]), (500.0, "VA-API (V4L2 request)", None))
+        run = self.decode_argv()
+        for k, v in {"-hwaccel": "vaapi", "-hwaccel_device": "/dev/dri/renderD128", "-hwaccel_output_format": "vaapi", "-v": "verbose"}.items():
+            self.assertEqual(run[run.index(k) + 1], v, k)
+        self.assertNotIn("-re", run)
+        self.assertFalse(self.h.argv("ffprobe"), "the set pins the frames: ffprobe counts none")
+
+    def test_the_render_node_is_the_apple_gpus_not_the_first(self):
+        self.h.write("sys/class/drm/renderD128/device/uevent", "DRIVER=vkms\n")
+        self.h.write("sys/class/drm/renderD129/device/uevent", GPU_UEVENT)
+        self.assertIsNone(self.run1("decode-h264-1080p")["reason"])
+        run = self.decode_argv()
+        self.assertEqual(run[run.index("-hwaccel_device") + 1], "/dev/dri/renderD129")
+
+    def test_frames_that_were_not_va_surfaces_fell_back(self):
+        self.out = VAAPI_LOG.replace("pixfmt:vaapi", "pixfmt:yuv420p")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "fell_back")
+        self.out = VAAPI_LOG + "[graph -1 input from stream 0:0 @ 0xf] w:1920 h:1080 pixfmt:yuv420p tb:1/15360\n"
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "fell_back")
+
+    def test_another_va_driver_fell_back(self):
+        self.out = VAAPI_LOG.replace("v4l2-request (omarchy-m1-video 1.3.r11)", "Mesa Gallium driver 26.3.0 for llvmpipe")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "fell_back")
+
+    def test_any_frame_short_of_the_pinned_count_is_an_error(self):
+        self.out = VAAPI_LOG.replace("600 frames decoded", "599 frames decoded")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "error")
+        self.out = VAAPI_LOG.replace("0 decode errors", "2 decode errors")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "error")
+        self.pin("clip-hevc-4k")
+        self.assertEqual(self.run1("decode-hevc-4k")["reason"], "error", "the HEVC clip pins 1797 frames")
+
+    def test_no_vaapi_is_no_build_and_no_apple_gpu_or_media_device_no_driver(self):
+        self.h.tools["ffmpeg"] = lambda c: " vulkan\n" if "-hwaccels" in c else VAAPI_LOG
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_build")
+        self.h.tools["ffmpeg"] = self.ff
+        self.h.write("sys/class/drm/renderD128/device/uevent", "DRIVER=vkms\n")
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_driver")
+        self.h.write("sys/class/drm/renderD128/device/uevent", GPU_UEVENT)
+        os.unlink(pathlib.Path(self.h.root, "dev/media0"))
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_driver")
+        self.h.write("dev/media0", "")
+        self.out = "[VAAPI @ 0xa] Failed to initialise VAAPI connection: -1 (unknown libva error).\nDevice creation failed: -5.\n"
+        self.assertEqual(self.run1("decode-h264-1080p")["reason"], "no_driver")
+
+    def test_playback_samples_power_over_the_decode_alone(self):
+        self.h.write("sys/class/hwmon/hwmon2/name", "macsmc_hwmon")
+        self.h.write("sys/class/hwmon/hwmon2/power1_label", "Total System Power")
+        self.h.write("sys/class/hwmon/hwmon2/power1_input", "10000000")
+        self.ctx.power_interval = 0.01
+        during = []
+
+        def ff(c):
+            if "-hwaccels" in c:
+                during.append("hwaccels")
+                return " vaapi\n"
+            if "framemd5" in c:
+                during.append("check")
+                return self.ff(c)
+            during.append("decode")
+            time.sleep(0.1)
+            return VAAPI_LOG.replace("rtime=1.200s", "rtime=10.000s")
+        self.h.tools["ffmpeg"] = ff
+        e = self.run1("power-playback-1080p")
+        self.assertIsNone(e["reason"])
+        self.assertAlmostEqual(e["value"], 1.0, delta=0.6)
+        self.assertEqual(during, ["hwaccels", "check", "check", "decode"])
+        self.assertIn("-re", self.decode_argv())
+
+
+class OmarchyMLX(Case2):
+    def venv(self):
+        self.h.write(bench.MLX_OMARCHY_PYTHON, "")
+
+    def test_no_omarchy_mlx_is_no_build(self):
+        self.h.tools["python3"] = lambda c: '{"status": "ok", "tflops": 3.0}\n'
+        self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], "no_build")
+        self.assertFalse(self.h.argv("python3"), "the Stack's python3 is not omarchy-mlx")
+
+    def test_omarchy_mlxs_own_interpreter_alone(self):
+        self.venv()
+        self.h.tools["env"] = lambda c: 'device: Apple M2 Max (G14C B1) Honeykrisp packaged\n{"status": "ok", "tflops": 2.214}\n'
+        e = self.run1("mlx-matmul-fp16")
+        self.assertEqual((e["value"], e["api"], e["reason"]), (2.214, "Vulkan (omarchy-mlx)", None))
+        c = self.h.argv("env")[0]
+        self.assertEqual(c[:3], ["env", "-i", "PATH=/usr/bin"])
+        self.assertEqual(c[4:6], [self.h.path(bench.MLX_OMARCHY_PYTHON), "-I"])
+        self.assertEqual(c[-3:], ["4096", "5", "50"])
+        for status in ("no_driver", "fell_back"):
+            self.h.tools["env"] = lambda c, s=status: json.dumps({"status": s}) + "\n"
+            self.assertEqual(self.run1("mlx-matmul-fp16")["reason"], status)
+
+    def probe(self, info):
+        stub = pathlib.Path(tempfile.mkdtemp()) / "mlx"
+        self.addCleanup(shutil.rmtree, stub.parent)
+        stub.mkdir()
+        (stub / "__init__.py").write_text("")
+        (stub / "core.py").write_text(f"""
+gpu, float16 = "gpu", "float16"
+class A:
+    def astype(self, t): return self
+    def __matmul__(self, o): return "product"
+class random:
+    normal = staticmethod(lambda shape: A())
+def is_available(d): return True
+def device_info(): return {info!r}
+def set_default_device(d): pass
+def default_device(): return "Device(gpu, 0)"
+def eval(*a): pass
+def synchronize(): pass
+""")
+        r = subprocess.run([sys.executable, "-c", bench.MLX_OMARCHY_PROBE, "64", "1", "2"], env={**os.environ, "PYTHONPATH": str(stub.parent)},
+                           capture_output=True, text=True, check=True)
+        return json.loads(r.stdout.strip().splitlines()[-1])["status"]
+
+    def test_the_probe_counts_only_the_packaged_honeykrisp_on_the_macs_gpu(self):
+        good = {"device_name": "Apple M2 Max (G14C B1)", "driver": "Honeykrisp", "icd_source": "packaged"}
+        self.assertEqual(self.probe(good), "ok")
+        self.assertEqual(self.probe(dict(good, icd_source="user")), "fell_back")
+        self.assertEqual(self.probe(dict(good, driver="llvmpipe", device_name="llvmpipe (LLVM 19)")), "fell_back")
+
+
+class Storage2(Case2):
+    def setUp(self):
+        super().setUp()
+        self.pin("fio", {"bench-fio/bin/fio": ("", 0o755)})
+        self.h.write("sys/block/nvme0n1/size", str(976773168))
+        self.h.tools["fincore"] = lambda c: "0"
+        self.fills = 0
+
+        def fio(cmd):
+            path = pathlib.Path(opt(cmd, "--filename"))
+            if opt(cmd, "--name") == "fill":
+                self.fills += 1
+                path.write_bytes(b"\0" * 4096)
+                return ""
+            self.assertTrue(path.exists())
+            rw = opt(cmd, "--rw")
+            pathlib.Path(opt(cmd, "--output")).write_text(fio_json(rw, 3_000_000_000, 2861.0))
+            return ""
+        self.h.tools["fio"] = fio
+
+    def storage(self):
+        return [m for m in self.set["metrics"] if m["category"] == "Storage"]
+
+    def test_one_fill_for_the_runs_storage_and_the_file_goes_when_the_run_ends(self):
+        out = bench.run_list(self.storage(), self.ctx)
+        self.assertEqual([e["reason"] for e in out], [None] * 4)
+        self.assertEqual(self.fills, 1)
+        self.assertFalse((self.work / "fio-scratch").exists())
+
+    def test_a_failed_test_takes_the_file_and_the_next_fills_again(self):
+        real = self.h.tools["fio"]
+        calls = []
+
+        def flaky(cmd):
+            calls.append(opt(cmd, "--rw"))
+            if opt(cmd, "--name") != "fill" and len(calls) == 2:
+                return bench.Ran(1, "fio: io_u error", 0)
+            return real(cmd)
+        self.h.tools["fio"] = flaky
+        out = bench.run_list(self.storage()[:2], self.ctx)
+        self.assertEqual([e["reason"] for e in out], ["error", None])
+        self.assertEqual(self.fills, 2)
+
+    def test_no_value_where_the_cache_bypass_cannot_be_seen(self):
+        del self.h.tools["fincore"]
+        self.assertEqual(self.run1("fio-seq-read")["reason"], "error")
+        self.assertFalse((self.work / "fio-scratch").exists())
+
+
+class ClpeakDevices(Case2):
+    def setUp(self):
+        super().setUp()
+        self.pin("clpeak", {"clpeak/bin/clpeak": ("", 0o755)})
+
+    def test_only_the_macs_own_gpu_is_measured(self):
+        both = CLPEAK_LLVMPIPE.replace("Platform 0", "Platform 1") + CLPEAK_3.replace("Backend: OpenCL\n", "")
+        self.h.tools["clpeak"] = lambda c: both
+        e = self.run1("clpeak-fp32")
+        self.assertEqual((e["value"], e["reason"]), (10200.0, None))
+        self.h.tools["clpeak"] = lambda c: CLPEAK_LLVMPIPE
+        self.assertEqual(self.run1("clpeak-fp32")["reason"], "fell_back")
+
+    def test_a_vector_width_that_failed_hides_none_after_it(self):
+        out = CLPEAK_3.replace("        float    : 9.45 TFLOPS\n", "        float    : [error] clEnqueueNDRangeKernel (-5)\n")
+        self.h.tools["clpeak"] = lambda c: out
+        self.assertEqual(self.run1("clpeak-fp32")["value"], 10200.0)
+
+    def test_another_device_failing_afterwards_keeps_the_gpus_value(self):
+        out = CLPEAK_3 + "    Device 1: llvmpipe (LLVM 19.1.7, 128 bits)\nclCreateCommandQueue (-5)\n"
+        self.h.tools["clpeak"] = lambda c: bench.Ran(255, out, 1.0)
+        self.assertEqual(self.run1("clpeak-fp32")["value"], 10200.0)
+        self.h.tools["clpeak"] = lambda c: bench.Ran(139, CLPEAK_3.split("Single-precision")[0], 1.0)
+        self.assertEqual(self.run1("clpeak-fp32")["reason"], "error")
+
+    def test_bench_1_still_judges_by_the_first_device(self):
+        self.assertEqual(bench.clpeak_verdict(0, CLPEAK_LLVMPIPE + CLPEAK_3), "fell_back")
 
 
 if __name__ == "__main__":

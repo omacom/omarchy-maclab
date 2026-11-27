@@ -95,7 +95,7 @@ func newPerfFixture() *perfFixture {
 }
 
 func (f *perfFixture) value(mac byte, side string, release byte, metric string, v float64, capacity *int64, macOS [2]string, booted map[string]string) {
-	pv := reports.PerfValue{Mac: f.key(mac), Set: "bench-1", Side: side, Metric: metric, Value: &v, Capacity: capacity, Booted: booted, Measured: f.at}
+	pv := reports.PerfValue{Mac: f.key(mac), Set: testSet, Side: side, Metric: metric, Value: &v, Capacity: capacity, Booted: booted, Measured: f.at}
 	if side == perf.SideMacOS {
 		pv.MacOSVersion, pv.MacOSBuild = macOS[0], macOS[1]
 	} else {
@@ -139,7 +139,7 @@ func TestThePerformanceOverviewGroupsConfigurationsByChipFamily(t *testing.T) {
 	if !page.hasText(t, ".site-nav a.current", "Performance") || page.count(t, `.site-nav a[href="/benchmarks"]`) != 0 {
 		t.Error("row 1 does not have Performance in place of Benchmarks")
 	}
-	if page.count(t, `select[name="release"] option[selected][value="6.18.1-1"]`) != 1 || page.count(t, `select[name="set"] option[selected][value="bench-1"]`) != 1 ||
+	if page.count(t, `select[name="release"] option[selected][value="6.18.1-1"]`) != 1 || page.count(t, `select[name="set"] option[selected][value="`+testSet+`"]`) != 1 ||
 		page.count(t, `input[type="checkbox"][name="volunteers"][checked]`) != 1 {
 		t.Error("the pickers: the newest qualified Release, the set and Show Volunteer Macs on")
 	}

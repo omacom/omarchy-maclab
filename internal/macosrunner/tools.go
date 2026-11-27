@@ -366,6 +366,7 @@ func stream(s *session, ctx context.Context) map[string]outcome {
 var (
 	reFrame   = regexp.MustCompile(`frame=\s*(\d+)`)
 	reRTime   = regexp.MustCompile(`bench:.*rtime=([0-9.]+)s`)
+	reUTime   = regexp.MustCompile(`bench:\s*utime=([0-9.]+)s.*rtime=([0-9.]+)s`)
 	reHWFail  = regexp.MustCompile(`(?i)failed setup for format videotoolbox|hwaccel initialisation returned error|no device available for decoder`)
 	reHWFrame = regexp.MustCompile(`Video: wrapped_avframe, videotoolbox_vld`)
 )
@@ -378,6 +379,29 @@ func decodeArgs(clip string, realtime bool) []string {
 		a = append(a, "-re")
 	}
 	return append(a, "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", clip, "-map", "0:v:0", "-f", "null", "-")
+}
+
+// allFrames is whether FFmpeg decoded the clip's every frame, by the count
+// the set pins for the metric; a set that pins none takes any.
+func allFrames(s *session, metric string, frames int) bool {
+	want := int(s.setting(metric, "frames", 0))
+	return want == 0 || frames == want
+}
+
+// decodeCPUShare is the most of its wall time a hardware decode spends on
+// the CPU in user space: VideoToolbox may decode in software and still hand
+// on its frames in its own format, and a software decode of a whole clip
+// takes far more.
+const decodeCPUShare = 0.5
+
+// onTheCPU is whether a set that pins the clip's frames sees FFmpeg decode
+// it on the CPU, by its -benchmark times; a set that pins none does not ask.
+func onTheCPU(s *session, metric, stderr string) bool {
+	if s.setting(metric, "frames", 0) == 0 {
+		return false
+	}
+	m := reUTime.FindStringSubmatch(stderr)
+	return m == nil || num(m[2]) <= 0 || num(m[1])/num(m[2]) > decodeCPUShare
 }
 
 // decoded is the frames decoded, and whether in hardware.
@@ -403,11 +427,11 @@ func decodeStep(metric, clip string) func(*session, context.Context) map[string]
 		switch {
 		case err != nil:
 			return all([]string{metric}, because(Error))
-		case !hw:
+		case !hw || onTheCPU(s, metric, stderr):
 			return all([]string{metric}, because(FellBack))
 		}
 		rt := reRTime.FindStringSubmatch(stderr)
-		if frames == 0 || rt == nil || num(rt[1]) <= 0 {
+		if frames == 0 || rt == nil || num(rt[1]) <= 0 || !allFrames(s, metric, frames) {
 			return all([]string{metric}, because(Error))
 		}
 		return map[string]outcome{metric: measured(float64(frames) / num(rt[1]))}
@@ -738,9 +762,9 @@ func powerPlayback(s *session, ctx context.Context) map[string]outcome {
 		secs := time.Since(start).Seconds()
 		frames, hw := decoded(stderr)
 		switch {
-		case err != nil || frames == 0:
+		case err != nil || frames == 0 || !allFrames(s, id, frames):
 			return 0, Error
-		case !hw:
+		case !hw || onTheCPU(s, id, stderr):
 			return 0, FellBack
 		}
 		return secs, ""

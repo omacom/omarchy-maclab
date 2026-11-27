@@ -38,7 +38,7 @@ func (l *signInLab) pubMac(name string, volunteer, publish bool) *dev {
 // at build 27C101 when release is "".
 func (l *signInLab) pubRun(mac, release string, values ...any) perf.Run {
 	l.t.Helper()
-	run := perf.Run{Mac: mac, Enrollment: l.s.dev(mac).snapshot().ID, Set: "bench-1", Side: perf.SideOmarchy, Release: release, List: sets.Quick}
+	run := perf.Run{Mac: mac, Enrollment: l.s.dev(mac).snapshot().ID, Set: testSet, Side: perf.SideOmarchy, Release: release, List: sets.Quick}
 	if release == "" {
 		run.Side, run.MacOSVersion, run.MacOSBuild = perf.SideMacOS, "27.2.1", "27C101"
 	}
@@ -372,7 +372,7 @@ func TestADeletionInLabdIsCarriedToReportsDB(t *testing.T) {
 	}
 
 	// An earlier enrollment's values under the same name are not this Mac's.
-	old := perf.Run{Mac: "vera-macbook", Enrollment: "d-an-earlier-one", Set: "bench-1", Side: perf.SideMacOS, MacOSVersion: "27.1", MacOSBuild: "27B50", List: sets.Quick}
+	old := perf.Run{Mac: "vera-macbook", Enrollment: "d-an-earlier-one", Set: testSet, Side: perf.SideMacOS, MacOSVersion: "27.1", MacOSBuild: "27B50", List: sets.Quick}
 	l.pubRunOf(old, "speedometer", 20.0)
 	l.s.publishPerf()
 	if got := l.kindOf("vera-macbook"); got != "absent" {
