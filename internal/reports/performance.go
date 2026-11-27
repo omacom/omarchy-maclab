@@ -56,10 +56,13 @@ type PerfRelease struct {
 // Omarchy) or macOS build (in macOS), with bench.json's fields. Value and
 // Reason: exactly one is set. Capacity is the SSD's, on a Storage value.
 type PerfValue struct {
-	Mac          string            `json:"mac"`
-	Set          string            `json:"set"`
-	Side         string            `json:"side"`
-	Release      string            `json:"release,omitempty"`
+	Mac     string `json:"mac"`
+	Set     string `json:"set"`
+	Side    string `json:"side"`
+	Release string `json:"release,omitempty"`
+	// Adds are the packages the lab added to the Release for the value,
+	// "omarchy-mlx" or "a+b": such a value is never the Release's own.
+	Adds         string            `json:"adds,omitempty"`
 	MacOSVersion string            `json:"macos_version,omitempty"`
 	MacOSBuild   string            `json:"macos_build,omitempty"`
 	Metric       string            `json:"metric"`
@@ -89,6 +92,7 @@ var (
 	rePerfVersion = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:~-]{0,63}$`)
 	rePerfPackage = regexp.MustCompile(`^[a-z0-9][a-z0-9+._-]{0,63}$`)
 	rePerfBuild   = regexp.MustCompile(`^[0-9A-Za-z]{1,16}$`)
+	rePerfAdds    = regexp.MustCompile(`^[a-z0-9@_][a-z0-9@._-]*(\+[a-z0-9@_][a-z0-9@._-]*)*$`)
 	rePerfMacOS   = regexp.MustCompile(`^[0-9]{1,3}(\.[0-9]{1,3}){0,3}$`)
 	rePerfText    = regexp.MustCompile(`^[ -~]{0,64}$`)
 )
@@ -172,6 +176,8 @@ func checkPerfValue(v PerfValue, macs, releases map[string]bool) error {
 		return fmt.Errorf("%s: not a set and metric", at)
 	case v.Side == perf.SideOmarchy && (!releases[v.Release] || v.MacOSBuild != "" || v.MacOSVersion != ""):
 		return fmt.Errorf("%s: an Omarchy value names a published Release and no macOS build", at)
+	case v.Adds != "" && (v.Side != perf.SideOmarchy || !rePerfAdds.MatchString(v.Adds)):
+		return fmt.Errorf("%s: only an Omarchy value names packages the lab added, by name", at)
 	case v.Side == perf.SideMacOS && (v.Release != "" || !rePerfBuild.MatchString(v.MacOSBuild) || (v.MacOSVersion != "" && !rePerfMacOS.MatchString(v.MacOSVersion)) || len(v.Booted) > 0):
 		return fmt.Errorf("%s: a macOS value names its macOS version and build, and no Release", at)
 	case v.Side != perf.SideOmarchy && v.Side != perf.SideMacOS:
@@ -303,17 +309,17 @@ func (s *Store) PublishPerformance(p Performance, now time.Time) (bool, error) {
 		if len(v.Booted) > 0 {
 			booted, _ = json.Marshal(v.Booted)
 		}
-		exec(`INSERT INTO perf_values (mac_key, set_name, side, release_key, macos_version, macos_build, metric,
-value, spread, unit, api, capacity, reason, booted, measured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (mac_key, set_name, side, release_key, macos_build, metric) DO UPDATE SET macos_version = excluded.macos_version,
+		exec(`INSERT INTO perf_values (mac_key, set_name, side, release_key, adds, macos_version, macos_build, metric,
+value, spread, unit, api, capacity, reason, booted, measured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (mac_key, set_name, side, release_key, macos_build, metric) DO UPDATE SET macos_version = excluded.macos_version, adds = excluded.adds,
 value = excluded.value, spread = excluded.spread, unit = excluded.unit, api = excluded.api, capacity = excluded.capacity,
 reason = excluded.reason, booted = excluded.booted, measured_at = excluded.measured_at`,
-			v.Mac, v.Set, v.Side, v.Release, v.MacOSVersion, v.MacOSBuild, v.Metric,
+			v.Mac, v.Set, v.Side, v.Release, v.Adds, v.MacOSVersion, v.MacOSBuild, v.Metric,
 			v.Value, v.Spread, v.Unit, v.API, v.Capacity, v.Reason, string(booted), v.Measured.UnixMicro())
 	}
 	for k := range oldValues {
-		exec(`DELETE FROM perf_values WHERE mac_key = ? AND set_name = ? AND side = ? AND release_key = ? AND macos_build = ? AND metric = ?`,
-			k.mac, k.set, k.side, k.release, k.build, k.metric)
+		exec(`DELETE FROM perf_values WHERE mac_key = ? AND set_name = ? AND side = ? AND release_key = ? AND adds = ? AND macos_build = ? AND metric = ?`,
+			k.mac, k.set, k.side, k.release, k.adds, k.build, k.metric)
 	}
 	if err != nil {
 		return false, err
@@ -321,10 +327,10 @@ reason = excluded.reason, booted = excluded.booted, measured_at = excluded.measu
 	return true, tx.Commit()
 }
 
-type perfValueKey struct{ mac, set, side, release, build, metric string }
+type perfValueKey struct{ mac, set, side, release, adds, build, metric string }
 
 func (v PerfValue) key() perfValueKey {
-	return perfValueKey{v.Mac, v.Set, v.Side, v.Release, v.MacOSBuild, v.Metric}
+	return perfValueKey{v.Mac, v.Set, v.Side, v.Release, v.Adds, v.MacOSBuild, v.Metric}
 }
 
 // Performance is everything published of Performance, for the pages and
@@ -364,7 +370,7 @@ func readPerformance(tx querier) (Performance, error) {
 		p.Releases = append(p.Releases, r)
 	}
 	rows.Close()
-	if rows, err = tx.Query(`SELECT mac_key, set_name, side, release_key, macos_version, macos_build, metric,
+	if rows, err = tx.Query(`SELECT mac_key, set_name, side, release_key, adds, macos_version, macos_build, metric,
 value, spread, unit, api, capacity, reason, booted, measured_at FROM perf_values`); err != nil {
 		return p, err
 	}
@@ -376,7 +382,7 @@ value, spread, unit, api, capacity, reason, booted, measured_at FROM perf_values
 		var reason sql.NullString
 		var booted string
 		var measured int64
-		if err := rows.Scan(&v.Mac, &v.Set, &v.Side, &v.Release, &v.MacOSVersion, &v.MacOSBuild, &v.Metric,
+		if err := rows.Scan(&v.Mac, &v.Set, &v.Side, &v.Release, &v.Adds, &v.MacOSVersion, &v.MacOSBuild, &v.Metric,
 			&value, &spread, &v.Unit, &v.API, &capacity, &reason, &booted, &measured); err != nil {
 			return p, err
 		}

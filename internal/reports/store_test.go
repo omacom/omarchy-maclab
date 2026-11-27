@@ -114,7 +114,7 @@ func TestTimesAreIntegerMicroseconds(t *testing.T) {
 						vals[i] = `{}`
 					case c == "public_id" || c == "machine_id":
 						vals[i] = "x"
-					case c == "release_key" && table == "perf_values":
+					case c == "release_key" && table == "perf_values", c == "adds":
 						vals[i] = ""
 					case c == "reason":
 						vals[i] = nil
@@ -305,7 +305,7 @@ func TestWhatReportsDBHolds(t *testing.T) {
 	for table, want := range map[string]string{
 		"perf_macs":     "id mac_key kind board cpu_cores gpu_cores created_at",
 		"perf_releases": "id release_key kernel verdict position created_at",
-		"perf_values":   "id mac_key set_name side release_key macos_version macos_build metric value spread unit api capacity reason booted measured_at",
+		"perf_values":   "id mac_key set_name side release_key macos_version macos_build metric value spread unit api capacity reason booted measured_at adds",
 	} {
 		if got := strings.Join(s.list(t, `SELECT name FROM pragma_table_info(?)`, table), " "); got != want {
 			t.Errorf("%s holds: %s", table, got)

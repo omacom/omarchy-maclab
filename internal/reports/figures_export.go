@@ -2,6 +2,7 @@ package reports
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/agent/tests/bench/sets"
@@ -40,6 +41,22 @@ type perfExportConfig struct {
 	GPU        int                   `json:"gpu_cores"`
 	Headline   *perfExportComparison `json:"headline"`
 	Volunteers *perfExportComparison `json:"volunteers,omitempty"`
+	// Added are the release's metrics measured with packages the lab added,
+	// apart from the headline and in none of its figures.
+	Added []perfExportAdded `json:"added,omitempty"`
+}
+
+type perfExportAdded struct {
+	Metric         string   `json:"metric"`
+	Category       string   `json:"category"`
+	Unit           string   `json:"unit"`
+	HigherIsBetter bool     `json:"higher_is_better"`
+	Adds           []string `json:"adds"`
+	Macs           int      `json:"macs"`
+	Omarchy        *float64 `json:"omarchy"`
+	MacOS          *float64 `json:"macos"`
+	Ratio          *float64 `json:"ratio"`
+	Reason         *string  `json:"reason"`
 }
 
 type perfExportComparison struct {
@@ -85,6 +102,13 @@ func (f *PerfFigures) JSON(release *PerfRelease, at time.Time) []byte {
 		e := perfExportConfig{Board: c.Board, Name: c.Name, Chip: c.ChipName, CPU: c.CPU, GPU: c.GPU}
 		e.Headline = perfComparison(c.Headline, key, c.OmarchyOnlyColumn(key))
 		e.Volunteers = perfComparison(c.Volunteers, key, nil)
+		for _, a := range c.Added {
+			if a.Release.Key == key {
+				e.Added = append(e.Added, perfExportAdded{Metric: a.Metric.ID, Category: a.Metric.Category, Unit: a.Metric.Unit,
+					HigherIsBetter: a.Metric.HigherIsBetter(), Adds: strings.Split(a.Adds, "+"), Macs: a.Macs,
+					Omarchy: a.Omarchy, MacOS: a.MacOS, Ratio: a.Ratio, Reason: a.Reason})
+			}
+		}
 		out.Configurations = append(out.Configurations, e)
 	}
 	b, _ := json.Marshal(out)

@@ -44,6 +44,7 @@ type PerfFigures struct {
 	Releases       []PerfRelease
 	Configurations []*PerfConfiguration
 	cat            *Catalogue
+	added          []*PerfValue
 }
 
 // PerfConfiguration is one Configuration: its Macs shown by kind and their
@@ -66,6 +67,26 @@ type PerfConfiguration struct {
 	Headline          *PerfGroup
 	Volunteers        *PerfGroup
 	OmarchyOnly       []*PerfOnlyColumn
+	// Added are the metrics measured on a Release with packages the lab
+	// added for them, over the headline's Macs, newest Release first: apart
+	// from the Release's figures, and in none of its means.
+	Added []*PerfAdded
+}
+
+// PerfAdded is one metric of a Release with the packages the lab added for
+// it, over the headline Macs that have both an Omarchy value and a macOS
+// value of it: the medians of each and of their ratios, Macs of them. With
+// no such Mac, the median of the Omarchy values alone, of Macs Macs, with no
+// macOS figure; Reason, with no value, when none has one.
+type PerfAdded struct {
+	Release PerfRelease
+	Adds    string
+	Metric  sets.Metric
+	Macs    int
+	Omarchy *float64
+	MacOS   *float64
+	Ratio   *float64
+	Reason  *string
 }
 
 // PerfGroup is a group of Macs compared with macOS: by macOS build, the
@@ -251,6 +272,10 @@ func (p Performance) Figures(set *sets.Set, cat *Catalogue, volunteers bool) *Pe
 			continue
 		}
 		if v.Side == perf.SideOmarchy {
+			if v.Adds != "" {
+				f.added = append(f.added, v)
+				continue
+			}
 			put(x.omarchy, v.Mac, v.Release, v)
 		} else {
 			put(x.macos, v.Mac, v.MacOSBuild, v)
@@ -347,7 +372,82 @@ func (f *PerfFigures) configuration(x perfIndex, board string, cpu, gpu int, mac
 	c.Headline = f.group(x, headline, c.VolunteerHeadline)
 	c.Volunteers = f.group(x, others, true)
 	c.OmarchyOnly = f.omarchyOnly(x, headline)
+	c.Added = f.addedRows(x, headline)
 	return c
+}
+
+// addedRows are the headline Macs' values with packages the lab added, by
+// Release (newest first), packages and metric in the set's order.
+func (f *PerfFigures) addedRows(x perfIndex, macs []string) []*PerfAdded {
+	in := map[string]bool{}
+	for _, m := range macs {
+		in[m] = true
+	}
+	type key struct{ release, adds, metric string }
+	byKey := map[key][]*PerfValue{}
+	for _, v := range f.added {
+		if in[v.Mac] {
+			k := key{v.Release, v.Adds, v.Metric}
+			byKey[k] = append(byKey[k], v)
+		}
+	}
+	var out []*PerfAdded
+	for _, r := range f.Releases {
+		var adds []string
+		for k := range byKey {
+			if k.release == r.Key && !slices.Contains(adds, k.adds) {
+				adds = append(adds, k.adds)
+			}
+		}
+		sort.Strings(adds)
+		for _, a := range adds {
+			for _, m := range f.Set.Metrics {
+				vs := byKey[key{r.Key, a, m.ID}]
+				if len(vs) == 0 {
+					continue
+				}
+				row := &PerfAdded{Release: r, Adds: a, Metric: m}
+				var alone, oms, mos, ratios []float64
+				for _, v := range vs {
+					if v.Value == nil {
+						if row.Reason == nil {
+							row.Reason = v.Reason
+						}
+						continue
+					}
+					alone = append(alone, *v.Value)
+					if mv := newestMacOS(x, v.Mac, m.ID); mv != nil {
+						if q, ok := perfRatio(m.HigherIsBetter(), *v.Value, *mv.Value); ok {
+							oms, mos, ratios = append(oms, *v.Value), append(mos, *mv.Value), append(ratios, q)
+						}
+					}
+				}
+				switch {
+				case len(ratios) > 0:
+					row.Macs, row.Reason = len(ratios), nil
+					row.Omarchy, row.MacOS, row.Ratio = median(oms), median(mos), median(ratios)
+				case len(alone) > 0:
+					row.Macs, row.Reason, row.Omarchy = len(alone), nil, median(alone)
+				default:
+					row.Macs = len(vs)
+				}
+				out = append(out, row)
+			}
+		}
+	}
+	return out
+}
+
+// newestMacOS is the Mac's macOS value of the metric at its newest build
+// with one, nil when it has none.
+func newestMacOS(x perfIndex, mac, metric string) *PerfValue {
+	var best *PerfValue
+	for _, values := range x.macos[mac] {
+		if v := values[metric]; v != nil && v.Value != nil && (best == nil || v.Measured.After(best.Measured)) {
+			best = v
+		}
+	}
+	return best
 }
 
 // group is macs' cohorts by the newest macOS build each has a result at, or

@@ -133,10 +133,31 @@ func (s *Server) gcArtifacts() {
 	for _, q := range []struct{ what, sql string }{
 		{"build recipes", `SELECT DISTINCT json_extract(data, '$.recipe') FROM builds WHERE json_extract(data, '$.recipe') != ''`},
 		{"device configs", `SELECT sha FROM configs`},
+		// A Release's set, and the set of it with the packages the lab adds,
+		// are what its Performance runs boot, on every Mac, for as long as
+		// the Release is measured: they stay.
+		{"Releases' Package sets", `SELECT json_extract(i.value, '$.sha256') FROM package_sets, json_each(json_extract(data, '$.items')) i
+WHERE name GLOB 'release-*' AND json_extract(data, '$.release') != '' AND json_extract(i.value, '$.sha256') != ''`},
 	} {
 		if err := s.pinRows(q.sql, keep, pinned); err != nil {
 			skip(q.what, err)
 			return
+		}
+	}
+
+	// Every frozen Release's files stay from its freeze, before any run
+	// made its set. A manifest that cannot be read pins nothing: such a
+	// Release cannot be staged either.
+	rels, err := s.store.releases("")
+	if err != nil {
+		skip("Releases", err)
+		return
+	}
+	for _, rel := range rels {
+		if m, _, err := frozenManifest(s.frozenDir(rel.Name)); err == nil {
+			for _, a := range m.Artifacts {
+				keep[strings.ToLower(a.SHA256)], pinned[strings.ToLower(a.SHA256)] = true, true
+			}
 		}
 	}
 

@@ -32,7 +32,7 @@ import (
 	"github.com/omacom/omarchy-maclab/internal/labhttp"
 )
 
-const Version = "0.11.0"
+const Version = "0.12.0"
 
 type Config struct {
 	Server   string `json:"server"`
@@ -999,6 +999,9 @@ func (a *Agent) exec(ctx context.Context, c api.Command) (any, *afterAck, error)
 		return nil, after, err
 	case api.CmdCandidateResolve, api.CmdCandidateStage, api.CmdCandidateCheck, api.CmdCandidateResult, api.CmdCandidateCleanup:
 		res, err := a.candidate(ctx, c)
+		return res, nil, err
+	case api.CmdAddsResolve:
+		res, err := a.resolveAdds(ctx, c)
 		return res, nil, err
 	case api.CmdStage:
 		var args api.StageArgs

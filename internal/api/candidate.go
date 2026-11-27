@@ -56,6 +56,10 @@ type CandidateStageArgs struct {
 	Sighting               bool `json:"sighting,omitempty"`
 	BootTimeoutSec         int  `json:"boot_timeout_sec,omitempty"`
 	WatchdogOpenTimeoutSec int  `json:"watchdog_open_timeout_sec,omitempty"`
+	// Offline is labd's word that the set is the whole of what is
+	// installed: pacman installs its files with no repository to fetch
+	// from, and staging fails on a package they need that it lacks.
+	Offline bool `json:"offline,omitempty"`
 }
 
 type CandidateStageResult struct {

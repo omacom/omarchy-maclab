@@ -120,7 +120,13 @@ func TestOtherFaultsAreRefused(t *testing.T) {
 		"placeholder with a size": func(s *Set) {
 			s.Files[MacOS][0].SHA256 = Placeholder
 		},
-		"API differs": func(s *Set) { s.Metrics[0].APIDiffers = true },
+		"API differs":     func(s *Set) { s.Metrics[0].APIDiffers = true },
+		"on Omarchy only": func(s *Set) { s.Metrics[0].MacOS.Adds = []string{"x"} },
+		`adds "Bad"`:      func(s *Set) { s.Metrics[0].Omarchy.Adds = []string{"Bad"} },
+		`adds "-x"`:       func(s *Set) { s.Metrics[0].Omarchy.Adds = []string{"-x"} },
+		`adds "omarchy-mlx": a package name, once`: func(s *Set) {
+			s.Metrics[0].Omarchy.Adds = []string{"omarchy-mlx", "omarchy-mlx"}
+		},
 	}
 	for want, f := range cases {
 		s := valid()
@@ -132,6 +138,21 @@ func TestOtherFaultsAreRefused(t *testing.T) {
 	}
 	if _, err := Parse("bench-07", nil); err == nil {
 		t.Error("a set named bench-07 was taken")
+	}
+}
+
+// A metric's adds are one word, the same whatever their order.
+func TestAMetricsAddsAreOneWord(t *testing.T) {
+	s := valid()
+	s.Metrics[0].Omarchy.Adds = []string{"opencl-aurora", "libclc"}
+	if err := parse(t, s); err != nil {
+		t.Fatal(err)
+	}
+	if k := s.Metrics[0].AddsKey(); k != "libclc+opencl-aurora" {
+		t.Errorf("adds key %q", k)
+	}
+	if k := s.Metrics[1].AddsKey(); k != "" {
+		t.Errorf("a metric with none: %q", k)
 	}
 }
 

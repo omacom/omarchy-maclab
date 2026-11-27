@@ -177,6 +177,10 @@ func describe(c api.Command) string {
 		var s api.CandidateResolveArgs
 		_ = json.Unmarshal(c.Args, &s)
 		return fmt.Sprintf("find %d packages of a Package set in pacman's cache or your repositories (pacman -Sw)", len(s.Packages))
+	case api.CmdAddsResolve:
+		var s api.AddsResolveArgs
+		_ = json.Unmarshal(c.Args, &s)
+		return fmt.Sprintf("download %s and what they need beyond your installed packages, into a folder of their own (pacman -Sw against a copy of its database), and send the files to the lab", strings.Join(s.Packages, ", "))
 	case api.CmdBootMacOS:
 		return "boot macOS once for the lab's macOS benchmark run, then come back"
 	case api.CmdCandidateCheck:

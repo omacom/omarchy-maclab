@@ -70,10 +70,25 @@ type Metric struct {
 	MacOS      *Side          `json:"macos,omitempty"`
 }
 
-// Side is how one system runs a metric.
+// Side is how one system runs a metric. Adds, on Omarchy only, are the
+// packages, by name, the lab installs into the run's Candidate boot for the
+// metric (spec section 22, "Packages the lab adds"): the metric is measured
+// apart from the Release, on its Release and those packages.
 type Side struct {
 	API   string   `json:"api,omitempty"`
 	Files []string `json:"files"`
+	Adds  []string `json:"adds,omitempty"`
+}
+
+// AddsKey is the metric's adds on Omarchy as one word, "" when it adds
+// none: its packages sorted, joined by "+".
+func (m Metric) AddsKey() string {
+	if m.Omarchy == nil || len(m.Omarchy.Adds) == 0 {
+		return ""
+	}
+	a := slices.Clone(m.Omarchy.Adds)
+	slices.Sort(a)
+	return strings.Join(a, "+")
 }
 
 // File is one file a system needs: a program, a model, a clip or a page.
@@ -111,6 +126,7 @@ var (
 	reName   = regexp.MustCompile(`^bench-([1-9][0-9]*)$`)
 	reID     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 	reSHA    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	rePkg    = regexp.MustCompile(`^[a-z0-9@_][a-z0-9@._-]*$`)
 	kinds    = []string{"web", "pacman", "zip", "tarball", "source", "file"}
 	ErrNoSet = errors.New("no Benchmark set without a placeholder")
 )
@@ -229,6 +245,13 @@ func checkMetric(m Metric) error {
 		return errors.New("missing on macos")
 	case m.APIDiffers && (m.Omarchy.API == "" || m.MacOS == nil || m.MacOS.API == "" || m.Omarchy.API == m.MacOS.API):
 		return errors.New("API differs, but does not name two APIs")
+	case m.MacOS != nil && len(m.MacOS.Adds) > 0:
+		return errors.New("adds packages on macos: the lab adds packages on Omarchy only")
+	}
+	for i, p := range m.Omarchy.Adds {
+		if !rePkg.MatchString(p) || slices.Contains(m.Omarchy.Adds[:i], p) {
+			return fmt.Errorf("adds %q: a package name, once", p)
+		}
 	}
 	return nil
 }
