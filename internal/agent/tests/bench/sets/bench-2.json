@@ -3,7 +3,7 @@
   "schema": 1,
   "decisions": [
     "bench-1's metrics, tolerances and files, with the Omarchy rows bench-1 could not run made to run wherever Omarchy carries what they need, and its placeholder filled.",
-    "fio for Omarchy is the lab's own, built by the release workflow's arm64 Linux runner from the same pinned source and flags as for macOS, with every optional library left out, so that it needs only the C library; it holds the placeholder until a Lab release publishes it. The Arch Linux ARM package bench-1 pinned needs libraries Omarchy does not carry.",
+    "fio for Omarchy is the lab's own, built by the release workflow's arm64 Linux runner from the same pinned source and flags as for macOS, with every optional library left out, so that it needs only the C library; it is that of Lab release v0.2.0-rc.29. The Arch Linux ARM package bench-1 pinned needs libraries Omarchy does not carry.",
     "The Storage file is filled once per run and kept for the run's other Storage benchmarks, on both systems, as the macOS runner already did; on Omarchy a value stands only where fincore shows the file bypassed the page cache.",
     "Video decode on Omarchy is VA-API over V4L2 request, Omarchy's own decode path (libva-v4l2_request-avd), on the Apple GPU's render node; FFmpeg's V4L2 request hwaccel is no part of Arch's FFmpeg. A row counts only when the V4L2 request VA driver handed on every frame as a VA surface, and each clip's frame count is pinned (600 and 1797) on both systems. Before timing, the clip's first 30 frames read back from VA-API must be those FFmpeg's own decoder makes; on both systems a decode that spends over half its wall time on the CPU fell back.",
     "MLX on Omarchy is omarchy-mlx's own MLX, through its own interpreter with no user's module or Vulkan override, and counts only on its packaged Honeykrisp driver on the Mac's own GPU. A Mac whose boot does not carry omarchy-mlx reads no build.",
@@ -403,7 +403,9 @@
         "id": "fio",
         "version": "3.43",
         "kind": "tarball",
-        "sha256": "placeholder",
+        "url": "https://github.com/omacom/omarchy-maclab/releases/download/v0.2.0-rc.29/bench-fio-linux-arm64.tar.gz",
+        "sha256": "19dd37b341bed92a17a31a402bbc553291eb06d8e7cff2db5683f03cd1a6d7ef",
+        "size": 1629459,
         "entry": "bench-fio/bin/fio",
         "lab_built": true,
         "note": "built by the release workflow's arm64 Linux runner"
