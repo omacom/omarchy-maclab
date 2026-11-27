@@ -885,6 +885,13 @@ def browser_verdict(probe, fps):
     return None
 
 
+def refresh_on_page(m):
+    """Whether the frame rate is measured on the benchmark's own page (from
+    bench-4's MotionMark, as macOS measures it): about:blank draws nothing,
+    so a driver that is slow at every drawn frame still reads 60 there."""
+    return (m.get("settings") or {}).get("refresh_measured_on") == "page"
+
+
 def _wait(host, fn, timeout, step=2, what="the page"):
     end = host.now() + timeout
     while host.now() < end:
@@ -937,12 +944,18 @@ def browser(app):
                 pages = [p for p in json.load(r) if p.get("type") == "page"]
             cdp = CDP(pages[0]["webSocketDebuggerUrl"])
             probe = _try_for(h, lambda: (lambda p: p if p and p.get("renderer") else None)(cdp.eval(PROBE)), 30)
+            on_page = refresh_on_page(m)
+            if on_page:
+                cdp.call("Page.navigate", url=base + a["url"])
+                _wait(h, lambda: cdp.eval("document.readyState === 'complete'"), 60, 1, "the benchmark's page")
             fps = cdp.eval(FRAME_RATE)
-            ctx.log(f"{app}: renderer {probe and probe.get('renderer')}, dpr {probe and probe.get('dpr')}, {fps} frames/s")
+            where = "its page" if on_page else "about:blank"
+            ctx.log(f"{app}: renderer {probe and probe.get('renderer')}, dpr {probe and probe.get('dpr')}, {fps} frames/s on {where}")
             why = browser_verdict(probe, fps)
             if why:
                 raise Reason(why)
-            cdp.call("Page.navigate", url=base + a["url"])
+            if not on_page:
+                cdp.call("Page.navigate", url=base + a["url"])
             if "ready" in a:
                 _wait(h, lambda: cdp.eval(a["ready"]), 300, 2, "the benchmark's start button")
                 cdp.eval(a["start"])

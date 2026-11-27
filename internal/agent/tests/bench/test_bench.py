@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -710,6 +711,70 @@ class Browser(Case):
             s = self.metric(mid)["settings"]
             self.assertEqual((s["width"], s["height"], s["device_pixel_ratio"]), (1920, 1080, bench.DEVICE_PIXEL_RATIO))
         self.assertEqual(self.metric("motionmark")["settings"]["refresh_hz"], bench.REFRESH_HZ)
+
+    def drive_motionmark(self, settings, page_fps):
+        """MotionMark against a browser whose about:blank draws at 60 frames/s
+        and whose MotionMark page draws at page_fps: the DevTools calls made."""
+        calls, at = [], ["about:blank"]
+
+        class FakeCDP:
+            def __init__(self, url):
+                pass
+
+            def call(self, method, **p):
+                calls.append(method)
+                if method == "Page.navigate":
+                    at[0] = p["url"]
+                return {}
+
+            def eval(self, expr):
+                calls.append(expr)
+                if expr == bench.PROBE:
+                    return {"renderer": "ANGLE (Mesa, AGX G13/G14, OpenGL ES 3.2)", "dpr": 2}
+                if expr == bench.FRAME_RATE:
+                    return 60.0 if at[0] == "about:blank" else page_fps
+                return True
+
+            def close(self):
+                pass
+
+        class Listing(io.StringIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+        m = dict(self.metric("motionmark"), settings=settings)
+        self.ctx.program = lambda fid, name: "chrome"
+        self.ctx.serve = lambda fid: ("http://127.0.0.1:1/", lambda: None)
+        self.h.spawn = lambda *a, **k: types.SimpleNamespace(wait=lambda t: 0)
+        listing = '[{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:2/devtools/page/1"}]'
+        with mock.patch.object(bench, "CDP", FakeCDP), mock.patch.object(bench, "devtools_port", lambda p: 2), \
+                mock.patch.object(bench.urllib.request, "urlopen", lambda *a, **k: Listing(listing)), \
+                mock.patch.object(bench, "page_result", lambda r: (100.0, 1.0)):
+            try:
+                v = bench.browser("motionmark")(self.ctx, m)
+            except bench.Reason as r:
+                return calls, r.code
+        return calls, v.value
+
+    def test_motionmark_from_bench_4_counts_the_frame_rate_on_its_own_page(self):
+        s = dict(self.metric("motionmark")["settings"], refresh_measured_on="page")
+        calls, got = self.drive_motionmark(s, 2.3)
+        self.assertEqual(got, "fell_back")
+        self.assertLess(calls.index("Page.navigate"), calls.index(bench.FRAME_RATE))
+        self.assertNotIn(bench.APPS["motionmark"]["start"], calls)
+        self.assertEqual(self.drive_motionmark(s, 60.0)[1], 100.0)
+
+    def test_motionmark_before_bench_4_counts_it_on_about_blank(self):
+        calls, got = self.drive_motionmark(self.metric("motionmark")["settings"], 2.3)
+        self.assertEqual(got, 100.0)
+        self.assertLess(calls.index(bench.FRAME_RATE), calls.index("Page.navigate"))
+
+    def test_only_bench_4_on_counts_the_frame_rate_on_motionmarks_page(self):
+        on = {n: bench.refresh_on_page(m) for n in range(1, 5)
+              for m in json.loads((HERE / "sets" / f"bench-{n}.json").read_text())["metrics"] if m["id"] == "motionmark"}
+        self.assertEqual(on, {1: False, 2: False, 3: False, 4: True})
 
     def test_devtools_port_file(self):
         with tempfile.TemporaryDirectory() as d:
