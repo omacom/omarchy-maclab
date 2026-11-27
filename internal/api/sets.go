@@ -112,20 +112,23 @@ func (it SetItem) Check() error {
 }
 
 // stackExact and stackPrefix name the packages of the Omarchy Mac stack that
-// lab set capture records: the kernel and its headers, m1n1, U-Boot, Mesa
-// and Vulkan, the AVD video decoder, libfprint and the Asahi firmware.
+// lab-agent reports and lab set capture records: the kernel and its headers,
+// m1n1, U-Boot, Mesa and Vulkan, the AVD video decoder, libfprint, the
+// Asahi firmware, and the Neural engine's driver and libane, MLX and
+// llama.cpp by the names capture has always known them by. Those last are
+// named one by one: a name holding "ane" or "mlx" is no sign of either.
 var (
-	stackExact  = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract"}
+	stackExact = []string{"m1n1", "mesa", "libva-v4l2_request-avd", "libfprint", "asahi-fwextract",
+		"ane-dkms", "libane", "python-libane", "mlx", "python-mlx", "llama.cpp", "llama.cpp-vulkan"}
 	stackPrefix = []string{"linux-aurora", "m1n1-", "uboot-", "mesa-", "vulkan-", "libfprint-"}
 )
 
 // bootedExact names, one by one, what a Performance run records it booted
 // besides the stack, by Omarchy's own package names: the Neural engine's
-// driver and libane's compiler, MLX, llama.cpp, the AVD firmware, FFmpeg
-// and libva, and OpenCL. A name holding "ane" or "mlx" is no sign of either.
-// They are not the stack: lab set capture leaves them out.
+// driver and libane's compiler, MLX, the AVD firmware, FFmpeg and libva,
+// and OpenCL. They are not the stack: lab set capture leaves them out.
 var bootedExact = []string{"omarchy-ane", "omarchy-ane-dkms", "mil-hwx-compiler", "omarchy-mlx", "omarchy-mlx-vulkan",
-	"llama.cpp", "llama.cpp-vulkan", "avd-fw", "ffmpeg", "libva", "ocl-icd", "opencl-aurora"}
+	"avd-fw", "ffmpeg", "libva", "ocl-icd", "opencl-aurora"}
 
 // BootedPackage is whether an installed package is one a Mac reports in its
 // Facts: the stack, and what a Performance run records it booted.

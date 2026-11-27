@@ -87,10 +87,10 @@ func TestThePerformanceDataTakesItsSetReleaseAndVolunteers(t *testing.T) {
 	if !d.Configs[0].Headline.Volunteer || d.Configs[1].Headline.MacOSBuild != "27C101" || d.Configs[1].Headline.MacsPaired != 1 {
 		t.Errorf("the headlines: %+v", d.Configs)
 	}
-	if d = get("/api/v1/performance.json?set="+testSet+"&release=6.18.2-1"); d.Release.Verdict != reports.PerfNoVerdictYet || ratio(d, "j314s") != 95 || ratio(d, "j313") != -1 {
+	if d = get("/api/v1/performance.json?set=" + testSet + "&release=6.18.2-1"); d.Release.Verdict != reports.PerfNoVerdictYet || ratio(d, "j314s") != 95 || ratio(d, "j313") != -1 {
 		t.Errorf("release=6.18.2-1: %+v", d)
 	}
-	if d = get("/api/v1/performance.json?set="+testSet+"&volunteers=false"); len(d.Configs) != 1 || d.Configs[0].Board != "j314s" {
+	if d = get("/api/v1/performance.json?set=" + testSet + "&volunteers=false"); len(d.Configs) != 1 || d.Configs[0].Board != "j314s" {
 		t.Errorf("volunteers=false: %+v", d)
 	}
 	for _, target := range []string{"/api/v1/performance.json?set=99", "/api/v1/performance.json?release=6.0"} {

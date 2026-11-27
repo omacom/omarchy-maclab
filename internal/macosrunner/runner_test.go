@@ -411,6 +411,26 @@ func TestWorkThatDidNotRunWhereItSaysFellBack(t *testing.T) {
 			}
 		}
 	})
+	t.Run("a decode spent on the CPU", func(t *testing.T) {
+		t.Setenv("FAKE_FFMPEG_UTIME", "3.000")
+		b := newBench(t)
+		for i, m := range b.set.Metrics {
+			if m.ID == "decode-h264-1080p" || m.ID == "power-playback-1080p" {
+				b.set.Metrics[i].Settings = maps.Clone(m.Settings)
+				b.set.Metrics[i].Settings["frames"] = float64(600)
+			}
+		}
+		h := newFakeHost()
+		lab := newFakeLab(t, startedRun(h, "mos-2", api.TierExtended), b.files)
+		r, _ := newRunner(t, lab, h, b)
+		r.Boot(context.Background())
+		m := byMetric(lab.got.Entries)
+		for _, id := range []string{"decode-h264-1080p", "power-playback-1080p"} {
+			if res := m[id]; res.Value != nil || res.Reason != FellBack {
+				t.Errorf("%s with 3 s of CPU in 2 s: %+v", id, res)
+			}
+		}
+	})
 	t.Run("no OpenCL platform", func(t *testing.T) {
 		t.Setenv("FAKE_CL_PLATFORM", "")
 		b := newBench(t)

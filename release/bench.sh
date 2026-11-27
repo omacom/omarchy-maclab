@@ -243,7 +243,8 @@ build_fio() {
     # finds nothing.
     cflags="-O2 -I$none"
     args+=(--disable-native --disable-numa --disable-rdma --disable-rados --disable-rbd --disable-http --disable-gfapi
-      --disable-pmem --disable-libzbc --disable-xnvme --disable-isal --disable-libblkio --disable-tcmalloc --disable-libnfs --disable-dfs)
+      --disable-pmem --disable-libzbc --disable-xnvme --disable-isal --disable-isal64 --disable-libblkio --disable-tcmalloc
+      --disable-libnfs --disable-dfs --disable-lex)
     mkdir -p "$none"
     for lib in zlib libaio; do echo "#error $lib is left out of the lab's fio" > "$none/$lib.h"; done
   fi
@@ -259,18 +260,26 @@ build_fio() {
 GLIBC_MAX=2.39
 
 # glibc_only FILE: whether the program asks for the C library alone (and its
-# own parts), through the arm64 loader, at no glibc newer than GLIBC_MAX.
+# own parts), through the arm64 loader, at no glibc newer than GLIBC_MAX and
+# none of glibc's private symbols. Every look must succeed: a readelf that
+# fails passes nothing.
 glibc_only() {
-  local need interp v
-  interp="$(readelf -l "$1" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')"
+  local out interp need v found=0
+  out="$(LC_ALL=C readelf -lW "$1")" || { echo "$1: readelf -l failed" >&2; return 1; }
+  interp="$(sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p' <<< "$out")"
   [[ $interp == /lib/ld-linux-aarch64.so.1 ]] || { echo "$1: its loader is ${interp:-none}" >&2; return 1; }
-  for need in $(readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+  out="$(LC_ALL=C readelf -dW "$1")" || { echo "$1: readelf -d failed" >&2; return 1; }
+  for need in $(sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' <<< "$out"); do
+    found=1
     case "$need" in
       libc.so.6 | libm.so.6 | libpthread.so.0 | libdl.so.2 | librt.so.1 | ld-linux-aarch64.so.1) ;;
       *) echo "$1 needs $need" >&2; return 1 ;;
     esac
   done
-  for v in $(objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -u | sed 's/GLIBC_//'); do
+  (( found )) || { echo "$1 names no library it needs: not a dynamic program" >&2; return 1; }
+  out="$(LC_ALL=C readelf -VW "$1")" || { echo "$1: readelf -V failed" >&2; return 1; }
+  for v in $(grep -o 'Name: GLIBC_[A-Z0-9_.]*' <<< "$out" | sed 's/Name: GLIBC_//' | sort -u); do
+    [[ $v =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "$1 needs glibc's $v symbols" >&2; return 1; }
     [[ "$(printf '%s\n%s\n' "$v" "$GLIBC_MAX" | sort -V | tail -1)" == "$GLIBC_MAX" ]] || { echo "$1 needs glibc $v, newer than $GLIBC_MAX" >&2; return 1; }
   done
 }

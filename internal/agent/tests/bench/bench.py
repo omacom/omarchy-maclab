@@ -157,25 +157,48 @@ def _clpeak_section(text, head):
 
 
 def parse_clpeak_fp32(text):
-    """The best single-precision GFLOPS of the physical GPU. clpeak 1.x heads
-    the section "(GFLOPS)"; 3.x gives each value its own unit."""
-    sect = _clpeak_section(clpeak_gpu(text) or "", "Single-precision compute")
+    """The best single-precision GFLOPS. clpeak 1.x heads the section
+    "(GFLOPS)"; 3.x gives each value its own unit."""
+    sect = _clpeak_section(text, "Single-precision compute")
     return max(round(float(v) * CLPEAK_SCALE[u], 3)
                for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])FLOPS)?", sect))
 
 
 def parse_clpeak_bandwidth(text):
-    """The best global memory bandwidth of the physical GPU in GB/s, "(GBPS)"
-    in the heading or a unit on each value."""
-    sect = _clpeak_section(clpeak_gpu(text) or "", "Global memory bandwidth")
+    """The best global memory bandwidth in GB/s, "(GBPS)" in the heading or
+    a unit on each value."""
+    sect = _clpeak_section(text, "Global memory bandwidth")
     return max(round(float(v) * CLPEAK_SCALE[u], 3)
                for v, u in re.findall(r":\s*([\d.]+)\s*(?:([MGT])B(?:PS|/s))?", sect))
 
 
+def clpeak_device(text):
+    m = re.search(r"Device(?: \d+)?\s*:\s*(.+)", text)
+    return m.group(1).strip() if m else None
+
+
 SOFTWARE = re.compile(r"llvmpipe|softpipe|swrast|swiftshader|lavapipe|software|\bcpu\b", re.I)
+
+
+def clpeak_verdict(code, text):
+    """None when clpeak ran on the physical GPU, else the reason code: by
+    the first device it names (bench-1)."""
+    if re.search(r"no platforms|CL_PLATFORM_NOT_FOUND|clGetPlatformIDs \(-1001\)", text, re.I):
+        return "no_driver"
+    if code != 0:
+        return "error"
+    dev = clpeak_device(text)
+    if not dev or SOFTWARE.search(dev):
+        return "fell_back"
+    return None
+
+
 # A GPU of Apple Silicon by the name its driver gives it: "Apple M2 Max (G14C
 # B1)" from Rusticl and Honeykrisp, "Apple M5 Max" from Apple's own.
 APPLE_GPU = re.compile(r"^Apple [AM]\d")
+# A set whose clpeak metric names this device measures only the Mac's own
+# GPU among the devices clpeak ran on.
+CLPEAK_OWN_GPU = "the Mac's own GPU"
 
 
 def clpeak_devices(text):
@@ -192,15 +215,27 @@ def clpeak_gpu(text):
     return None
 
 
-def clpeak_verdict(code, text):
-    """None when clpeak ran on the physical GPU, else the reason code."""
+def clpeak_gpu_best(text, head, unit):
+    """The best reading of the test on the Mac's own GPU: every vector width
+    that gave one, past any that failed ("[error] ..."); None when it gave
+    none."""
+    body = clpeak_gpu(text) or ""
+    m = re.search(rf"^[ \t]*{head}[^\n]*\n((?:[ \t]+\S[^\n]*\n?)*)", body, re.M)
+    if not m:
+        return None
+    vals = [round(float(v) * CLPEAK_SCALE[u], 3)
+            for v, u in re.findall(rf"^[ \t]*\w+[ \t]*:[ \t]*([\d.]+)[ \t]*(?:([MGT]){unit})?[ \t]*$", m.group(1), re.M)]
+    return max(vals) if vals else None
+
+
+def clpeak_gpu_verdict(text, value):
+    """None when clpeak measured the Mac's own GPU, whatever another device
+    it ran on did afterwards, else the reason code."""
     if re.search(r"no platforms|CL_PLATFORM_NOT_FOUND|clGetPlatformIDs \(-1001\)", text, re.I):
         return "no_driver"
-    if code != 0:
-        return "error"
     if clpeak_gpu(text) is None:
         return "fell_back"
-    return None
+    return None if value is not None else "error"
 
 
 def parse_stream(text, kernel):
@@ -929,11 +964,17 @@ def browser(app):
 
 # ---------------------------------------------------------------- GPU
 
-def clpeak(test, parse):
+def clpeak(test, parse, head, unit):
     def fn(ctx, m):
         exe = ctx.program("clpeak", "clpeak")
         env = dict(ctx.libs("clpeak"), RUSTICL_ENABLE="asahi")
         r = ctx.run(f"clpeak {test}", [exe, "--opencl", test], timeout=900, env=env, gui=True)
+        if (m.get("settings") or {}).get("device") == CLPEAK_OWN_GPU:
+            value = clpeak_gpu_best(r.out, head, unit)
+            why = clpeak_gpu_verdict(r.out, value)
+            if why:
+                raise Reason(why)
+            return Value(value)
         why = clpeak_verdict(r.code, r.out)
         if why:
             raise Reason(why)
@@ -1019,9 +1060,9 @@ def fio(ctx, m):
     path, out = d / "scratch", d / "fio.json"
     once = s.get("filled") == FILL_ONCE
     filled = once and ctx.filled == path and path.exists()
-    cap = storage_room(ctx.host, ctx.work, size, path.stat().st_size if filled else 0)
-    keep = False
+    cap, keep = None, False
     try:
+        cap = storage_room(ctx.host, ctx.work, size, path.stat().st_size if filled else 0)
         if not filled:
             shutil.rmtree(d, ignore_errors=True)
             d.mkdir()
@@ -1148,7 +1189,12 @@ def vaapi_args(ff, node, clip, realtime=False):
 
 
 VAAPI_V4L2 = re.compile(r"VAAPI driver: v4l2-request\b", re.I)
-VAAPI_FRAMES = re.compile(r"\] w:\d+ h:\d+ pixfmt:(\w+)")
+VAAPI_FRAMES = re.compile(r"input from stream [^\]]*\] w:\d+ h:\d+ pixfmt:(\w+)")
+# The first frames of a clip read back from VA-API and compared with
+# FFmpeg's own decoder's; a hardware decoder's share of the wall time it
+# may spend on the CPU, decoding in user space.
+DECODE_CHECK_FRAMES = 30
+DECODE_CPU_SHARE = 0.5
 
 
 def vaapi_verdict(code, text):
@@ -1166,6 +1212,49 @@ def vaapi_verdict(code, text):
     return None
 
 
+def frame_sums(path):
+    """The frames' sums in an FFmpeg framemd5 file, in order."""
+    try:
+        lines = pathlib.Path(path).read_text().splitlines()
+    except OSError:
+        return []
+    return [line.rsplit(",", 1)[-1].strip() for line in lines if line.strip() and not line.startswith("#")]
+
+
+def vaapi_check(ctx, ff, node, clip):
+    """The clip's first frames, decoded through VA-API and read back, are
+    those FFmpeg's own decoder makes: the timed decode never reads a frame
+    back, so a decoder that fails or errs only once a frame is read is caught
+    here, before anything is timed."""
+    d = ctx.work / "decode-check"
+    hw, sw, n = d / "hw.md5", d / "sw.md5", str(DECODE_CHECK_FRAMES)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        r = ctx.run("ffmpeg decode check, VA-API", [ff, "-hide_banner", "-nostdin", "-v", "verbose", "-hwaccel", "vaapi",
+                                                    "-hwaccel_device", node, "-hwaccel_output_format", "vaapi", "-i", clip,
+                                                    "-frames:v", n, "-map", "0:v:0", "-vf", "hwdownload,format=nv12",
+                                                    "-f", "framemd5", "-y", hw], timeout=300)
+        why = vaapi_verdict(r.code, r.out)
+        if why:
+            raise Reason(why)
+        _ok(ctx.run("ffmpeg decode check, software", [ff, "-hide_banner", "-nostdin", "-v", "error", "-i", clip,
+                                                      "-frames:v", n, "-map", "0:v:0", "-pix_fmt", "nv12",
+                                                      "-f", "framemd5", "-y", sw], timeout=600), "ffmpeg software decode")
+        got, want = frame_sums(hw), frame_sums(sw)
+        if len(got) != DECODE_CHECK_FRAMES or got != want:
+            raise Reason("error", "the frames read back from VA-API are not those of FFmpeg's own decoder")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def decode_cpu_share(text):
+    """User CPU time over wall time of an FFmpeg -benchmark run, or None."""
+    m = re.search(r"bench:\s*utime=([\d.]+)s.*rtime=([\d.]+)s", text)
+    if not m or float(m.group(2)) <= 0:
+        return None
+    return float(m.group(1)) / float(m.group(2))
+
+
 def parse_decoded(text):
     """(frames decoded, decode errors, frames per second of wall time), from
     FFmpeg's own count at -v verbose."""
@@ -1181,12 +1270,14 @@ def decoder(ctx, m, clip_id, realtime=False):
     """Ready to decode every frame of the clip in hardware: what decodes it
     and gives (frames, frames/s). What it needs is looked at first, so that
     power is sampled over the decode alone. A set that pins the clip's frame
-    count decodes through VA-API; one that does not, through FFmpeg's own
-    V4L2 request hwaccel against ffprobe's count."""
+    count decodes through VA-API; one that does not (bench-1), through
+    FFmpeg's own V4L2 request hwaccel against ffprobe's count, looked at
+    inside the decode as bench-1 did."""
     want = (m.get("settings") or {}).get("frames")
     if want:
         ff, node = vaapi(ctx)
         clip = ctx.file(clip_id)
+        vaapi_check(ctx, ff, node, clip)
 
         def go():
             r = ctx.run("ffmpeg decode", vaapi_args(ff, node, clip, realtime), timeout=900)
@@ -1196,13 +1287,16 @@ def decoder(ctx, m, clip_id, realtime=False):
             got, errors, fps = parse_decoded(r.out)
             if got != want or errors:
                 raise Reason("error", f"decoded {got} of {want} frames, {errors} decode errors")
+            share = decode_cpu_share(r.out)
+            if share is None or share > DECODE_CPU_SHARE:
+                raise Reason("fell_back", f"FFmpeg spent {share} of the wall time decoding on the CPU")
             return got, fps
         return go
-    ff, probe = ffmpeg(ctx)
-    clip = ctx.file(clip_id)
-    want = clip_frames(ctx, probe, clip)
-
     def go():
+        # bench-1 as it was: its checks inside the power window.
+        ff, probe = ffmpeg(ctx)
+        clip = ctx.file(clip_id)
+        want = clip_frames(ctx, probe, clip)
         r = ctx.run("ffmpeg decode", decode_args(ff, clip, realtime), timeout=900)
         why = decode_verdict(r.code, r.out)
         if why:
@@ -1461,8 +1555,8 @@ METRICS = {
     "coremark-all": coremark(None),
     "7zip": seven_zip,
     "motionmark": browser("motionmark"),
-    "clpeak-global-bandwidth": clpeak("--global-memory-bandwidth", parse_clpeak_bandwidth),
-    "clpeak-fp32": clpeak("--single-precision-compute", parse_clpeak_fp32),
+    "clpeak-global-bandwidth": clpeak("--global-memory-bandwidth", parse_clpeak_bandwidth, "Global memory bandwidth", "B(?:PS|/s)"),
+    "clpeak-fp32": clpeak("--single-precision-compute", parse_clpeak_fp32, "Single-precision compute", "FLOPS"),
     "fio-seq-read": fio,
     "fio-seq-write": fio,
     "fio-rand-read-4k": fio,
