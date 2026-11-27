@@ -17,7 +17,7 @@ import (
 // fill them, with its line here changed in the same pull request.
 var frozenSets = map[string]string{
 	"bench-1.json": "2f5f1bbc815f7e1a5410dee6b16b44469008b2fc1a5c30dd3e0245b70e7334ca",
-	"bench-2.json": "e5ff5dcac0a4697ca227d5bd5edb69f898ba7bacbcd439150051162e017a6fbf",
+	"bench-2.json": "82cc7b3582d6ac6339193b755c710890f2c1f908e156557aca6991415c9b7fd3",
 }
 
 func TestEveryBenchmarkSetLoadsAndIsFrozen(t *testing.T) {
