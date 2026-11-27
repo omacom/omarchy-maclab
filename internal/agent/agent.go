@@ -1000,6 +1000,9 @@ func (a *Agent) exec(ctx context.Context, c api.Command) (any, *afterAck, error)
 	case api.CmdCandidateResolve, api.CmdCandidateStage, api.CmdCandidateCheck, api.CmdCandidateResult, api.CmdCandidateCleanup:
 		res, err := a.candidate(ctx, c)
 		return res, nil, err
+	case api.CmdAddsResolve:
+		res, err := a.resolveAdds(ctx, c)
+		return res, nil, err
 	case api.CmdStage:
 		var args api.StageArgs
 		if err := json.Unmarshal(c.Args, &args); err != nil {

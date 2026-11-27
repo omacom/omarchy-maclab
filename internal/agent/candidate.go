@@ -135,7 +135,18 @@ func (h *candidateHost) stage(ctx context.Context, job string, a api.CandidateSt
 			h.run(context.Background(), nil, "btrfs", "subvolume", "delete", cand)
 		}
 	}()
-	if err = h.run(ctx, nil, "pacman", append([]string{"--sysroot", cand, "-U", "--noconfirm"}, files...)...); err != nil {
+	pacman := []string{"--sysroot", cand, "-U", "--noconfirm"}
+	if a.Offline {
+		if err = writeOfflineConf(cand); err != nil {
+			return res, err
+		}
+		pacman = append(pacman, "--config", "/"+offlineConf)
+	}
+	err = h.run(ctx, nil, "pacman", append(pacman, files...)...)
+	if a.Offline {
+		os.Remove(filepath.Join(cand, offlineConf))
+	}
+	if err != nil {
 		return res, err
 	}
 	if err = prepareCandidate(cand, a.Set.Name); err != nil {

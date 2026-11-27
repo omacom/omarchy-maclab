@@ -243,6 +243,14 @@ func (r *jobRun) performance(ctx context.Context) (outcome, summary string) {
 	if err != nil || len(rels) == 0 {
 		return api.OutcomeStageFailed, "staging refused: no Release " + ps.Release
 	}
+	if len(ps.Adds) > 0 && ps.Packages.Name != api.PerfAddsSet(ps.Release, ps.Adds) {
+		set, err := r.perfAddsSet(ctx, rels[0], ps.Packages, ps.Adds)
+		if err != nil {
+			return api.OutcomeStageFailed, "staging refused: " + err.Error()
+		}
+		ps.Packages = set
+		r.s.updateJob(r.j, func(j *api.Job) { j.Spec.Performance.Packages = set })
+	}
 	for _, check := range []func() error{
 		func() error { return releaseSupports(rels[0], d) },
 		func() error { return r.s.setFilesStored(ps.Packages) },
@@ -352,7 +360,7 @@ func (r *jobRun) perfSummary(ps *api.PerformanceSpec, run int64) string {
 // enrolled now. One the last labd left running belongs to no job, as a Mac
 // runs one job at a time: it ends failed first.
 func (s *Server) openPerf(d api.Device, ps *api.PerformanceSpec) (perf.Run, error) {
-	want := perf.Run{Mac: d.Name, Enrollment: d.ID, Set: ps.Bench, Side: perf.SideOmarchy, Release: ps.Release, List: ps.List, Metrics: ps.Metrics}
+	want := perf.Run{Mac: d.Name, Enrollment: d.ID, Set: ps.Bench, Side: perf.SideOmarchy, Release: api.PerfTarget(ps.Release, ps.Adds), List: ps.List, Metrics: ps.Metrics}
 	run, err := s.store.openPerfRun(want, s.now())
 	if errors.Is(err, errPerfRunning) {
 		left, lerr := s.store.perfRunning(d.Name, perf.SideOmarchy)
@@ -470,7 +478,8 @@ func (s *Server) queuePerfRerun(p Person, req api.PerfRerunRequest) (*api.Job, e
 	if list == "" {
 		return nil, refuse(409, "Release %s is %s: its values have left the Performance pages, and it is measured no more", rel.Name, stateWords(state))
 	}
-	metrics := omarchyMetrics(bench.List(list))
+	_, groups := perfGroups(bench.List(list))
+	metrics := omarchyMetrics(groups[""])
 	set, err := s.releaseSet(rel)
 	if err != nil {
 		return nil, err

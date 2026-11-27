@@ -87,9 +87,50 @@ func (s *Sim) ResolveCandidate(ctx context.Context, a api.CandidateResolveArgs) 
 	return out, nil
 }
 
+// ResolveAdds is the simulated repositories' files for the packages: each
+// package and one it needs, "<package>-lib", as a file of its own; a
+// package the repositories lack fails.
+func (s *Sim) ResolveAdds(ctx context.Context, a api.AddsResolveArgs) (string, []api.AddsFile, error) {
+	if err := checkAdds(a.Packages); err != nil {
+		return "", nil, err
+	}
+	tmp, err := os.MkdirTemp(s.WorkDir, "adds-")
+	if err != nil {
+		return "", nil, err
+	}
+	dir := filepath.Join(tmp, "files")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", nil, err
+	}
+	for _, p := range a.Packages {
+		s.candidateOp("resolve adds " + p)
+		s.mu.Lock()
+		missing := s.repoMissing[p]
+		s.mu.Unlock()
+		if missing {
+			os.RemoveAll(tmp)
+			return "", nil, fmt.Errorf("pacman -Sw %s: error: target not found: %s", p, p)
+		}
+		for _, n := range []string{p, p + "-lib"} {
+			if err := os.WriteFile(filepath.Join(dir, n+"-1.0-1-aarch64.pkg.tar.zst"), []byte(simRepoFile(n, "1.0-1")), 0o644); err != nil {
+				return "", nil, err
+			}
+		}
+	}
+	files, err := addsFiles(dir)
+	if err != nil {
+		os.RemoveAll(tmp)
+	}
+	return dir, files, err
+}
+
 func (s *Sim) StageCandidate(ctx context.Context, job string, a api.CandidateStageArgs, fetch Fetcher) (api.CandidateStageResult, error) {
 	var res api.CandidateStageResult
-	s.candidateOp("stage " + a.Set.Name)
+	if a.Offline {
+		s.candidateOp("stage " + a.Set.Name + " offline")
+	} else {
+		s.candidateOp("stage " + a.Set.Name)
+	}
 	if len(a.Set.Packages) == 0 {
 		return res, errors.New("the set has no packages")
 	}

@@ -346,7 +346,8 @@ func (r *jobRun) candidateSide(ctx context.Context, label, name string, set *api
 	side.Packages = pkgs
 	_, sighted := r.s.cables.of(v.snapshot().Name)
 	args := api.CandidateStageArgs{Set: api.CandidateSet{Name: set.Name, Packages: pkgs}, Sighting: sighted,
-		BootTimeoutSec: int(r.boot / time.Second), WatchdogOpenTimeoutSec: int(r.s.cfg.WatchdogOpenTimeout / time.Second)}
+		BootTimeoutSec: int(r.boot / time.Second), WatchdogOpenTimeoutSec: int(r.s.cfg.WatchdogOpenTimeout / time.Second),
+		Offline: r.j.Spec.Performance != nil}
 	r.ev("side %s: staging set %s (%d packages) as a Candidate boot", label, set.Name, len(pkgs))
 	var sr api.CandidateStageResult
 	v.mu.Lock()

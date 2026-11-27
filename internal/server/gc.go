@@ -133,6 +133,11 @@ func (s *Server) gcArtifacts() {
 	for _, q := range []struct{ what, sql string }{
 		{"build recipes", `SELECT DISTINCT json_extract(data, '$.recipe') FROM builds WHERE json_extract(data, '$.recipe') != ''`},
 		{"device configs", `SELECT sha FROM configs`},
+		// A Release's set, and the set of it with the packages the lab adds,
+		// are what its Performance runs boot, on every Mac, for as long as
+		// the Release is measured: they stay.
+		{"Releases' Package sets", `SELECT json_extract(i.value, '$.sha256') FROM package_sets, json_each(json_extract(data, '$.items')) i
+WHERE name LIKE 'release-%' AND json_extract(i.value, '$.sha256') != ''`},
 	} {
 		if err := s.pinRows(q.sql, keep, pinned); err != nil {
 			skip(q.what, err)

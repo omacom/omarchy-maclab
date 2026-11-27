@@ -85,6 +85,19 @@
 </section>
 {{end}}{{end}}
 
+{{if .Added}}<section class="card" id="perf-added">
+<h2 class="card-title">With packages the lab added</h2>
+<p class="dim">Measured on the Release with packages the lab installed into the run's boot for them: not what the Release puts on a Mac, so in none of its figures.</p>
+<div class="scroll perf-box"><table class="list perf-table">
+<thead><tr><th scope="col">Benchmark</th><th scope="col">Release</th><th scope="col">Added</th><th scope="col">Omarchy</th><th scope="col">macOS</th><th scope="col">of macOS</th></tr></thead>
+<tbody>
+{{range .Added}}<tr><td><span class="perf-metric-name">{{.Name}}</span><span class="row-meta">{{.Unit}}</span></td>
+<td class="mono">{{.Release}}</td><td class="mono">{{.Adds}}</td><td class="mono">{{.Omarchy}}</td><td class="mono">{{.MacOS}}</td><td class="mono">{{.Ratio}}<span class="row-meta">{{.Macs}} {{if eq .Macs 1}}Mac{{else}}Macs{{end}}</span></td></tr>
+{{end}}</tbody>
+</table></div>
+</section>
+{{end}}
+
 <p class="dim">Each Mac is paired with its own macOS result; a cell is the median of those ratios over the headline Macs, with the median values beside it. A change within a benchmark's tolerance is grey. Power is macOS's draw over Omarchy's. Storage is compared only at one SSD size. A row marked API differs reaches the hardware through another API on each system: shown, read with care.</p>
 <p class="dim"><a href="{{.DataHref}}">performance.json</a> (CC0).</p>
 {{end}}{{end}}

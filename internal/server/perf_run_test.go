@@ -265,35 +265,45 @@ func TestLabAgentRunsAPerformanceRunsMetricsAndLabdTakesTheUpload(t *testing.T) 
 }
 
 // Quick while a Release has no verdict, the rest of Full once it is
-// qualified: no benchmark is measured twice.
+// qualified: no benchmark is measured twice. The metrics that add packages
+// are measured after, each set of packages in a run of its own.
 func TestQuickThenFullMeasuresNothingTwice(t *testing.T) {
 	l, a := perfLab(t, labConfig{}, nil)
 	l.perfRelease("7.3", l.s.now(), []string{l.name})
 	l.expect(l.nthPerfJob(1), api.OutcomePass)
-	l.noMorePerf(1)
+	set, _ := perfCurrentSet()
+	keys, groups := perfGroups(set.List(sets.Quick))
+	l.noMorePerf(len(keys))
 	l.qualify("7.3")
-	j := l.nthPerfJob(2)
-	l.expect(j, api.OutcomePass)
-	quick, full := bench1(t, sets.Quick), bench1(t, sets.Full)
-	if j.Spec.Performance.List != sets.Full {
-		t.Errorf("list %s", j.Spec.Performance.List)
+	full, _ := perfGroups(set.List(sets.Full))
+	runs := len(keys) + len(full)
+	for i := len(keys) + 1; i <= runs; i++ {
+		l.expect(l.nthPerfJob(i), api.OutcomePass)
 	}
-	runs := a.runs()
+	if j := l.perfJobs()[len(keys)]; j.Spec.Performance.List != sets.Full || len(j.Spec.Performance.Adds) != 0 {
+		t.Errorf("the Full list's own run: %s, adds %v", j.Spec.Performance.List, j.Spec.Performance.Adds)
+	}
 	var measured []string
-	for _, r := range runs {
+	for _, r := range a.runs() {
 		for _, m := range r {
 			if slices.Contains(measured, m) {
-				t.Errorf("%s measured twice: %v", m, runs)
+				t.Errorf("%s measured twice: %v", m, a.runs())
 			}
 			measured = append(measured, m)
 		}
 	}
+	want := bench1(t, sets.Full)
 	slices.Sort(measured)
-	slices.Sort(full)
-	if !slices.Equal(measured, full) || !slices.Equal(runs[0], quick) {
-		t.Errorf("measured %v, want the Full list %v, Quick first", runs, full)
+	slices.Sort(want)
+	if !slices.Equal(measured, want) || !slices.Equal(a.runs()[0], omarchyMetrics(groups[""])) {
+		t.Errorf("measured %v, want the Full list %v, the Quick list's own first", a.runs(), want)
 	}
-	l.noMorePerf(2)
+	for _, j := range l.perfJobs() {
+		if ps := j.Spec.Performance; len(ps.Adds) > 0 && ps.Packages.Name != api.PerfAddsSet("7.3", ps.Adds) {
+			t.Errorf("a run adding %v booted %s", ps.Adds, ps.Packages.Name)
+		}
+	}
+	l.noMorePerf(runs)
 }
 
 // A benchmark that failed runs once more, alone, at the Mac's next slot;

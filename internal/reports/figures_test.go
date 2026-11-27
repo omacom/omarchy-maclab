@@ -689,3 +689,64 @@ func TestPerfSetIsNamedByNumberOrName(t *testing.T) {
 		t.Error("bench-99 is a set")
 	}
 }
+
+// A value measured with packages the lab added is in none of the Release's
+// figures: its Configuration shows it apart, against the same Macs' macOS
+// values, and reports.db keeps it apart from the Release's own.
+func TestAValueWithPackagesTheLabAddedIsShownApart(t *testing.T) {
+	l := newPerfLab(t)
+	r := l.release('f', "6.18.2-1", PerfQualified)
+	mac := l.mac('a', PerfLabOwned, "j314s", 10, 16)
+	l.macOS(mac, "27C101", 512)
+	l.omarchy(mac, r, 80, 512)
+	var own []PerfValue
+	for _, v := range l.p.Values {
+		if v.Metric != "mlx-matmul-fp16" || v.Side != "omarchy" {
+			own = append(own, v)
+		}
+	}
+	l.p.Values = own
+	l.value(mac, "omarchy", r, "", "mlx-matmul-fp16", 50, "", 0)
+	l.p.Values[len(l.p.Values)-1].Adds = "omarchy-mlx"
+	c := l.figures(false).Configurations[0]
+	for _, row := range c.Column(r).Rows {
+		if row.Metric == "mlx-matmul-fp16" && row.Omarchy != nil {
+			t.Errorf("the Release's column holds the added value: %+v", row)
+		}
+	}
+	if len(c.Added) != 1 {
+		t.Fatalf("added rows: %+v", c.Added)
+	}
+	if a := c.Added[0]; a.Metric.ID != "mlx-matmul-fp16" || a.Adds != "omarchy-mlx" || a.Release.Key != r || !near(a.Omarchy, 50) || !near(a.MacOS, 100) || !near(a.Ratio, 50) || a.Macs != 1 {
+		t.Errorf("the added row: %+v", a)
+	}
+
+	s, _ := openStore(t)
+	if _, err := s.PublishPerformance(l.p, l.at); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Performance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range got.Values {
+		if v.Metric == "mlx-matmul-fp16" && v.Side == "omarchy" {
+			found = v.Adds == "omarchy-mlx"
+		}
+	}
+	if !found {
+		t.Error("reports.db did not keep the packages the lab added")
+	}
+	bad := l.p
+	bad.Values = append([]PerfValue{}, l.p.Values...)
+	for i := range bad.Values {
+		if bad.Values[i].Side == "macos" {
+			bad.Values[i].Adds = "omarchy-mlx"
+			break
+		}
+	}
+	if _, errs := bad.Pruned(); len(errs) == 0 {
+		t.Error("a macOS value with packages added was taken")
+	}
+}

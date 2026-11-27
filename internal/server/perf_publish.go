@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
 	"github.com/omacom/omarchy-maclab/internal/perf"
@@ -153,12 +154,19 @@ func (s *Server) publishedPerf() (reports.Performance, error) {
 			Unit: c.Unit, API: c.API, Capacity: c.Capacity, Reason: c.Reason, Measured: c.Taken}
 		switch run.Side {
 		case perf.SideOmarchy:
-			r, ok := releases.lookup(run.Release)
+			name, adds := run.Release, ""
+			r, ok := releases.lookup(name)
 			if !ok {
-				continue
+				// A value with packages the lab added is kept under the
+				// Release and them, and published under the Release with
+				// them named: never as the Release's own.
+				name, adds, _ = strings.Cut(run.Release, "+")
+				if r, ok = releases.lookup(name); !ok || adds == "" {
+					continue
+				}
 			}
-			v.Release, v.Booted = r.Key, run.Booted
-			usedReleases[run.Release] = true
+			v.Release, v.Adds, v.Booted = r.Key, adds, run.Booted
+			usedReleases[name] = true
 		case perf.SideMacOS:
 			v.MacOSVersion, v.MacOSBuild = run.MacOSVersion, run.MacOSBuild
 		default:

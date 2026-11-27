@@ -1,5 +1,11 @@
 package api
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
 // A Performance run (spec section 22, "Performance run") is a job of the Mac
 // that measures one Release with one Benchmark set: the Release's frozen
 // manifest, as a Package set, booted as a Candidate boot, then the bench
@@ -22,6 +28,12 @@ type PerformanceSpec struct {
 	Bench   string   `json:"bench"`
 	List    string   `json:"list"`
 	Metrics []string `json:"metrics"`
+	// Adds are the packages the lab adds to the Release for the metrics,
+	// by name, sorted (the metrics' sets.Metric.AddsKey): the run boots the
+	// Release's set with them, release-<version>+<adds>, frozen the first
+	// time a Mac resolves them, and its values are kept apart from the
+	// Release's, under PerfTarget.
+	Adds []string `json:"adds,omitempty"`
 	// Rerun is `lab perf rerun`, under its caller's Lease; LeaseTaken a
 	// Lease labd took for it, which ends with the job.
 	Rerun      bool `json:"rerun,omitempty"`
@@ -75,3 +87,53 @@ type PerfRerunRequest struct {
 
 // PerfPackageSet is the name of a Release's Package set.
 func PerfPackageSet(release string) string { return "release-" + release }
+
+// PerfTarget is what a Performance run's Omarchy values are kept under: the
+// Release, or with packages the lab added for them, the Release and those
+// packages, "7.3+omarchy-mlx", apart from the Release's own.
+func PerfTarget(release string, adds []string) string {
+	if len(adds) == 0 {
+		return release
+	}
+	return release + "+" + strings.Join(adds, "+")
+}
+
+// PerfAddsSet is the name of the Package set of the Release with the
+// packages the lab adds, release-<version>-adds-<12 hex digits of their
+// names' sha256>: a set's name holds no "+".
+func PerfAddsSet(release string, adds []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(adds, "+")))
+	return PerfPackageSet(release) + "-adds-" + hex.EncodeToString(sum[:6])
+}
+
+// AddsResolveArgs asks lab-agent, on a Lab-owned Mac's known-good system,
+// for every package file the packages need beyond what the Mac has
+// installed: their names, as pacman takes them.
+type AddsResolveArgs struct {
+	Packages []string `json:"packages"`
+}
+
+// AddsResolved is each file pacman downloaded for the packages, its
+// signature checked by pacman, uploaded to the job in parts of at most
+// AddsPart bytes, "adds/<file>.<n>", n from 0.
+type AddsResolved struct {
+	Files []AddsFile `json:"files"`
+}
+
+// AddsFile is one package file of the added packages.
+type AddsFile struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	File    string `json:"file"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	Parts   int    `json:"parts"`
+}
+
+// AddsPart is the most a part of an added package file holds: under the
+// 90 MB a job file may be. Tests make it smaller.
+var AddsPart int64 = 64 << 20
+
+// CmdAddsResolve is labd asking lab-agent to resolve the packages the lab
+// adds (AddsResolveArgs, answered with AddsResolved).
+const CmdAddsResolve = "adds_resolve"

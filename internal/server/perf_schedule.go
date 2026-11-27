@@ -126,7 +126,10 @@ func perfMacWanted(d api.Device) bool {
 	return !d.IsVolunteer() || d.Performance
 }
 
-// perfWanted is the run the Mac misses first, newest Release first, or nil.
+// perfWanted is the run the Mac misses first, newest Release first, or nil:
+// of a Release, its own metrics first, then those each set of packages the
+// lab adds is for. A Volunteer's Mac measures what the lab adds only on a
+// set a Lab-owned Mac resolved.
 func (s *Server) perfWanted(v *dev, bench *sets.Set, rels []*perfRelease) *api.JobSpec {
 	d := v.snapshot()
 	if !perfMacWanted(d) {
@@ -136,23 +139,36 @@ func (s *Server) perfWanted(v *dev, bench *sets.Set, rels []*perfRelease) *api.J
 		if releaseSupports(pr.rel, d) != nil {
 			continue
 		}
-		metrics, err := s.perfMissing(d, bench, pr.rel.Name, pr.list)
-		if err != nil || len(metrics) == 0 {
-			continue
+		keys, groups := perfGroups(bench.List(pr.list))
+		for _, key := range keys {
+			adds := addsOf(key)
+			metrics, err := s.perfMissing(d, bench, api.PerfTarget(pr.rel.Name, adds), groups[key])
+			if err != nil || len(metrics) == 0 {
+				continue
+			}
+			set, err := pr.packages(s)
+			if err != nil {
+				s.perfNote(pr.rel.Name, err)
+				break
+			}
+			if len(adds) > 0 {
+				if kept := s.keptAddsSet(pr.rel, adds); kept != nil {
+					set = kept
+				} else if d.IsVolunteer() {
+					continue
+				}
+			}
+			if s.perfBootLoader(set, d) != nil {
+				break
+			}
+			if err := s.benchFilesStored(bench, metrics); err != nil {
+				s.perfNote(bench.Name, err)
+				continue
+			}
+			ps := perfSpec(pr.rel, set, bench, pr.list, metrics)
+			ps.Adds = adds
+			return &api.JobSpec{Device: d.Name, Holder: perfScheduled, Performance: ps}
 		}
-		set, err := pr.packages(s)
-		if err != nil {
-			s.perfNote(pr.rel.Name, err)
-			continue
-		}
-		if s.perfBootLoader(set, d) != nil {
-			continue
-		}
-		if err := s.benchFilesStored(bench, metrics); err != nil {
-			s.perfNote(bench.Name, err)
-			continue
-		}
-		return &api.JobSpec{Device: d.Name, Holder: perfScheduled, Performance: perfSpec(pr.rel, set, bench, pr.list, metrics)}
 	}
 	return nil
 }
@@ -164,17 +180,18 @@ func (s *Server) perfNote(what string, err error) {
 	}
 }
 
-// perfMissing is what the Mac's next run of the Release's list measures, in
-// the set's order: every metric with no result yet; with none left, the
-// first that failed or was skipped for a passing reason, alone, since a run
-// with an error replaces no value. Neither once two attempts asked for it.
-func (s *Server) perfMissing(d api.Device, bench *sets.Set, release, list string) ([]string, error) {
-	cur, tries, err := s.store.perfTries(d.Name, d.ID, bench.Name, release)
+// perfMissing is what the Mac's next run of the metrics measures, kept
+// under target, in the set's order: every metric with no result yet; with
+// none left, the first that failed or was skipped for a passing reason,
+// alone, since a run with an error replaces no value. Neither once two
+// attempts asked for it.
+func (s *Server) perfMissing(d api.Device, bench *sets.Set, target string, ms []sets.Metric) ([]string, error) {
+	cur, tries, err := s.store.perfTries(d.Name, d.ID, bench.Name, target)
 	if err != nil {
 		return nil, err
 	}
 	var fresh, again []string
-	for _, id := range omarchyMetrics(bench.List(list)) {
+	for _, id := range omarchyMetrics(ms) {
 		reason, has := cur[id]
 		switch {
 		case tries[id] >= perfTriesMax:
