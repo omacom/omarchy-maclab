@@ -29,14 +29,19 @@ type addsSystem interface {
 	ResolveAdds(ctx context.Context, a api.AddsResolveArgs) (dir string, files []api.AddsFile, err error)
 }
 
-// pacmanDB is the known-good system's pacman database.
-var pacmanDB = "/var/lib/pacman"
+// pacmanDB, pacmanConf and pacmanGPG are the known-good system's pacman
+// database, configuration and keyring.
+var (
+	pacmanDB   = "/var/lib/pacman"
+	pacmanConf = "/etc/pacman.conf"
+	pacmanGPG  = "/etc/pacman.d/gnupg"
+)
 
 // ResolveAdds downloads, with pacman, every package file the packages need
-// beyond what this Mac has installed, into a folder of its own, against a
-// copy of its pacman database refreshed there: the Mac's own database,
-// cache and system stay as they are. pacman checks each package's
-// signature as it downloads it.
+// beyond what this Mac has installed, into a folder of its own, against
+// copies of its pacman database and keyring, with its repositories and no
+// other cache: the Mac's own database, keyring, cache and system stay as
+// they are. pacman checks each package's signature as it downloads it.
 func (l *Linux) ResolveAdds(ctx context.Context, a api.AddsResolveArgs) (string, []api.AddsFile, error) {
 	if err := checkAdds(a.Packages); err != nil {
 		return "", nil, err
@@ -60,13 +65,19 @@ func (l *Linux) ResolveAdds(ctx context.Context, a api.AddsResolveArgs) (string,
 			return fail(err)
 		}
 	}
-	if out, err := combinedGroup(exec.CommandContext(ctx, "cp", "-a", filepath.Join(pacmanDB, "local"), db)); err != nil {
-		return fail(fmt.Errorf("copying pacman's database: %v: %s", err, lastLines(string(out), 3)))
+	gpg, conf := filepath.Join(tmp, "gnupg"), filepath.Join(tmp, "pacman.conf")
+	for _, c := range [][2]string{{filepath.Join(pacmanDB, "local"), db}, {pacmanGPG, gpg}} {
+		if out, err := combinedGroup(exec.CommandContext(ctx, "cp", "-a", c[0], c[1])); err != nil {
+			return fail(fmt.Errorf("copying %s: %v: %s", c[0], err, lastLines(string(out), 3)))
+		}
+	}
+	if err := writeResolveConf(pacmanConf, conf); err != nil {
+		return fail(err)
 	}
 	pacman := func(args ...string) error {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
-		base := []string{"--dbpath", db, "--cachedir", cache, "--logfile", "/dev/null", "--noconfirm"}
+		base := []string{"--config", conf, "--dbpath", db, "--cachedir", cache, "--gpgdir", gpg, "--logfile", "/dev/null", "--noconfirm"}
 		out, err := combinedGroup(exec.CommandContext(ctx, "pacman", append(base, args...)...))
 		if err != nil {
 			return fmt.Errorf("pacman %s: %v: %s", strings.Join(args, " "), err, lastLines(string(out), 5))
@@ -84,6 +95,26 @@ func (l *Linux) ResolveAdds(ctx context.Context, a api.AddsResolveArgs) (string,
 		return fail(err)
 	}
 	return cache, files, nil
+}
+
+// writeResolveConf writes to the pacman configuration a resolve runs with:
+// the Mac's own, its repositories included, without the options that name
+// where its database, cache, keyring, log and hooks are.
+func writeResolveConf(from, to string) error {
+	b, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	var keep []string
+	for _, line := range strings.Split(string(b), "\n") {
+		k, _, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch strings.TrimSpace(k) {
+		case "CacheDir", "DBPath", "GPGDir", "LogFile", "HookDir", "RootDir":
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return os.WriteFile(to, []byte(strings.Join(keep, "\n")), 0o644)
 }
 
 // checkAdds is why the package names will not do.

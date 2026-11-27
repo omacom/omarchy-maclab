@@ -245,7 +245,7 @@ func TestTheFourteenRunLocally(t *testing.T) {
 			"a person with no role (@nobody) reading the Exec record of loaner: 403", "on a Mac that is not theirs reading the Exec record of m1-pro: 404",
 			"a signed-out browser reading the Exec record of loaner: 401", "labd deleted the line past 12 months at its start"},
 		"h12-agent-signature": {"a lab-agent changed after it was signed: refused by the Mac", "a lab-agent signed by another key: refused by the Mac",
-			"an older lab-agent, 0.9.0, rightly signed: refused by the Mac", "older than the 0.11.0 installed", "lab-agent 0.11.0 -> 0.11.1"},
+			"an older lab-agent, 0.9.0, rightly signed: refused by the Mac", "older than the 0.12.0 installed", "lab-agent 0.12.0 -> 0.12.1"},
 		"h13-lab-own-upload": {"in the query, the headers and the User-Agent: 201, stored", "its page does not say \"run by the lab\"",
 			"Reports, for a Maintainer, says it arrived by the Mac's own tool", "a report carrying a lab_job key: 422", "the 31st of the hour: 429"},
 		"h14-volunteers-mac": {"lab run loaner --installed: refused", "lab installed promote loaner: refused", "Promote on the Release's page: refused",

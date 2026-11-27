@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -416,6 +417,17 @@ func (s *Server) takePerfUpload(w http.ResponseWriter, r *http.Request, side str
 	if err != nil {
 		httpErr(w, 400, "%s: %v", set.Name, err)
 		return
+	}
+	if len(run.Metrics) > 0 {
+		for _, e := range c.Entries {
+			if !slices.Contains(run.Metrics, e.Metric) {
+				// A metric with packages the lab adds is never the
+				// Release's own, nor the reverse: an attempt takes only
+				// what it was asked for.
+				httpErr(w, 400, "%s: attempt %d of run %d was not asked for %s", set.Name, run.Attempt, run.ID, e.Metric)
+				return
+			}
+		}
 	}
 	t, err := s.store.takePerf(id, c, s.now())
 	switch {

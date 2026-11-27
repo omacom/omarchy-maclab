@@ -185,7 +185,10 @@ type Server struct {
 	perfWake chan struct{}
 	// perfNoted is what the scheduler logged it measures nothing for.
 	perfNoted sync.Map
-	reports   *reports.Store
+	// addsWait is when a Mac last could not resolve a set of packages the
+	// lab adds, by Release and packages (api.PerfTarget).
+	addsWait sync.Map
+	reports  *reports.Store
 	// uploads takes reports in; nil without the machine-id key.
 	uploads   *reports.Uploads
 	catalogue *reports.Catalogue
@@ -1735,6 +1738,12 @@ func (s *Server) hSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/mesa/jobs" && spec.Mesa == nil {
 		httpErr(w, 400, "Mesa endpoint requires an explicit Mesa package request")
+		return
+	}
+	if spec.Performance != nil || spec.MacOS != nil {
+		// labd makes these itself, from the Release, the set and what is
+		// missing: a caller never names what a run boots or what is kept.
+		httpErr(w, 400, "a Performance run or macOS run is labd's own: lab perf rerun asks for one")
 		return
 	}
 	j, code, err := s.submit(leaser(r), spec, "")

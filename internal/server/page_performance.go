@@ -629,6 +629,23 @@ func (s *Server) pPerformanceConfiguration(w http.ResponseWriter, r *http.Reques
 		BackHref: a.link(s, "/performance", false), ModelHref: s.href("/models/" + c.Board), Picker: s.perfPicker(a, path),
 		Kinds: perfKinds(c), SSD: perfCapacities(c.Capacities), VolunteerHeadline: c.VolunteerHeadline, VolunteersHidden: !a.volunteers,
 		Release: a.release, DataHref: a.link(s, "/api/v1/performance.json", false)}
+	for _, a := range c.Added {
+		line := perfAddedLine{Name: a.Metric.Name, Unit: a.Metric.Unit + " · " + perfDirection(a.Metric.HigherIsBetter()),
+			Release: a.Release.Kernel, Adds: strings.ReplaceAll(a.Adds, "+", ", "), Macs: a.Macs, Omarchy: "–", MacOS: "–", Ratio: "–"}
+		switch {
+		case a.Omarchy != nil:
+			line.Omarchy = perfNumber(*a.Omarchy) + " " + a.Metric.Unit
+		case a.Reason != nil:
+			line.Omarchy = perfReason(*a.Reason)
+		}
+		if a.MacOS != nil {
+			line.MacOS = perfNumber(*a.MacOS) + " " + a.Metric.Unit
+		}
+		if a.Ratio != nil {
+			line.Ratio = perfNumber(*a.Ratio) + "%"
+		}
+		page.Added = append(page.Added, line)
+	}
 	cohort := c.Comparison()
 	if cohort == nil {
 		s.render(w, r, "performance/show", web.Page{Title: c.Name + " performance", Nav: "performance", Wide: true, Data: page})
@@ -836,23 +853,6 @@ func (s *Server) pPerformanceConfiguration(w http.ResponseWriter, r *http.Reques
 		if measured {
 			page.OmarchyOnly = append(page.OmarchyOnly, line)
 		}
-	}
-	for _, a := range c.Added {
-		line := perfAddedLine{Name: a.Metric.Name, Unit: a.Metric.Unit + " · " + perfDirection(a.Metric.HigherIsBetter()),
-			Release: a.Release.Kernel, Adds: strings.ReplaceAll(a.Adds, "+", ", "), Macs: a.Macs, Omarchy: "–", MacOS: "–", Ratio: "–"}
-		switch {
-		case a.Omarchy != nil:
-			line.Omarchy = perfNumber(*a.Omarchy) + " " + a.Metric.Unit
-		case a.Reason != nil:
-			line.Omarchy = perfReason(*a.Reason)
-		}
-		if a.MacOS != nil {
-			line.MacOS = perfNumber(*a.MacOS) + " " + a.Metric.Unit
-		}
-		if a.Ratio != nil {
-			line.Ratio = perfNumber(*a.Ratio) + "%"
-		}
-		page.Added = append(page.Added, line)
 	}
 	s.render(w, r, "performance/show", web.Page{Title: c.Name + " performance", Nav: "performance", Wide: true, Data: page})
 }

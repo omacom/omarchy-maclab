@@ -212,6 +212,25 @@ func (r *jobRun) performance(ctx context.Context) (outcome, summary string) {
 	ps, v := r.j.Spec.Performance, r.v
 	d := v.snapshot()
 	res := &api.PerformanceResult{}
+	if !versionAtLeast(d.Facts.AgentVersion, perfOfflineAgent) {
+		return api.OutcomeStageFailed, fmt.Sprintf("staging refused: %s runs lab-agent %s, which would fetch what the set lacks; a Performance run is staged offline, from lab-agent %s",
+			d.Name, orStr(d.Facts.AgentVersion, "(unknown)"), perfOfflineAgent)
+	}
+	if len(ps.Adds) > 0 && ps.Packages.Name != api.PerfAddsSet(ps.Release, ps.Adds) {
+		// Resolved before the attempt opens: a package Omarchy does not ship
+		// yet costs the metrics none of their attempts.
+		rels, err := r.s.store.releases(ps.Release)
+		if err != nil || len(rels) == 0 {
+			return api.OutcomeStageFailed, "staging refused: no Release " + ps.Release
+		}
+		set, err := r.perfAddsSet(ctx, rels[0], ps.Packages, ps.Adds)
+		if err != nil {
+			r.s.addsWait.Store(addsWaitKey(ps.Release, ps.Adds), r.s.now())
+			return api.OutcomeStageFailed, "staging refused: " + err.Error()
+		}
+		ps.Packages = set
+		r.s.updateJob(r.j, func(j *api.Job) { j.Spec.Performance.Packages = set })
+	}
 	run, err := r.s.openPerf(d, ps)
 	if err != nil {
 		return api.OutcomeInfra, "the Performance run's attempt was not opened: " + err.Error()
@@ -242,14 +261,6 @@ func (r *jobRun) performance(ctx context.Context) (outcome, summary string) {
 	rels, err := r.s.store.releases(ps.Release)
 	if err != nil || len(rels) == 0 {
 		return api.OutcomeStageFailed, "staging refused: no Release " + ps.Release
-	}
-	if len(ps.Adds) > 0 && ps.Packages.Name != api.PerfAddsSet(ps.Release, ps.Adds) {
-		set, err := r.perfAddsSet(ctx, rels[0], ps.Packages, ps.Adds)
-		if err != nil {
-			return api.OutcomeStageFailed, "staging refused: " + err.Error()
-		}
-		ps.Packages = set
-		r.s.updateJob(r.j, func(j *api.Job) { j.Spec.Performance.Packages = set })
 	}
 	for _, check := range []func() error{
 		func() error { return releaseSupports(rels[0], d) },

@@ -74,6 +74,29 @@ func TestAddsFilesAreThePackagesWithTheirParts(t *testing.T) {
 	}
 }
 
+// A resolve keeps the Mac's repositories and none of the options that name
+// its own database, cache, keyring, log or hooks.
+func TestTheResolveConfigurationKeepsTheRepositoriesAndNoHostPath(t *testing.T) {
+	dir := t.TempDir()
+	from, to := filepath.Join(dir, "pacman.conf"), filepath.Join(dir, "resolve.conf")
+	os.WriteFile(from, []byte("[options]\nCacheDir = /var/cache/pacman/pkg/\nGPGDir=/etc/pacman.d/gnupg\nLogFile = /var/log/pacman.log\nHookDir = /etc/pacman.d/hooks/\nSigLevel = Required\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n"), 0o644)
+	if err := writeResolveConf(from, to); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(to)
+	got := string(b)
+	for _, not := range []string{"CacheDir", "GPGDir", "LogFile", "HookDir"} {
+		if strings.Contains(got, not) {
+			t.Errorf("%s kept:\n%s", not, got)
+		}
+	}
+	for _, want := range []string{"SigLevel = Required", "[core]", "Include = /etc/pacman.d/mirrorlist"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q:\n%s", want, got)
+		}
+	}
+}
+
 // The parts of a file are its bytes, in order.
 func TestAPartsCopyIsTheFileInOrder(t *testing.T) {
 	was := api.AddsPart

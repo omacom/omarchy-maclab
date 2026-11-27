@@ -57,7 +57,7 @@ before_lab() {
   SIM_AGENT="$WORK/pinned/lab-agent"
   cp "$BIN/labd" "$WORK/srv/labd"
   LABD_BIN="$WORK/srv/labd"
-  serve 0.11.1 release
+  serve 0.12.1 release
 }
 
 # serve NUMBER KEY [tampered]: what labd hands out: a lab-agent that says
@@ -91,7 +91,7 @@ local_mac "$MAC"
 dir="$(sim_dir "$MAC")" || fail "no folder for the simulated $MAC"
 installed="$dir/lab-agent"
 [[ ! -e $installed ]] || cp "$installed" "$WORK/installed.before"
-rec "$MAC is a simulated Lab-owned Mac whose lab-agent 0.11.0 pins a release key made for this run"
+rec "$MAC is a simulated Lab-owned Mac whose lab-agent 0.12.0 pins a release key made for this run"
 
 # refused WHAT WORDS: lab agent-update must fail, the Mac saying WORDS, and
 # leave the installed agent as it was.
@@ -103,17 +103,17 @@ refused() {
   else [[ ! -e $installed ]] || give_up "$1: an agent was installed"; fi
   rec "$1: refused by the Mac, and the installed agent left as it was: $(plain "$WORK/update.out")"
 }
-serve 0.11.1 release tampered
+serve 0.12.1 release tampered
 refused "a lab-agent changed after it was signed" "is not signed by the release key this lab-agent pins"
-serve 0.11.1 other
+serve 0.12.1 other
 refused "a lab-agent signed by another key" "is not signed by the release key this lab-agent pins"
 serve 0.9.0 release
-refused "an older lab-agent, 0.9.0, rightly signed" "older than the 0.11.0 installed"
+refused "an older lab-agent, 0.9.0, rightly signed" "older than the 0.12.0 installed"
 
-serve 0.11.1 release
+serve 0.12.1 release
 code=0
 "$LAB_CMD" agent-update "$MAC" > "$WORK/update.out" 2>&1 || code=$?
-{ (( code == 0 )) && grep -q '0.11.0 -> 0.11.1' "$WORK/update.out"; } || give_up "a good, newer lab-agent was not installed: exit $code: $(plain "$WORK/update.out")"
+{ (( code == 0 )) && grep -q '0.12.0 -> 0.12.1' "$WORK/update.out"; } || give_up "a good, newer lab-agent was not installed: exit $code: $(plain "$WORK/update.out")"
 # The Mac switches once labd has its answer: a moment after lab agent-update returns.
 for _ in $(seq 1 100); do
   cmp -s "$installed" "$WORK/srv/lab-agent-linux-arm64" && break

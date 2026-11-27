@@ -132,7 +132,7 @@ func perfMacWanted(d api.Device) bool {
 // set a Lab-owned Mac resolved.
 func (s *Server) perfWanted(v *dev, bench *sets.Set, rels []*perfRelease) *api.JobSpec {
 	d := v.snapshot()
-	if !perfMacWanted(d) {
+	if !perfMacWanted(d) || !versionAtLeast(d.Facts.AgentVersion, perfOfflineAgent) {
 		return nil
 	}
 	for _, pr := range rels {
@@ -154,7 +154,7 @@ func (s *Server) perfWanted(v *dev, bench *sets.Set, rels []*perfRelease) *api.J
 			if len(adds) > 0 {
 				if kept := s.keptAddsSet(pr.rel, adds); kept != nil {
 					set = kept
-				} else if d.IsVolunteer() {
+				} else if d.IsVolunteer() || s.addsWaiting(pr.rel.Name, adds) {
 					continue
 				}
 			}

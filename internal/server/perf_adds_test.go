@@ -1,6 +1,11 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -155,5 +160,67 @@ func TestAddsSetOfRefusesWhatWouldChangeTheRelease(t *testing.T) {
 	set, err := addsSetOf(rel, base, []string{"x"}, api.AddsResolved{Files: []api.AddsFile{file("x", "1-1"), file("mesa", "1-1")}}, time.Now())
 	if err != nil || len(set.Items) != 2 {
 		t.Errorf("the Release's own Mesa again: %+v %v", set, err)
+	}
+}
+
+// The parts of a file are joined only when each is exactly its share and
+// the whole is the file; a wrong blob of that sha256 in the store is
+// replaced, and a right one kept.
+func TestTheJoinTakesExactPartsAndChecksTheWhole(t *testing.T) {
+	l := newLab(t, false)
+	was := api.AddsPart
+	api.AddsPart = 4
+	t.Cleanup(func() { api.AddsPart = was })
+	data := []byte("0123456789")
+	sum := sha256.Sum256(data)
+	f := api.AddsFile{Name: "x", Version: "1-1", File: "x-1-1-aarch64.pkg.tar.zst", SHA256: hex.EncodeToString(sum[:]), Size: 10, Parts: 3}
+	dir := filepath.Join(l.s.jobDir("j-1"), "adds")
+	put := func(parts ...string) {
+		os.RemoveAll(dir)
+		os.MkdirAll(dir, 0o755)
+		for n, p := range parts {
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%d", f.File, n)), []byte(p), 0o644)
+		}
+	}
+	for why, parts := range map[string][]string{
+		"a short middle part": {"0123", "456", "789"},
+		"a long last part":    {"0123", "4567", "89xx"},
+		"a missing part":      {"0123", "4567"},
+		"other bytes":         {"0123", "4567", "8X"},
+	} {
+		put(parts...)
+		if err := l.s.joinAddsFile("j-1", f); err == nil {
+			t.Errorf("%s was joined", why)
+		}
+	}
+	os.MkdirAll(filepath.Dir(l.s.artifactPath(f.SHA256)), 0o755)
+	os.WriteFile(l.s.artifactPath(f.SHA256), []byte("9876543210"), 0o644)
+	put("0123", "4567", "89")
+	if err := l.s.joinAddsFile("j-1", f); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(l.s.artifactPath(f.SHA256)); string(b) != string(data) {
+		t.Errorf("the store holds %q", b)
+	}
+	if err := l.s.joinAddsFile("j-1", f); err != nil {
+		t.Errorf("a right blob already there: %v", err)
+	}
+}
+
+// A Mac that could not resolve the packages for a Release has labd wait
+// before a Lab-owned Mac tries again.
+func TestLabdWaitsBeforeResolvingAgain(t *testing.T) {
+	l := newLab(t, false)
+	adds := []string{"opencl-aurora"}
+	if l.s.addsWaiting("7.3", adds) {
+		t.Fatal("waiting before any try")
+	}
+	l.s.addsWait.Store(addsWaitKey("7.3", adds), l.s.now())
+	if !l.s.addsWaiting("7.3", adds) || l.s.addsWaiting("7.4", adds) {
+		t.Error("the wait is not the Release's and the packages'")
+	}
+	l.s.addsWait.Store(addsWaitKey("7.3", adds), l.s.now().Add(-addsRetry-time.Minute))
+	if l.s.addsWaiting("7.3", adds) {
+		t.Error("still waiting after the retry time")
 	}
 }
