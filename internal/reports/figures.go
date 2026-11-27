@@ -74,8 +74,10 @@ type PerfConfiguration struct {
 }
 
 // PerfAdded is one metric of a Release with the packages the lab added for
-// it: the median of the headline Macs' values, of their newest macOS values
-// of it, and of their ratios; Reason, with no value, when none has one.
+// it, over the headline Macs that have both an Omarchy value and a macOS
+// value of it: the medians of each and of their ratios, Macs of them. With
+// no such Mac, the median of the Omarchy values alone, of Macs Macs, with no
+// macOS figure; Reason, with no value, when none has one.
 type PerfAdded struct {
 	Release PerfRelease
 	Adds    string
@@ -404,8 +406,8 @@ func (f *PerfFigures) addedRows(x perfIndex, macs []string) []*PerfAdded {
 				if len(vs) == 0 {
 					continue
 				}
-				row := &PerfAdded{Release: r, Adds: a, Metric: m, Macs: len(vs)}
-				var oms, mos, ratios []float64
+				row := &PerfAdded{Release: r, Adds: a, Metric: m}
+				var alone, oms, mos, ratios []float64
 				for _, v := range vs {
 					if v.Value == nil {
 						if row.Reason == nil {
@@ -413,18 +415,22 @@ func (f *PerfFigures) addedRows(x perfIndex, macs []string) []*PerfAdded {
 						}
 						continue
 					}
-					oms = append(oms, *v.Value)
+					alone = append(alone, *v.Value)
 					if mv := newestMacOS(x, v.Mac, m.ID); mv != nil {
-						mos = append(mos, *mv.Value)
 						if q, ok := perfRatio(m.HigherIsBetter(), *v.Value, *mv.Value); ok {
-							ratios = append(ratios, q)
+							oms, mos, ratios = append(oms, *v.Value), append(mos, *mv.Value), append(ratios, q)
 						}
 					}
 				}
-				if len(oms) > 0 {
-					row.Reason = nil
+				switch {
+				case len(ratios) > 0:
+					row.Macs, row.Reason = len(ratios), nil
+					row.Omarchy, row.MacOS, row.Ratio = median(oms), median(mos), median(ratios)
+				case len(alone) > 0:
+					row.Macs, row.Reason, row.Omarchy = len(alone), nil, median(alone)
+				default:
+					row.Macs = len(vs)
 				}
-				row.Omarchy, row.MacOS, row.Ratio = median(oms), median(mos), median(ratios)
 				out = append(out, row)
 			}
 		}

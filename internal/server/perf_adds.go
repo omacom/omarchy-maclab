@@ -99,8 +99,11 @@ func addsWaitKey(release string, adds []string) string {
 }
 
 // addsWaiting is whether labd waits before resolving the packages for the
-// Release again.
+// Release: a Mac resolves them now, or one could not lately.
 func (s *Server) addsWaiting(release string, adds []string) bool {
+	if _, busy := s.addsResolving.Load(addsWaitKey(release, adds)); busy {
+		return true
+	}
 	at, ok := s.addsWait.Load(addsWaitKey(release, adds))
 	return ok && s.now().Sub(at.(time.Time)) < addsRetry
 }
@@ -115,6 +118,11 @@ func (r *jobRun) perfAddsSet(ctx context.Context, rel api.Release, base *api.Pac
 	if r.v.snapshot().IsVolunteer() {
 		return nil, refuse(409, "no Lab-owned Mac has resolved %s for Release %s yet: a Volunteer's Mac never chooses what the lab keeps", strings.Join(adds, ", "), rel.Name)
 	}
+	key := addsWaitKey(rel.Name, adds)
+	if other, busy := r.s.addsResolving.LoadOrStore(key, r.j.ID); busy {
+		return nil, refuse(409, "job %s is resolving %s for Release %s now", other, strings.Join(adds, ", "), rel.Name)
+	}
+	defer r.s.addsResolving.Delete(key)
 	defer os.RemoveAll(filepath.Join(r.s.jobDir(r.j.ID), "adds"))
 	r.ev("resolving the packages the lab adds, %s, on this Mac (pacman -Sw against a copy of its database)", strings.Join(adds, ", "))
 	var got api.AddsResolved

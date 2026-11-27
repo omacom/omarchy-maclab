@@ -562,6 +562,7 @@ type perfConfigPage struct {
 type perfAddedLine struct {
 	Name, Unit, Release, Adds string
 	Omarchy, MacOS, Ratio     string
+	APIDiffers                string
 	Macs                      int
 }
 
@@ -632,6 +633,9 @@ func (s *Server) pPerformanceConfiguration(w http.ResponseWriter, r *http.Reques
 	for _, a := range c.Added {
 		line := perfAddedLine{Name: a.Metric.Name, Unit: a.Metric.Unit + " · " + perfDirection(a.Metric.HigherIsBetter()),
 			Release: a.Release.Kernel, Adds: strings.ReplaceAll(a.Adds, "+", ", "), Macs: a.Macs, Omarchy: "–", MacOS: "–", Ratio: "–"}
+		if m := a.Metric; m.APIDiffers && m.Omarchy != nil && m.MacOS != nil {
+			line.APIDiffers = "API differs: " + m.Omarchy.API + " on Omarchy, " + m.MacOS.API + " on macOS"
+		}
 		switch {
 		case a.Omarchy != nil:
 			line.Omarchy = perfNumber(*a.Omarchy) + " " + a.Metric.Unit

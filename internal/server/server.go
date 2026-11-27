@@ -188,7 +188,10 @@ type Server struct {
 	// addsWait is when a Mac last could not resolve a set of packages the
 	// lab adds, by Release and packages (api.PerfTarget).
 	addsWait sync.Map
-	reports  *reports.Store
+	// addsResolving is the job resolving a set of packages the lab adds, by
+	// Release and packages: one Mac downloads them at a time.
+	addsResolving sync.Map
+	reports       *reports.Store
 	// uploads takes reports in; nil without the machine-id key.
 	uploads   *reports.Uploads
 	catalogue *reports.Catalogue

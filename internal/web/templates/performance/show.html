@@ -91,7 +91,7 @@
 <div class="scroll perf-box"><table class="list perf-table">
 <thead><tr><th scope="col">Benchmark</th><th scope="col">Release</th><th scope="col">Added</th><th scope="col">Omarchy</th><th scope="col">macOS</th><th scope="col">of macOS</th></tr></thead>
 <tbody>
-{{range .Added}}<tr><td><span class="perf-metric-name">{{.Name}}</span><span class="row-meta">{{.Unit}}</span></td>
+{{range .Added}}<tr><td><span class="perf-metric-name">{{.Name}}</span><span class="row-meta">{{.Unit}}</span>{{with .APIDiffers}}<span class="row-meta">{{.}}</span>{{end}}</td>
 <td class="mono">{{.Release}}</td><td class="mono">{{.Adds}}</td><td class="mono">{{.Omarchy}}</td><td class="mono">{{.MacOS}}</td><td class="mono">{{.Ratio}}<span class="row-meta">{{.Macs}} {{if eq .Macs 1}}Mac{{else}}Macs{{end}}</span></td></tr>
 {{end}}</tbody>
 </table></div>

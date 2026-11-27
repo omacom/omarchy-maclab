@@ -720,6 +720,20 @@ func TestAValueWithPackagesTheLabAddedIsShownApart(t *testing.T) {
 	if a := c.Added[0]; a.Metric.ID != "mlx-matmul-fp16" || a.Adds != "omarchy-mlx" || a.Release.Key != r || !near(a.Omarchy, 50) || !near(a.MacOS, 100) || !near(a.Ratio, 50) || a.Macs != 1 {
 		t.Errorf("the added row: %+v", a)
 	}
+	// A Mac with no macOS result is paired with nothing: the row stays the
+	// first Mac's, and the data carries it apart.
+	other := l.mac('b', PerfLabOwned, "j314s", 10, 16)
+	l.value(other, "omarchy", r, "", "mlx-matmul-fp16", 5, "", 0)
+	l.p.Values[len(l.p.Values)-1].Adds = "omarchy-mlx"
+	f := l.figures(false)
+	if a := f.Configurations[0].Added[0]; a.Macs != 1 || !near(a.Omarchy, 50) || !near(a.Ratio, 50) {
+		t.Errorf("a Mac with no macOS value in the row: %+v", a)
+	}
+	rel := f.Release(r)
+	if js := string(f.JSON(rel, l.at)); !strings.Contains(js, `"added":[{"metric":"mlx-matmul-fp16"`) || !strings.Contains(js, `"adds":["omarchy-mlx"]`) {
+		t.Errorf("the data: %s", js)
+	}
+	l.p.Values = l.p.Values[:len(l.p.Values)-1]
 
 	s, _ := openStore(t)
 	if _, err := s.PublishPerformance(l.p, l.at); err != nil {
