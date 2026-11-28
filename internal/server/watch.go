@@ -28,8 +28,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
 const (
@@ -38,14 +36,8 @@ const (
 	tunnelHold = 5 * time.Minute
 	// partHold is how long Litestream, the Builder or the controller must
 	// stay wrong before "Agents" is told.
-	partHold = 2 * time.Minute
-	// idleOfflineHold is how long an idle, unleased Lab-owned Mac must stay
-	// offline before labd attempts a rate-limited Hard reset or tells "Agents".
-	idleOfflineHold = 10 * time.Minute
-	// idleResetCooldown bounds automatic Hard resets of an idle offline Mac
-	// so a dead or unplugged Mac never enters a reset loop.
-	idleResetCooldown = time.Hour
-	backupTooOld      = 36 * time.Hour
+	partHold     = 2 * time.Minute
+	backupTooOld = 36 * time.Hour
 	// diskLow is the free space, in percent, under which "Agents" is told.
 	diskLow = 15
 	// A daemon launchd started restartsMany times within restartsWindow is
@@ -122,9 +114,6 @@ type watcher struct {
 	statusMu sync.Mutex
 	// since is when each trouble was first seen, while it lasts.
 	since map[string]time.Time
-	// idleResetAt is when labd last sent an automatic Hard reset to an idle
-	// offline Lab-owned Mac, by device ID.
-	idleResetAt map[string]time.Time
 	// lastAlive is when the labd before this one was last known to run.
 	lastAlive time.Time
 	greeted   bool
@@ -151,7 +140,7 @@ const (
 // startWatch reads what the labd before this one left, and notes this start.
 func (s *Server) startWatch() {
 	w := &s.watch
-	w.since, w.idleResetAt, w.runs, w.restarts = map[string]time.Time{}, map[string]time.Time{}, map[string]int{}, map[string][]time.Time{}
+	w.since, w.runs, w.restarts = map[string]time.Time{}, map[string]int{}, map[string][]time.Time{}
 	w.nextDigest = nextDigest(s.start)
 	if v, ok := s.lines.mark(markAlive); ok {
 		if sec, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -540,140 +529,6 @@ func (s *Server) lookDisk(now time.Time) {
 	s.judge(now, "disk", percent < diskLow, 0,
 		fixed(fmt.Sprintf("The mini's disk is %d %% free (%s): under %d %%.", percent, size, diskLow)),
 		fixed(fmt.Sprintf("The mini's disk is %d %% free again (%s).", percent, size)))
-}
-
-// lookOffline watches idle, unleased Lab-owned Macs that go offline. After
-// idleOfflineHold, a sighted Mac on AC gets one rate-limited Hard reset (at
-// most once per idleResetCooldown); an unsighted Mac, one last seen on
-// battery, or one that does not return after the reset tells "Agents" once.
-func (s *Server) lookOffline(ctx context.Context, now time.Time) {
-	w := &s.watch
-	if w.idleResetAt == nil {
-		w.idleResetAt = map[string]time.Time{}
-	}
-	for _, v := range s.allDevs() {
-		v.mu.Lock()
-		d := v.d
-		leased := v.liveLeaseLocked() != nil
-		busy := d.ActiveJob != "" || v.proving || v.resetting || v.updating != nil || v.cleaning || v.forgotten
-		noReset := v.noHardResetLocked()
-		oldBoot := d.BootID
-		v.mu.Unlock()
-
-		if d.IsVolunteer() || d.State == api.StateLeft || oldBoot == "" {
-			continue
-		}
-		key := "offline:" + d.ID
-		switch d.State {
-		case api.StateReady, api.StateNew:
-			since := w.since[key]
-			delete(w.since, key)
-			delete(w.idleResetAt, d.ID)
-			msg := d.Name + " is back online."
-			if !since.IsZero() {
-				msg = fmt.Sprintf("%s is back online (was offline for %s).", d.Name, howLong(now.Sub(since)))
-			}
-			s.agents.Recovered(key, msg)
-			continue
-		case api.StateOffline:
-		default:
-			continue
-		}
-		if leased || busy {
-			continue
-		}
-		since := w.since[key]
-		if since.IsZero() {
-			since = now
-			w.since[key] = since
-		}
-		if now.Sub(since) < idleOfflineHold {
-			continue
-		}
-		why := d.StateReason
-		if why == "" {
-			why = "offline since " + when(since)
-		}
-		canReset := noReset == "" && !d.Health.OnBattery
-		lastReset := w.idleResetAt[d.ID]
-		if canReset && (lastReset.IsZero() || now.Sub(lastReset) >= idleResetCooldown) {
-			v.mu.Lock()
-			eligible := v.d.State == api.StateOffline && v.liveLeaseLocked() == nil &&
-				v.d.ActiveJob == "" && !v.proving && !v.resetting && v.updating == nil &&
-				!v.cleaning && !v.forgotten && !v.d.Health.OnBattery
-			if eligible {
-				v.resetting = true
-			}
-			v.mu.Unlock()
-			if eligible {
-				w.idleResetAt[d.ID] = now
-				go s.idleRecover(v, key, d.ID, oldBoot, since, why)
-			}
-			continue
-		}
-		var detail string
-		switch {
-		case d.Health.OnBattery:
-			detail = "no automatic Hard reset was sent because it was last seen on battery"
-		case noReset != "":
-			detail = "no automatic Hard reset was sent: " + noReset
-		default:
-			continue
-		}
-		s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); %s.", d.Name, when(since), why, detail))
-	}
-}
-
-// idleRecover sends one rate-limited Hard reset to an idle offline Lab-owned
-// Mac, waits one boot timeout for it to return on a new boot, and tells
-// "Agents" the outcome. Caller set v.resetting = true.
-func (s *Server) idleRecover(v *dev, key, devID, oldBoot string, since time.Time, why string) {
-	name := v.snapshot().Name
-	rctx, cancel := s.withTimeout(s.ctx, s.cfg.ResetWait)
-	sentAt := s.now()
-	port, err := v.resetOOB(rctx)
-	cancel()
-	v.mu.Lock()
-	v.resetting = false
-	if err != nil {
-		v.mu.Unlock()
-		s.log.Printf("%s: automatic idle Hard reset failed: %v", name, err)
-		s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); automatic Hard reset failed: %v.", name, when(since), why, err))
-		return
-	}
-	if v.d.State == api.StateOffline {
-		v.setStateLocked(api.StateRecovering, "automatic Hard reset of idle offline Mac")
-	}
-	v.mu.Unlock()
-	s.log.Printf("%s: automatic Hard reset sent through the %s port (offline since %s)", name, port, when(since))
-
-	back := v.waitFor(s.ctx, s.cfg.BootTimeout, func() bool {
-		return v.d.BootID != oldBoot && v.d.LastSeen.After(sentAt)
-	}) == nil
-	if back {
-		v.mu.Lock()
-		if v.d.State == api.StateRecovering {
-			v.setStateLocked(v.idleStateLocked(), "")
-			v.restore = ""
-		}
-		v.mu.Unlock()
-		s.watch.mu.Lock()
-		delete(s.watch.since, key)
-		delete(s.watch.idleResetAt, devID)
-		s.watch.mu.Unlock()
-		s.log.Printf("%s: back online after automatic Hard reset through the %s port", name, port)
-		if !s.agents.Recovered(key, fmt.Sprintf("%s is back online after an automatic Hard reset through the %s port.", name, port)) {
-			s.agents.IdleRecovered(name, port, since)
-		}
-		return
-	}
-	v.mu.Lock()
-	if v.d.State == api.StateRecovering {
-		v.setStateLocked(api.StateOffline, why)
-	}
-	v.mu.Unlock()
-	s.log.Printf("%s: automatic Hard reset through the %s port did not bring it back within %s", name, port, s.cfg.BootTimeout)
-	s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); one automatic Hard reset through the %s port did not bring it back.", name, when(since), why, port))
 }
 
 // lookAlias asks the Alias from outside whether it still leads to the Lab

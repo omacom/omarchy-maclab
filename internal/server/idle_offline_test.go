@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/omacom/omarchy-maclab/internal/agent"
 	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
@@ -23,7 +27,11 @@ func addIdleTestMac(o *opsLab, name, kind string, state api.DeviceState, reason 
 		Volunteer:   kind == api.KindVolunteer,
 		Facts:       api.Facts{Hostname: name, PreflightOK: true, AgentVersion: "0.12.0"},
 	}
-	v := newDev(o.s, d, "secret-"+name)
+	secret := hashSecret("secret-" + name)
+	if err := o.s.store.saveDevice(&d, secret); err != nil {
+		o.t.Fatal(err)
+	}
+	v := newDev(o.s, d, secret)
 	v.heard = o.clock.Now()
 	o.s.mu.Lock()
 	o.s.devs[name] = v
@@ -202,4 +210,303 @@ func TestIdleOfflineGuardsUnsightedLeasedBatteryAndVolunteer(t *testing.T) {
 	if len(got) != 3 || !strings.Contains(got[2], "m4pro is back online") {
 		t.Fatalf("expected recovery line for m4pro, got:\n%s", strings.Join(got, "\n"))
 	}
+}
+
+func TestIdleOfflineCooldownPersistsAcrossRecoveryAndRestart(t *testing.T) {
+	data := t.TempDir()
+	clock := agent.NewFakeClock(opsStart)
+	m := healthy()
+	fm := newFakeMini(t)
+	mod := func(cfg *Config) {
+		cfg.OOB = fm.client
+		cfg.BootTimeout = 2 * time.Minute
+	}
+
+	a := newOpsAt(t, data, clock, m, mod)
+	v := addIdleTestMac(a, "m2-max", api.KindLabOwned, api.StateReady, "")
+	fm.plug(portLeft, nil, "m2-max", productM2Max)
+	a.s.sight(a.s.ctx)
+
+	// First offline event -> automatic Hard reset #1 -> recovers.
+	clock.Advance(time.Minute)
+	v.mu.Lock()
+	v.setStateLocked(api.StateOffline, "no heartbeat")
+	v.mu.Unlock()
+	a.s.look(a.s.ctx)
+	a.later(idleOfflineHold)
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		defer fm.mu.Unlock()
+		return fm.resets == 1 && v.snapshot().State == api.StateRecovering
+	})
+	clock.Advance(30 * time.Second)
+	v.heartbeat(api.Checkin{
+		BootID: "boot-m2-max-2",
+		Kernel: "7.3.0-1-ARCH",
+		Health: api.Health{SystemState: "running"},
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		return v.snapshot().State == api.StateReady
+	})
+
+	// Goes offline again 10 min later for 10 min (still well inside 1h cooldown):
+	// recovery must NOT have erased the hourly reset limit.
+	a.later(10 * time.Minute)
+	v.mu.Lock()
+	v.setStateLocked(api.StateOffline, "no heartbeat again")
+	v.mu.Unlock()
+	a.s.look(a.s.ctx)
+	a.later(idleOfflineHold)
+	fm.mu.Lock()
+	resetsAfterRecovery := fm.resets
+	fm.mu.Unlock()
+	if resetsAfterRecovery != 1 {
+		t.Fatalf("resets after recovery within 1h = %d, want 1", resetsAfterRecovery)
+	}
+
+	// Restart labd on the same data directory while still inside the 1h cooldown:
+	// restart must NOT erase the hourly reset limit either.
+	v.mu.Lock()
+	if err := a.s.store.saveDevice(&v.d, v.secretHash); err != nil {
+		v.mu.Unlock()
+		t.Fatal(err)
+	}
+	v.mu.Unlock()
+	a.stop()
+
+	clock.Advance(5 * time.Minute)
+	b := newOpsAt(t, data, clock, m, mod)
+	b.s.sight(b.s.ctx)
+	vb := b.s.dev("m2-max")
+	if vb == nil {
+		t.Fatal("m2-max missing after restart")
+	}
+	vb.mu.Lock()
+	vb.setStateLocked(api.StateOffline, "still offline after restart")
+	vb.mu.Unlock()
+	b.s.look(b.s.ctx)
+	b.later(idleOfflineHold)
+	fm.mu.Lock()
+	resetsAfterRestart := fm.resets
+	fm.mu.Unlock()
+	if resetsAfterRestart != 1 {
+		t.Fatalf("resets after restart within 1h = %d, want 1", resetsAfterRestart)
+	}
+
+	// Once the full 1h cooldown has elapsed, a second automatic reset is allowed.
+	b.later(40 * time.Minute)
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		defer fm.mu.Unlock()
+		return fm.resets == 2
+	})
+}
+
+func TestIdleOfflineQueuedResetCanceledByNewLease(t *testing.T) {
+	fm := newFakeMini(t)
+	o := newOps(t, func(cfg *Config) {
+		cfg.OOB = fm.client
+		cfg.BootTimeout = 2 * time.Minute
+	})
+	v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+	fm.plug(portLeft, nil, "m2-max", productM2Max)
+	o.s.sight(o.s.ctx)
+
+	// Hold the controller lock so the automatic idle reset has to wait in queue.
+	probing, release := fm.holdProbes(t)
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		_, _ = fm.client.Probe(context.Background(), portLeft)
+	}()
+	<-probing
+
+	o.s.look(o.s.ctx)
+	o.later(idleOfflineHold)
+
+	// Wait until idleRecover has claimed resetting and reached the controller queue.
+	waitUntil(t, 2*time.Second, func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return v.resetting
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		defer fm.mu.Unlock()
+		return fm.resetsAsked == 1
+	})
+
+	// Take a Lease while the reset is waiting for the controller.
+	v.mu.Lock()
+	v.d.Lease = &api.Lease{Holder: "ada@desk", Maintainer: "ada", Expires: o.clock.Now().Add(2 * time.Hour)}
+	v.bump()
+	v.mu.Unlock()
+
+	// Wait for idleRecover to abort before releasing the controller, then release.
+	waitUntil(t, 2*time.Second, func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return !v.resetting
+	})
+	release()
+	<-probeDone
+
+	fm.mu.Lock()
+	resets := fm.resets
+	fm.mu.Unlock()
+	if resets != 0 {
+		t.Fatalf("sent %d resets after Lease was taken, want 0", resets)
+	}
+	if len(o.told()) != 0 {
+		t.Fatalf("unexpected alerts when Lease canceled queued reset: %v", o.told())
+	}
+}
+
+func TestIdleOfflineOnSendingAndHeartbeatDuringResetKeepRecovering(t *testing.T) {
+	fm := newFakeMini(t)
+	o := newOps(t, func(cfg *Config) {
+		cfg.OOB = fm.client
+		cfg.BootTimeout = 2 * time.Minute
+	})
+	v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+	fm.plug(portLeft, nil, "m2-max", productM2Max)
+	o.s.sight(o.s.ctx)
+
+	// Right as the controller checks the port under its lock (just before
+	// OnSending fires), the Mac checks in on a mid-flight boot and becomes
+	// ready. OnSending must capture boot-mid as the pre-reset boot, and
+	// idleRecover must still keep the Mac in StateRecovering until a newer
+	// post-reset boot arrives.
+	var once sync.Once
+	fm.mu.Lock()
+	fm.onLook = func(int) {
+		once.Do(func() {
+			o.clock.Advance(2 * time.Second)
+			v.heartbeat(api.Checkin{
+				BootID: "boot-m2-max-mid",
+				Kernel: "7.3.0-1-ARCH",
+				Health: api.Health{SystemState: "running"},
+			})
+		})
+	}
+	fm.mu.Unlock()
+
+	o.s.look(o.s.ctx)
+	o.later(idleOfflineHold)
+
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		resets := fm.resets
+		fm.mu.Unlock()
+		return resets == 1 && v.snapshot().State == api.StateRecovering
+	})
+	// boot-m2-max-mid must NOT have counted as post-reset recovery.
+	if len(o.told()) != 0 {
+		t.Fatalf("earlier boot counted as recovery: %v", o.told())
+	}
+
+	// Only a newer boot after OnSending completes recovery.
+	o.clock.Advance(30 * time.Second)
+	v.heartbeat(api.Checkin{
+		BootID: "boot-m2-max-after",
+		Kernel: "7.3.0-1-ARCH",
+		Health: api.Health{SystemState: "running"},
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		return v.snapshot().State == api.StateReady && len(o.told()) == 1
+	})
+}
+
+func TestIdleOfflineMayHaveGoneKeepsRecoveringUntilConfirmed(t *testing.T) {
+	fm := newFakeMini(t)
+	fm.mu.Lock()
+	fm.rebootFails = errors.New("exit status 1: lost the port partner")
+	fm.mu.Unlock()
+	o := newOps(t, func(cfg *Config) {
+		cfg.OOB = fm.client
+		cfg.BootTimeout = 2 * time.Minute
+	})
+	v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+	fm.plug(portLeft, nil, "m2-max", productM2Max)
+	o.s.sight(o.s.ctx)
+
+	o.s.look(o.s.ctx)
+	o.later(idleOfflineHold)
+
+	// Even though Reboot returned an error after sending (mayHaveGone), the
+	// Mac must stay in StateRecovering instead of alerting failure immediately.
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		resets := fm.resets
+		fm.mu.Unlock()
+		return resets == 1 && v.snapshot().State == api.StateRecovering
+	})
+	if len(o.told()) != 0 {
+		t.Fatalf("mayHaveGone alerted prematurely: %v", o.told())
+	}
+
+	// Once it comes back on a new boot, it leaves StateRecovering and reports recovery.
+	o.clock.Advance(30 * time.Second)
+	v.heartbeat(api.Checkin{
+		BootID: "boot-m2-max-2",
+		Kernel: "7.3.0-1-ARCH",
+		Health: api.Health{SystemState: "running"},
+	})
+	waitUntil(t, 2*time.Second, func() bool {
+		return v.snapshot().State == api.StateReady && len(o.told()) == 1
+	})
+}
+
+func TestIdleOfflineCanceledWaitDoesNotReportFailure(t *testing.T) {
+	t.Run("server shutdown", func(t *testing.T) {
+		fm := newFakeMini(t)
+		o := newOps(t, func(cfg *Config) {
+			cfg.OOB = fm.client
+			cfg.BootTimeout = 2 * time.Minute
+		})
+		v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+		fm.plug(portLeft, nil, "m2-max", productM2Max)
+		o.s.sight(o.s.ctx)
+
+		o.s.look(o.s.ctx)
+		o.later(idleOfflineHold)
+		waitUntil(t, 2*time.Second, func() bool {
+			return v.snapshot().State == api.StateRecovering
+		})
+
+		// Shut down labd while idleRecover is waiting for boot.
+		o.stop()
+		// Re-open the store to inspect recorded Agents lines after cancellation settles.
+		time.Sleep(50 * time.Millisecond)
+		if got := o.told(); len(got) != 0 {
+			t.Fatalf("server shutdown reported failure: %v", got)
+		}
+	})
+
+	t.Run("mac enrollment ended", func(t *testing.T) {
+		fm := newFakeMini(t)
+		o := newOps(t, func(cfg *Config) {
+			cfg.OOB = fm.client
+			cfg.BootTimeout = 2 * time.Minute
+		})
+		v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+		fm.plug(portLeft, nil, "m2-max", productM2Max)
+		o.s.sight(o.s.ctx)
+
+		o.s.look(o.s.ctx)
+		o.later(idleOfflineHold)
+		waitUntil(t, 2*time.Second, func() bool {
+			return v.snapshot().State == api.StateRecovering
+		})
+
+		// End the Mac's enrollment while idleRecover waits for boot.
+		if err := o.s.endEnrollment(v, leaving{how: leftByMaintainer, by: Person{Handle: "ada", Maintainer: true}}); err != nil {
+			t.Fatal(err)
+		}
+		o.clock.Advance(3 * time.Minute)
+		time.Sleep(50 * time.Millisecond)
+		if got := o.told(); len(got) != 0 {
+			t.Fatalf("ended enrollment reported failure: %v", got)
+		}
+	})
 }
