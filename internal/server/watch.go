@@ -247,6 +247,7 @@ func (s *Server) look(ctx context.Context) {
 	w.status = Status{Looked: whenDated(now), Parts: parts}
 	w.statusMu.Unlock()
 	s.lines.setMark(markAlive, strconv.FormatInt(now.Unix(), 10))
+	s.lookSightings(now)
 }
 
 func (s *Server) releaseText() string {

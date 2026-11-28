@@ -23,8 +23,18 @@ import (
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
+	"github.com/omacom/omarchy-maclab/internal/detect"
 	"github.com/omacom/omarchy-maclab/internal/oob"
 )
+
+// knownProductBoards maps verified Apple Silicon USB-PD partner product ids
+// (IOPortTransportComponentCCUSBPDSOP Product ID) to their board identifiers,
+// used only as a Proving reset hint when Thunderbolt shows no name.
+var knownProductBoards = map[int]string{
+	29448: "j314s", // MacBook Pro (14-inch, M1 Pro)
+	29453: "j416c", // MacBook Pro (16-inch, M2 Max)
+	29465: "j614s", // MacBook Pro (14-inch, M4 Pro)
+}
 
 // sightEvery is how often labd asks the controller what its ports show.
 const sightEvery = 15 * time.Second
@@ -146,6 +156,9 @@ func (s *Server) saveSightings() {
 		return
 	}
 	c.saved = held
+	for name := range held {
+		s.recordEverSightedName(name)
+	}
 }
 
 // restoreLocked keeps or drops each Sighting labd's data held as it
@@ -334,7 +347,8 @@ func neverAVolunteers(name string) string {
 
 // labOwned is a Lab-owned Mac's record as a look at the ports needs it.
 type labOwned struct {
-	name, hostname string
+	name, hostname, board string
+	left                  bool
 	// boot is its boot id, and heard when labd last heard the Mac itself.
 	boot  string
 	heard time.Time
@@ -359,7 +373,7 @@ func (v *dev) labOwned() (labOwned, bool) {
 	if v.d.IsVolunteer() {
 		return labOwned{}, false
 	}
-	return labOwned{v.d.Name, v.d.Facts.Hostname, v.d.BootID, v.heard}, true
+	return labOwned{v.d.Name, v.d.Facts.Hostname, detect.Board(v.d.Facts.Compatible), v.d.State == api.StateLeft, v.d.BootID, v.heard}, true
 }
 
 // sightLoop keeps the Sightings: it asks the controller what its ports show
@@ -449,9 +463,10 @@ func (s *Server) lookAt(ctx context.Context, m oob.Member) (map[int]oob.Port, er
 func (s *Server) lookedAt(ports map[int]oob.Port, downs uint64) bool {
 	macs := s.labOwnedMacs()
 	now := s.now()
+	var keptNames []string
 	s.cables.mu.Lock()
-	defer s.cables.mu.Unlock()
 	if s.cables.downs != downs {
+		s.cables.mu.Unlock()
 		// found not answering while this look was under way: its ports are older news
 		return false
 	}
@@ -459,11 +474,18 @@ func (s *Server) lookedAt(ports map[int]oob.Port, downs uint64) bool {
 		s.cables.down = ""
 		s.log.Printf("the Out-of-band controller answers again")
 	}
+	if s.cables.kept != nil {
+		keptNames = slices.Sorted(maps.Keys(s.cables.kept))
+	}
 	for _, line := range s.cables.restoreLocked(ports, macs) {
 		s.log.Printf("%s", line)
 	}
 	for _, line := range s.cables.apply(ports, macs, now) {
 		s.log.Printf("sighting: %s", line)
+	}
+	s.cables.mu.Unlock()
+	for _, name := range keptNames {
+		s.recordEverSightedName(name)
 	}
 	return true
 }
@@ -948,11 +970,15 @@ func (s *Server) hOOBStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	v.mu.Lock()
 	out := api.OOBStatus{Device: v.d.Name, Cable: v.cableLocked()}
+	hostname := v.d.Facts.Hostname
+	board := detect.Board(v.d.Facts.Compatible)
 	v.mu.Unlock()
 	if out.Cable == nil || !callerOf(r).reads() {
 		writeJSON(w, out)
 		return
 	}
+	macs := s.labOwnedMacs()
+	out.DuplicateHostname = duplicateHostnames(out.Device, hostname, macs)
 	s.cables.mu.Lock()
 	out.Controller = orStr(s.cables.down, api.ControllerHealthy)
 	if s.oob.Empty() {
@@ -963,8 +989,88 @@ func (s *Server) hOOBStatus(w http.ResponseWriter, r *http.Request) {
 			out.Ports = append(out.Ports, api.OOBPort{Port: s.oob.PortName(rid), Connected: p.Connected, Name: p.Name, ProductID: p.ProductID, PlugCount: p.PlugCount, Mac: s.cables.onPortLocked(rid)})
 		}
 	}
+	if out.Cable.State != api.CableSighted {
+		out.CandidatePort, out.CandidateBoard = s.cables.candidatePortLocked(out.Device, board, macs)
+	}
 	s.cables.mu.Unlock()
 	writeJSON(w, out)
+}
+
+// duplicateHostnames returns the sorted names of other Lab-owned Macs that
+// report the same non-placeholder hostname as target.
+func duplicateHostnames(target, hostname string, macs []labOwned) []string {
+	shown := realName(hostname)
+	if shown == "" {
+		return nil
+	}
+	var others []string
+	for _, m := range macs {
+		if !m.left && m.name != target && strings.EqualFold(realName(m.hostname), shown) {
+			others = append(others, m.name)
+		}
+	}
+	sort.Strings(others)
+	return others
+}
+
+// candidatePortLocked returns the one free unnamed port whose USB-PD product
+// id uniquely matches target's board among unsighted Lab-owned Macs, or ""
+// when unknown or ambiguous. Caller holds c.mu.
+func (c *cables) candidatePortLocked(target, board string, macs []labOwned) (string, string) {
+	if board == "" || c.fleet.Empty() {
+		return "", ""
+	}
+	productBoard := map[int]string{}
+	for pid, b := range knownProductBoards {
+		productBoard[pid] = b
+	}
+	boardByName := map[string]string{}
+	unsightedSameBoard := 0
+	for _, m := range macs {
+		if m.board != "" {
+			boardByName[m.name] = m.board
+		}
+		if !m.left {
+			if _, sighted := c.held[m.name]; !sighted && m.board == board {
+				unsightedSameBoard++
+			}
+		}
+	}
+	if unsightedSameBoard != 1 {
+		return "", ""
+	}
+	// Augment with any product id observed on a live Sighting whose board is known.
+	// Keep conflicting product ids permanently rejected so map iteration order
+	// cannot reintroduce an ambiguous id from another sighted Mac.
+	conflict := map[int]bool{}
+	for name, sg := range c.held {
+		if b := boardByName[name]; b != "" && sg.seen.ProductID > 0 {
+			pid := sg.seen.ProductID
+			if conflict[pid] {
+				continue
+			}
+			if existing, ok := productBoard[pid]; !ok {
+				productBoard[pid] = b
+			} else if existing != b {
+				delete(productBoard, pid)
+				conflict[pid] = true
+			}
+		}
+	}
+	var matches []int
+	for _, rid := range c.fleet.Ports() {
+		p, ok := c.ports[rid]
+		if !ok || !p.Connected || c.onPortLocked(rid) != "" || realName(p.Name) != "" || p.ProductID <= 0 {
+			continue
+		}
+		if productBoard[p.ProductID] == board {
+			matches = append(matches, rid)
+		}
+	}
+	if len(matches) != 1 {
+		return "", ""
+	}
+	return c.fleet.PortName(matches[0]), board
 }
 
 // recoverAfterStart runs recovery on every Lab-owned Mac that was up when
