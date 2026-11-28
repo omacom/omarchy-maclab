@@ -125,9 +125,13 @@ func TestIdleOfflineFailedHardResetAlertsOnceAndRespectsCooldown(t *testing.T) {
 	})
 
 	// Advance past BootTimeout without check-in: reset times out and alerts once.
-	o.clock.Advance(3 * time.Minute)
+	// Step the fake clock inside waitUntil so waitFor's timer cannot race the advance.
 	waitUntil(t, 2*time.Second, func() bool {
-		return v.snapshot().State == api.StateOffline && len(o.told()) == 1
+		if v.snapshot().State == api.StateOffline && len(o.told()) == 1 {
+			return true
+		}
+		o.clock.Advance(time.Minute)
+		return false
 	})
 	if !strings.Contains(o.told()[0], "one automatic Hard reset through the left port did not bring it back.") {
 		t.Fatalf("unexpected alert: %q", o.told()[0])
@@ -357,17 +361,21 @@ func TestIdleOfflineQueuedResetCanceledByNewLease(t *testing.T) {
 	if resets != 0 {
 		t.Fatalf("sent %d resets after Lease was taken, want 0", resets)
 	}
-	if st := v.snapshot().State; st != api.StateOffline {
-		t.Fatalf("state after canceled queued reset = %s, want offline (must not enter recovering)", st)
+	// Because oob.NotSent is an uncertain send, labd watches in StateRecovering
+	// until BootTimeout, keeps the cooldown, then returns to StateOffline with
+	// NO false failure alert to "Agents".
+	if last, _ := o.s.lastIdleReset(v.snapshot().ID); last.IsZero() {
+		t.Fatal("uncertain canceled reset must keep the hourly cooldown")
 	}
-	// Advance well past BootTimeout: no delayed failure alert and cooldown budget was restored.
-	o.clock.Advance(5 * time.Minute)
-	time.Sleep(50 * time.Millisecond)
+	waitUntil(t, 2*time.Second, func() bool {
+		if v.snapshot().State == api.StateOffline {
+			return true
+		}
+		o.clock.Advance(time.Minute)
+		return false
+	})
 	if len(o.told()) != 0 {
 		t.Fatalf("unexpected alerts past BootTimeout when Lease canceled queued reset: %v", o.told())
-	}
-	if last, _ := o.s.lastIdleReset(v.snapshot().ID); !last.IsZero() {
-		t.Fatalf("canceled queued reset consumed cooldown budget: %v", last)
 	}
 }
 
@@ -420,12 +428,21 @@ func TestIdleOfflineQueuedResetCanceledWhenMacReturnsOnline(t *testing.T) {
 	if resets != 0 {
 		t.Fatalf("sent %d resets after Mac returned online, want 0", resets)
 	}
-	if st := v.snapshot().State; st != api.StateReady {
-		t.Fatalf("state after Mac returned online = %s, want ready", st)
-	}
-	// Advance past BootTimeout: the Mac stays ready and no failure alert fires.
-	o.clock.Advance(3 * time.Minute)
-	time.Sleep(50 * time.Millisecond)
+	// Because oob.NotSent may have raced cancellation, labd briefly watches for
+	// RebootGrace (15s); continuing heartbeats on the existing boot clear
+	// StateRecovering back to StateReady well before BootTimeout, with no alert.
+	waitUntil(t, 2*time.Second, func() bool {
+		if v.snapshot().State == api.StateReady {
+			return true
+		}
+		o.clock.Advance(10 * time.Second)
+		v.heartbeat(api.Checkin{
+			BootID: "boot-m2-max-1",
+			Kernel: "7.3.0-1-ARCH",
+			Health: api.Health{SystemState: "running"},
+		})
+		return false
+	})
 	if len(o.told()) != 0 {
 		t.Fatalf("unexpected alerts after queued reset was canceled by return: %v", o.told())
 	}

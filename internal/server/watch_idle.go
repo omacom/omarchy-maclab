@@ -196,28 +196,32 @@ func (s *Server) idleRecover(v *dev, key, devID, prevResetMark string, since tim
 	}
 	mark.Unlock()
 	maybe := err != nil && resetMayHaveGone(err)
-	// hardReset wraps oob.NotSent in mayHaveGone, so check whether our own
-	// fence or server shutdown canceled the queued request before OnSending.
-	canceledBeforeSend := err != nil && !dispatched && (s.ctx.Err() != nil || fencedCancel.Load())
+	// Only skip recovery and restore the cooldown when the controller confirmed
+	// nothing was sent (!maybe). A fenced cancellation that returned oob.NotSent
+	// (wrapped in mayHaveGone) may have raced the controller starting the reset,
+	// so keep watching it in StateRecovering (suppressing any failure alert if
+	// it was called off before 102).
+	calledOffBefore102 := err != nil && !dispatched && fencedCancel.Load()
+	confirmedNotSent := err != nil && !maybe
 
 	v.mu.Lock()
 	v.resetting = false
-	if !canceledBeforeSend && (err == nil || maybe) {
+	if (err == nil || maybe) && s.ctx.Err() == nil {
 		// Keep the Mac unavailable until the reset's boot is confirmed (or
 		// a may-have-gone reset proves it never reached the Mac).
 		v.setStateLocked(api.StateRecovering, "automatic Hard reset of idle offline Mac")
 	}
 	v.mu.Unlock()
 
-	if canceledBeforeSend {
-		if s.ctx.Err() != nil {
-			return
-		}
-		s.restoreIdleReset(devID, prevResetMark)
-		s.log.Printf("%s: automatic idle Hard reset called off before sending", name)
+	if s.ctx.Err() != nil {
 		return
 	}
-	if err != nil && !maybe {
+	if confirmedNotSent {
+		if calledOffBefore102 {
+			s.restoreIdleReset(devID, prevResetMark)
+			s.log.Printf("%s: automatic idle Hard reset called off before sending", name)
+			return
+		}
 		s.log.Printf("%s: automatic idle Hard reset failed: %v", name, err)
 		s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); automatic Hard reset failed: %v.", name, when(since), why, err))
 		return
@@ -270,6 +274,10 @@ func (s *Server) idleRecover(v *dev, key, devID, prevResetMark string, since tim
 		v.setStateLocked(api.StateOffline, why)
 	}
 	v.mu.Unlock()
+	if calledOffBefore102 {
+		s.log.Printf("%s: automatic idle Hard reset was called off before sending and the Mac stayed offline", name)
+		return
+	}
 	s.log.Printf("%s: automatic Hard reset through the %s port did not bring it back within %s", name, port, s.cfg.BootTimeout)
 	s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); one automatic Hard reset through the %s port did not bring it back.", name, when(since), why, port))
 }
