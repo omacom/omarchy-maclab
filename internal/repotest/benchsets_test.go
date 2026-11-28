@@ -19,7 +19,7 @@ var frozenSets = map[string]string{
 	"bench-1.json": "2f5f1bbc815f7e1a5410dee6b16b44469008b2fc1a5c30dd3e0245b70e7334ca",
 	"bench-2.json": "82cc7b3582d6ac6339193b755c710890f2c1f908e156557aca6991415c9b7fd3",
 	"bench-3.json": "b9dd3a1e516bb4e1d60f21c24d5dcc4cce12a042332f81442005e277aa804f21",
-	"bench-4.json": "ef2adf101b0b69c137875b68ee271a27a8fc74137a1bbd02abdd019d4ad974a1",
+	"bench-4.json": "7beba43b91374fd04239ec2b9229ae7cfc1e7ffddaea0963482506f8226d53dd",
 }
 
 func TestEveryBenchmarkSetLoadsAndIsFrozen(t *testing.T) {

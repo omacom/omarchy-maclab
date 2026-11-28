@@ -190,12 +190,15 @@ type fakeDevtools struct {
 	mu       sync.Mutex
 	renderer string
 	hz       float64
+	drawHz   float64
 	evals    []string
+	methods  []string
+	opened   []string
 	srv      *httptest.Server
 }
 
 func newFakeDevtools(t *testing.T) *fakeDevtools {
-	d := &fakeDevtools{renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)", hz: 60}
+	d := &fakeDevtools{renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)", hz: 60, drawHz: 60}
 	d.srv = httptest.NewServer(http.HandlerFunc(d.serve))
 	t.Cleanup(d.srv.Close)
 	return d
@@ -227,9 +230,16 @@ func (d *fakeDevtools) serve(w http.ResponseWriter, r *http.Request) {
 				Method string `json:"method"`
 				Params struct {
 					Expression string `json:"expression"`
+					URL        string `json:"url"`
 				} `json:"params"`
 			}
 			json.Unmarshal(msg, &m)
+			d.mu.Lock()
+			d.methods = append(d.methods, m.Method)
+			if m.Method == "Page.navigate" {
+				d.opened = append(d.opened, m.Params.URL)
+			}
+			d.mu.Unlock()
 			c.write(0x1, []byte(`{"method":"Runtime.consoleAPICalled","params":{"args":[{"value":"/Users/alice"}]}}`))
 			if m.Method != "Runtime.evaluate" {
 				c.write(0x1, []byte(fmt.Sprintf(`{"id":%d,"result":{}}`, m.ID)))
@@ -251,6 +261,8 @@ func (d *fakeDevtools) value(expr string) any {
 	switch {
 	case strings.Contains(expr, "UNMASKED_RENDERER"):
 		return d.renderer
+	case strings.Contains(expr, "fillRect"):
+		return d.drawHz
 	case strings.Contains(expr, "requestAnimationFrame"):
 		return d.hz
 	case strings.Contains(expr, "benchmarkClient._metrics"):
@@ -393,7 +405,7 @@ func fakeChrome(port string) string {
 	return `echo "chrome $*" >> "$FAKE_TOOLS_LOG"
 printf '%s\n' "$@" > "$FAKE_TOOLS_LOG.chrome-args"
 profile=""; url=""; for a in "$@"; do case "$a" in --user-data-dir=*) profile="${a#--user-data-dir=}";; http://*) url="$a";; esac; done
-curl -fsS "$url" >> "$FAKE_TOOLS_LOG.pages" || exit 1
+[ -z "$url" ] || curl -fsS "$url" >> "$FAKE_TOOLS_LOG.pages" || exit 1
 printf '` + port + `\n/devtools/browser/x\n' > "$profile/DevToolsActivePort"
 sleep 30
 `

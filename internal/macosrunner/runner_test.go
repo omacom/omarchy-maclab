@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -361,6 +362,69 @@ func TestABrowserNotDrawnOnTheGPUAt60HzDoesNotCount(t *testing.T) {
 		if lab.got.State != want {
 			t.Errorf("%q at %v Hz: the run %s, want %s", c.renderer, c.hz, lab.got.State, want)
 		}
+	}
+}
+
+func TestFromBench4MotionMarkAndSpeedometerCountTheDrawProbesFrameRate(t *testing.T) {
+	for _, c := range []struct {
+		drawHz float64
+		want   Reason
+	}{{2.3, FellBack}, {60, ""}} {
+		b := newBench(t)
+		for i, m := range b.set.Metrics {
+			if m.ID == "motionmark" || m.ID == "speedometer" {
+				s := map[string]any{"refresh_measured_on": "draw_probe"}
+				for k, v := range m.Settings {
+					s[k] = v
+				}
+				b.set.Metrics[i].Settings = s
+			}
+		}
+		b.dt.drawHz = c.drawHz
+		h := newFakeHost()
+		lab := newFakeLab(t, startedRun(h, "mos-1", api.TierDefault), b.files)
+		r, _ := newRunner(t, lab, h, b)
+		r.Boot(context.Background())
+		m := byMetric(lab.got.Entries)
+		for _, id := range []string{"motionmark", "speedometer"} {
+			if res := m[id]; (c.want == "") != (res.Value != nil) || res.Reason != c.want {
+				t.Errorf("draw probe at %v Hz: %s %+v, want %q", c.drawHz, id, res, c.want)
+			}
+		}
+		args, _ := os.ReadFile(b.log + ".chrome-args")
+		if !strings.Contains(string(args), "about:blank") {
+			t.Errorf("draw probe at %v Hz: Chrome opened %q, want about:blank", c.drawHz, args)
+		}
+		navigated := 0
+		for _, u := range b.dt.opened {
+			if strings.HasPrefix(u, "http://127.0.0.1:") {
+				navigated++
+			}
+		}
+		if want := map[Reason]int{FellBack: 0, "": 2}[c.want]; navigated != want {
+			t.Errorf("draw probe at %v Hz: %d navigations, want %d", c.drawHz, navigated, want)
+		}
+	}
+}
+
+func TestTheDrawProbeIsOmarchys(t *testing.T) {
+	py, err := os.ReadFile("../agent/tests/bench/bench.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blk := string(py)
+	i := strings.Index(blk, "DRAW_RATE = (")
+	if i < 0 {
+		t.Fatal("bench.py has no DRAW_RATE")
+	}
+	blk = blk[i:]
+	blk = blk[:strings.Index(blk, ")\n\n")]
+	var js strings.Builder
+	for _, m := range regexp.MustCompile(`"([^"]*)"`).FindAllStringSubmatch(blk, -1) {
+		js.WriteString(m[1])
+	}
+	if js.String() != drawRate {
+		t.Errorf("drawRate is not bench.py's DRAW_RATE:\n%s\n%s", drawRate, js.String())
 	}
 }
 

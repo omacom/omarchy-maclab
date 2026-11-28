@@ -75,6 +75,21 @@ const glRenderer = "(() => { const gl = document.createElement('canvas').getCont
 const frameRate = "new Promise(done => { let n = 0, t0 = 0; const f = t => { if (!t0) t0 = t;" +
 	" if (++n > 120) done(1000 * (n - 1) / (t - t0)); else requestAnimationFrame(f); }; requestAnimationFrame(f); })"
 
+// drawRate is frameRate's measure while a canvas the size of the screen is
+// redrawn every frame, Omarchy's DRAW_RATE: from bench-4 the rate MotionMark
+// and Speedometer count, on about:blank before the page loads.
+const drawRate = "new Promise(r => { const c = document.createElement('canvas');" +
+	" c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio;" +
+	" c.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh';" +
+	" document.body.appendChild(c); const g = c.getContext('2d');" +
+	" let n = 0; let t0 = null; function f(t) {" +
+	" g.fillStyle = 'hsl(' + (t / 5 % 360) + ',70%,50%)'; g.fillRect(0, 0, c.width, c.height);" +
+	" for (let i = 0; i < 200; i++) { g.fillStyle = 'hsl(' + (i * 7 + t / 3) % 360 + ',80%,60%)';" +
+	" g.fillRect((i * 97 + t) % c.width, (i * 53 + t / 2) % c.height, 120, 120); }" +
+	" if (t0 === null) t0 = t; else n++;" +
+	" if (t - t0 >= 2000) { c.remove(); r(n * 1000 / (t - t0)); } else requestAnimationFrame(f); }" +
+	" requestAnimationFrame(f); })"
+
 var reSoftwareGL = regexp.MustCompile(`(?i)swiftshader|llvmpipe|softpipe|software|basic render`)
 
 // The page's frame rate must be within a tenth of 60 Hz, as on Omarchy:
@@ -121,7 +136,12 @@ func (s *session) browser(ctx context.Context, page string) outcome {
 	defer os.RemoveAll(profile)
 	// The folder, not its index.html, which Go's file server redirects.
 	u := fmt.Sprintf("http://%s/%s%s", ln.Addr(), strings.TrimSuffix(or(f.Entry, "index.html"), "index.html"), app.query)
-	args := asUser(s.user, append(append([]string{exe, "--user-data-dir=" + profile}, browserFlags...), u))
+	drawn := s.drawProbe(page)
+	first := u
+	if drawn {
+		first = "about:blank"
+	}
+	args := asUser(s.user, append(append([]string{exe, "--user-data-dir=" + profile}, browserFlags...), first))
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout, cmd.Stderr = s.log, s.log
@@ -141,14 +161,22 @@ func (s *session) browser(ctx context.Context, page string) outcome {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	o, err := s.drive(ctx, page, app, profile, exited)
+	o, err := s.drive(ctx, page, app, profile, exited, drawn, u)
 	if err != nil {
 		fmt.Fprintf(s.log, "%s: %v\n", page, err)
 	}
 	return o
 }
 
-func (s *session) drive(ctx context.Context, page string, app webApp, profile string, exited <-chan struct{}) (outcome, error) {
+// drawProbe is whether the metric's frame rate is the draw probe's.
+func (s *session) drawProbe(metric string) bool {
+	m, ok := s.set.Metric(metric)
+	return ok && m.Settings["refresh_measured_on"] == "draw_probe"
+}
+
+// drive measures the frame rate, on the page it opened or, drawn, with the
+// draw probe before going to u, and runs the benchmark.
+func (s *session) drive(ctx context.Context, page string, app webApp, profile string, exited <-chan struct{}, drawn bool, u string) (outcome, error) {
 	wait := func(what string, step time.Duration, fn func() bool) error {
 		for !fn() {
 			select {
@@ -186,8 +214,12 @@ func (s *session) drive(ctx context.Context, page string, app webApp, profile st
 	if renderer == "" || reSoftwareGL.MatchString(renderer) {
 		return because(SoftwareRenderer), errors.New("the page is not drawn on the GPU")
 	}
+	rate := frameRate
+	if drawn {
+		rate = drawRate
+	}
 	var hz float64
-	if err := c.eval(frameRate, true, &hz); err != nil {
+	if err := c.eval(rate, true, &hz); err != nil {
 		return because(Error), err
 	}
 	if c := s.conditionsOut; c != nil && c.RefreshHz == nil {
@@ -195,6 +227,11 @@ func (s *session) drive(ctx context.Context, page string, app webApp, profile st
 	}
 	if hz < hzWanted*(1-hzSlack) || hz > hzWanted*(1+hzSlack) {
 		return because(FellBack), fmt.Errorf("the page draws at %.1f Hz", hz)
+	}
+	if drawn {
+		if _, err := c.call("Page.navigate", map[string]any{"url": u}); err != nil {
+			return because(Error), err
+		}
 	}
 	truthy := func(expr string) func() bool {
 		return func() bool {
