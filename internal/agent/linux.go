@@ -93,24 +93,94 @@ func (l *Linux) Health() api.Health {
 	h.Tainted, _ = strconv.ParseInt(readTrim("/proc/sys/kernel/tainted"), 10, 64)
 	_, _, cmd := l.Identity()
 	h.JobTag = jobTag(cmd)
-	h.OnBattery = onBattery("/sys/class/power_supply")
+	h.OnBattery, h.Power = readPower("/sys/class/power_supply")
 	return h
 }
 
 // onBattery is whether the Mac has an AC adapter (a Mains power supply) and
 // it is unplugged. A Mac with none, a desktop, is never on battery.
 func onBattery(dir string) bool {
-	supplies, _ := os.ReadDir(dir)
-	mains, online := false, false
-	for _, e := range supplies {
-		p := filepath.Join(dir, e.Name())
-		if readTrim(filepath.Join(p, "type")) != "Mains" {
+	on, _ := readPower(dir)
+	return on
+}
+
+const smcBatteryName = "macsmc-battery"
+
+// pickSystemBattery chooses the Mac's own system battery among Battery
+// supplies in dir, preferring macsmc-battery and ignoring peripheral device
+// batteries (scope=Device, such as a wireless mouse or trackpad).
+func pickSystemBattery(dir string, names []string) string {
+	for _, n := range names {
+		if n == smcBatteryName {
+			return n
+		}
+	}
+	var fallback string
+	for _, n := range names {
+		scope := readTrim(filepath.Join(dir, n, "scope"))
+		if scope == "Device" {
 			continue
 		}
-		mains = true
-		online = online || readTrim(filepath.Join(p, "online")) == "1"
+		if scope == "System" {
+			return n
+		}
+		if fallback == "" {
+			fallback = n
+		}
 	}
-	return mains && !online
+	return fallback
+}
+
+// readPower reads AC and system battery telemetry from /sys/class/power_supply.
+// A desktop Mac with no system battery supply returns (false, nil).
+func readPower(dir string) (bool, *api.Power) {
+	supplies, _ := os.ReadDir(dir)
+	mains, online := false, false
+	var inputLimitUW int64
+	var batteries []string
+	for _, e := range supplies {
+		p := filepath.Join(dir, e.Name())
+		switch readTrim(filepath.Join(p, "type")) {
+		case "Mains":
+			mains = true
+			if readTrim(filepath.Join(p, "online")) == "1" {
+				online = true
+				if lim, err := strconv.ParseInt(readTrim(filepath.Join(p, "input_power_limit")), 10, 64); err == nil && lim > inputLimitUW {
+					inputLimitUW = lim
+				}
+			}
+		case "Battery":
+			batteries = append(batteries, e.Name())
+		}
+	}
+	unplugged := mains && !online
+	bat := pickSystemBattery(dir, batteries)
+	if bat == "" {
+		return unplugged, nil
+	}
+	bp := filepath.Join(dir, bat)
+	var capPtr *int
+	if v, err := strconv.Atoi(readTrim(filepath.Join(bp, "capacity"))); err == nil && v >= 0 && v <= 100 {
+		capPtr = &v
+	}
+	var powerPtr *int64
+	if v, err := strconv.ParseInt(readTrim(filepath.Join(bp, "power_now")), 10, 64); err == nil {
+		powerPtr = &v
+	} else if uV, errV := strconv.ParseInt(readTrim(filepath.Join(bp, "voltage_now")), 10, 64); errV == nil {
+		if uA, errA := strconv.ParseInt(readTrim(filepath.Join(bp, "current_now")), 10, 64); errA == nil {
+			w := (uV / 1000) * (uA / 1000) // microwatts without int64 overflow
+			powerPtr = &w
+		}
+	}
+	pw := &api.Power{
+		BatteryPercent:    capPtr,
+		BatteryPowerUW:    powerPtr,
+		InputPowerLimitUW: inputLimitUW,
+	}
+	if online && powerPtr != nil && *powerPtr < 0 && (inputLimitUW == 0 || inputLimitUW < api.UnderpoweredACUW) {
+		pw.Draining = true
+	}
+	return unplugged, pw
 }
 
 func (l *Linux) Facts() api.Facts {

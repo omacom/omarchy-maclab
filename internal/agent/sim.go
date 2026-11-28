@@ -122,6 +122,8 @@ type Sim struct {
 	KexecPass bool
 	// onBattery is a Mac unplugged from AC power; see SetOnBattery.
 	onBattery bool
+	// power is optional AC/battery telemetry; see SetPower.
+	power *api.Power
 	// noSnapshot is a Mac whose @ can't be snapshotted; see SetSnapshotable.
 	noSnapshot bool
 
@@ -319,7 +321,12 @@ func (s *Sim) Health() api.Health {
 	_, _, c := s.Identity()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return api.Health{Uptime: 1, SystemState: "running", JobTag: jobTag(c), OnBattery: s.onBattery}
+	var pw *api.Power
+	if s.power != nil {
+		cp := *s.power
+		pw = &cp
+	}
+	return api.Health{Uptime: 1, SystemState: "running", JobTag: jobTag(c), OnBattery: s.onBattery, Power: pw}
 }
 
 // SetOnBattery unplugs the Mac from AC power, or plugs it back in.
@@ -327,6 +334,18 @@ func (s *Sim) SetOnBattery(on bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onBattery = on
+}
+
+// SetPower sets the simulated Mac's AC/battery telemetry.
+func (s *Sim) SetPower(p *api.Power) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p == nil {
+		s.power = nil
+		return
+	}
+	cp := *p
+	s.power = &cp
 }
 
 func (s *Sim) WatchKernel(ctx context.Context, fn func(string)) {

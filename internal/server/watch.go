@@ -230,6 +230,7 @@ func (s *Server) look(ctx context.Context) {
 
 	s.lookRestart(now, mini)
 	s.lookStarts(now, mini)
+	s.lookPower(now)
 	parts := []StatusPart{
 		{"Server", partOK, "up since " + whenDated(s.start) + s.releaseText()},
 		s.lookTunnel(now, mini),
