@@ -112,6 +112,9 @@ type Device struct {
 	Cable *api.Cable `json:"cable,omitempty"`
 	// LabAgent is the number of the lab's lab-agent when the Mac's is older.
 	LabAgent string `json:"lab_agent,omitempty"`
+	// SignIn is why a Lab-owned Mac's runs are Community runs, told to
+	// Maintainers; "" when they are Verified runs.
+	SignIn string `json:"sign_in,omitempty"`
 }
 
 func (c *Client) Devices(ctx context.Context) ([]Device, error) {

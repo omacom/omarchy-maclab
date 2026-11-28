@@ -1379,6 +1379,9 @@ type DeviceView struct {
 	// TermsWaiting is whether the Mac takes nothing from the lab until its
 	// Volunteer accepts the lab's changed terms on My Macs.
 	TermsWaiting bool `json:"terms_waiting,omitempty"`
+	// SignIn is why a Lab-owned Mac's runs are Community runs (signInGap),
+	// told to Maintainers; "" when they are Verified runs.
+	SignIn string `json:"sign_in,omitempty"`
 }
 
 func (s *Server) view(v *dev) DeviceView {

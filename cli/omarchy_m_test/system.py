@@ -35,6 +35,11 @@ OS_RELEASE = "/etc/os-release"
 # factory reset, names the set too.
 TARGET_RECORDS = ("/var/lib/omarchy/image/target", "/var/lib/omarchy/image/target.booted")
 FACTORY_SEAL = "/var/lib/omarchy/factory-sealed"
+# The install receipt a stable or rc image carries (omacom/omarchy-mac-installer's
+# build-mac-image, write_install_receipt), kept across a factory reset: which
+# release the image is. An edge image has none; its target's channel_set names its lane.
+INSTALL_RECEIPT = "/var/lib/omarchy/install-receipt"
+RECEIPT_KEYS = ("lane", "release_tag", "mac_revision")
 
 STACK_PACKAGES = (
     "omarchy", "omarchy-dev", "omarchy-settings", "omarchy-settings-dev", "omarchy-mac", "omarchy-mac-boot", "omarchy-mac-keyring",
@@ -80,6 +85,13 @@ IMAGE_KEYS = {
     "image_profile": re.compile(r"[a-z]{1,20}"),
     "package_set_sha256": re.compile(r"[0-9a-f]{64}"),
     "built": re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"),
+    # Which release the image is: the channel set it was built from
+    # ("omarchy-stable-ee11c8a6b5a8", its lane first), and from the install
+    # receipt of a stable or rc image its lane, Omarchy tag and Mac revision.
+    "channel_set": re.compile(r"omarchy-(stable|rc|edge)-[0-9a-f]{12,64}"),
+    "lane": re.compile(r"(stable|rc|edge)"),
+    "release_tag": re.compile(r"v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(-rc[0-9]{1,3})?"),
+    "mac_revision": re.compile(r"[0-9]{1,3}"),
 }
 
 _TAG = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -242,9 +254,12 @@ def _candidate_set(host: Host) -> str | None:
 
 
 def _image(host: Host) -> dict[str, str]:
-    """The allowlisted keys of the image's target record, each only when its value has its key's shape."""
+    """The allowlisted keys of the image's target record and install receipt, each only when its value has its key's shape."""
     target = next((values for path in TARGET_RECORDS if (values := _key_values(host, path)) is not None), None) or {}
-    return {key: target[key] for key, shape in IMAGE_KEYS.items() if key in target and shape.fullmatch(target[key])}
+    receipt = _key_values(host, INSTALL_RECEIPT) or {}
+    record = {key: value for key, value in target.items() if key not in RECEIPT_KEYS}
+    record.update({key: receipt[key] for key in RECEIPT_KEYS if key in receipt})
+    return {key: record[key] for key, shape in IMAGE_KEYS.items() if key in record and shape.fullmatch(record[key])}
 
 
 def _root_chain(host: Host) -> list[str] | None:

@@ -600,6 +600,7 @@
     }
   ],
   "files": {
+    "/var/lib/omarchy/install-receipt": null,
     "/proc/device-tree/model": {
       "text": "Apple MacBook Pro (14-inch, M1 Pro, 2021)\u0000"
     },

@@ -684,6 +684,7 @@
     }
   ],
   "files": {
+    "/var/lib/omarchy/install-receipt": null,
     "/proc/device-tree/compatible": {
       "text": "apple,j416c\u0000apple,t6021\u0000apple,arm-platform\u0000"
     },

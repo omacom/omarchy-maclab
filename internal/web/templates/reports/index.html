@@ -4,7 +4,7 @@
 <h2 class="card-title">every report, for Maintainers ({{.Count}})</h2>
 <p class="dim">Hidden reports too, who each Mac was signed in as and how each report arrived. Hide takes a report off every public page and export; Delete removes it and its evidence for good.</p>
 {{if .Rows}}<div class="scroll"><table class="list stack">
-<thead><tr><th>Uploaded</th><th>Report</th><th>Mac</th><th>Stack / version</th><th>Run</th><th>Uploaded by</th><th>Arrived by</th><th>State</th><th></th></tr></thead>
+<thead><tr><th>Uploaded</th><th>Report</th><th>Mac</th><th>Stack / version</th><th>Run</th><th>Mac signed in as</th><th>Arrived by</th><th>State</th><th></th></tr></thead>
 <tbody>
 {{range .Rows}}<tr class="admin-row" id="admin-report-{{.PublicID}}" data-state="{{if .Hidden}}hidden{{else}}published{{end}}">
 <td class="nowrap" data-label="Uploaded">{{.Uploaded}}</td>
@@ -12,8 +12,8 @@
 <td data-label="Mac">{{.Model}}</td>
 <td data-label="Stack / version">{{.Label}} {{template "build_summary" .Build}}</td>
 <td data-label="Run">{{template "run_badge" .Verified}}</td>
-<td class="uploader" data-label="Uploaded by">{{.Uploader}}</td>
-<td class="arrived" data-label="Arrived by">{{with .Arrived}}{{if .Job}}the lab{{if not .Asked}} by itself{{end}}, job <a href="{{.JobHref}}">{{.Job}}</a>{{if .Asked}}, asked by {{.Asked}}{{end}}{{else}}the Mac's own tool{{end}}{{end}}</td>
+<td class="uploader" data-label="Mac signed in as">{{.Uploader}}</td>
+<td class="arrived" data-label="Arrived by">{{with .Arrived}}{{if .Job}}the lab{{if not .Asked}} by itself{{end}}, from {{if .Mac}}{{.Mac}}'s {{end}}job <a href="{{.JobHref}}">{{.Job}}</a>{{if .Queued}} queued by {{.Queued}}{{end}}{{if .Asked}}, asked by {{.Asked}}{{end}}{{else}}the Mac's own tool{{end}}{{end}}</td>
 <td class="state" data-label="State">{{if .Hidden}}<span class="badge badge-regression">hidden</span>{{else}}<span class="badge badge-works">published</span>{{end}}</td>
 <td class="actions">{{if .Hidden}}<form class="inline" method="post" action="{{href (printf "/reports/%s/show" .PublicID)}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">Show</button></form>{{else}}<form class="inline" method="post" action="{{href (printf "/reports/%s/hide" .PublicID)}}"><input type="hidden" name="csrf_token" value="{{$.Viewer.CSRF}}"><button class="button button-small" type="submit">Hide</button></form>{{end}} {{template "take" ($.Take (printf "/reports/%s/delete" .PublicID) "Delete" "Delete this report and its evidence for good")}}</td>
 </tr>

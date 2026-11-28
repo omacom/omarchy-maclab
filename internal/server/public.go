@@ -351,7 +351,9 @@ type buildView struct {
 	// On a report's own page: the page of the set its image names, its
 	// runtime build, then its kernel, boot package, build time and tool.
 	SetPage, Runtime string
-	Extras           []string
+	// Release is the image release the Mac was installed from, "" when unknown.
+	Release string
+	Extras  []string
 }
 
 func (s *Server) buildOf(p *reports.Published, run *reports.Run) *buildView {
@@ -359,7 +361,7 @@ func (s *Server) buildOf(p *reports.Published, run *reports.Run) *buildView {
 	if build == nil {
 		return nil
 	}
-	v := &buildView{Label: build.Label(), Words: build.Words(), Href: s.href("/reports") + reports.Query(url.Values{"build": {build.Words()}}), MatchedSet: build.MatchedSet()}
+	v := &buildView{Label: build.Label(), Words: build.Words(), Href: s.href("/reports") + reports.Query(url.Values{"build": {build.Words()}}), MatchedSet: build.MatchedSet(), Release: build.Release()}
 	if v.MatchedSet != "" && p.NamesSet(v.MatchedSet) {
 		v.SetHref = s.href("/candidates/" + v.MatchedSet)
 	}
