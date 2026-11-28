@@ -71,10 +71,6 @@ type cables struct {
 	saveMu sync.Mutex
 	// lost is why a Mac has no Sighting, where there is something to say.
 	lost map[string]string
-	// everSighted records Lab-owned Macs that have held a Sighting in this
-	// process so watch.go alerts "Agents" only for dropped Sightings, never
-	// for remote Macs that have no cable to the mini.
-	everSighted map[string]bool
 	// down is why the controller is not healthy; "" while it answers.
 	down string
 	// downs counts the times it was found not answering, so that a look
@@ -89,7 +85,7 @@ type cables struct {
 }
 
 func newCables(f *oob.Fleet) *cables {
-	return &cables{fleet: f, ports: map[int]oob.Port{}, held: map[string]sighting{}, lost: map[string]string{}, everSighted: map[string]bool{}}
+	return &cables{fleet: f, ports: map[int]oob.Port{}, held: map[string]sighting{}, lost: map[string]string{}}
 }
 
 // sightings are the Sightings labd's data holds.
@@ -160,6 +156,9 @@ func (s *Server) saveSightings() {
 		return
 	}
 	c.saved = held
+	for name := range held {
+		s.recordEverSightedName(name)
+	}
 }
 
 // restoreLocked keeps or drops each Sighting labd's data held as it
@@ -192,7 +191,6 @@ func (c *cables) restoreLocked(ports map[int]oob.Port, macs []labOwned) (said []
 		where := name + " on " + c.fleet.PortName(sg.rid)
 		if why != "" {
 			if known[name] {
-				c.everSighted[name] = true
 				c.lost[name] = "its Sighting was not kept across a restart of labd: " + why
 			}
 			said = append(said, "sighting not kept across the restart: "+where+": "+why)
@@ -200,7 +198,6 @@ func (c *cables) restoreLocked(ports map[int]oob.Port, macs []labOwned) (said []
 		}
 		sg.seen.PlugCount, sg.rose = p.PlugCount, time.Time{}
 		c.held[name] = sg
-		c.everSighted[name] = true
 		said = append(said, "sighting kept across the restart: "+where)
 	}
 	c.kept = nil
@@ -466,9 +463,10 @@ func (s *Server) lookAt(ctx context.Context, m oob.Member) (map[int]oob.Port, er
 func (s *Server) lookedAt(ports map[int]oob.Port, downs uint64) bool {
 	macs := s.labOwnedMacs()
 	now := s.now()
+	var keptNames []string
 	s.cables.mu.Lock()
-	defer s.cables.mu.Unlock()
 	if s.cables.downs != downs {
+		s.cables.mu.Unlock()
 		// found not answering while this look was under way: its ports are older news
 		return false
 	}
@@ -476,11 +474,18 @@ func (s *Server) lookedAt(ports map[int]oob.Port, downs uint64) bool {
 		s.cables.down = ""
 		s.log.Printf("the Out-of-band controller answers again")
 	}
+	if s.cables.kept != nil {
+		keptNames = slices.Sorted(maps.Keys(s.cables.kept))
+	}
 	for _, line := range s.cables.restoreLocked(ports, macs) {
 		s.log.Printf("%s", line)
 	}
 	for _, line := range s.cables.apply(ports, macs, now) {
 		s.log.Printf("sighting: %s", line)
+	}
+	s.cables.mu.Unlock()
+	for _, name := range keptNames {
+		s.recordEverSightedName(name)
 	}
 	return true
 }
@@ -604,11 +609,6 @@ func (c *cables) apply(ports map[int]oob.Port, macs []labOwned, now time.Time) (
 			delete(c.lost, name)
 		}
 	}
-	for name := range c.everSighted {
-		if _, ok := known[name]; !ok {
-			delete(c.everSighted, name)
-		}
-	}
 	// Each name a port shows, and the one record it belongs to.
 	want := map[int]string{}
 	on := map[string][]int{}
@@ -686,7 +686,6 @@ func (c *cables) apply(ports map[int]oob.Port, macs []labOwned, now time.Time) (
 			continue
 		}
 		c.held[name] = sighting{rid: rid, seen: seen, at: now, boot: known[name].boot}
-		c.everSighted[name] = true
 		delete(c.lost, name)
 		said = append(said, fmt.Sprintf("%s is sighted on the %s port (product id %d, plug count %d)", name, c.fleet.PortName(rid), p.ProductID, p.PlugCount))
 	}
@@ -955,7 +954,6 @@ func (s *Server) prove(v *dev, rid int, by string) (*api.Proving, error) {
 		return fail("%s was sighted on %s meanwhile", owner, port)
 	}
 	s.cables.held[name] = sighting{rid: rid, seen: oob.Seen{ProductID: p.ProductID, PlugCount: p.PlugCount}, at: s.now(), proved: true, boot: boot}
-	s.cables.everSighted[name] = true
 	delete(s.cables.lost, name)
 	s.cables.mu.Unlock()
 	s.saveSightings()
@@ -1042,12 +1040,20 @@ func (c *cables) candidatePortLocked(target, board string, macs []labOwned) (str
 		return "", ""
 	}
 	// Augment with any product id observed on a live Sighting whose board is known.
+	// Keep conflicting product ids permanently rejected so map iteration order
+	// cannot reintroduce an ambiguous id from another sighted Mac.
+	conflict := map[int]bool{}
 	for name, sg := range c.held {
 		if b := boardByName[name]; b != "" && sg.seen.ProductID > 0 {
-			if existing, ok := productBoard[sg.seen.ProductID]; !ok {
-				productBoard[sg.seen.ProductID] = b
+			pid := sg.seen.ProductID
+			if conflict[pid] {
+				continue
+			}
+			if existing, ok := productBoard[pid]; !ok {
+				productBoard[pid] = b
 			} else if existing != b {
-				delete(productBoard, sg.seen.ProductID)
+				delete(productBoard, pid)
+				conflict[pid] = true
 			}
 		}
 	}

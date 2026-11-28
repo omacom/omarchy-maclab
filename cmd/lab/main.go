@@ -1259,9 +1259,6 @@ func showDevices(ctx context.Context, c *client.Client) error {
 			fmt.Printf("%s fails preflight: %s\n", d.Name, p)
 		}
 	}
-	for _, line := range duplicateHostnameWarnings(devs) {
-		fmt.Println(line)
-	}
 	for _, d := range devs {
 		if d.LabAgent != "" {
 			fmt.Printf("%s runs lab-agent %s, older than the lab's %s: %s\n", d.Name, d.Facts.AgentVersion, d.LabAgent, agentUpdateBy(d))
@@ -1271,6 +1268,9 @@ func showDevices(ctx context.Context, c *client.Client) error {
 		if d.Action != nil {
 			fmt.Printf("\n>>> %s\n%s\n", strings.ToUpper(d.Action.Title), indent(d.Action.Text()))
 		}
+	}
+	for _, line := range duplicateHostnameWarnings(devs) {
+		fmt.Println(line)
 	}
 	return nil
 }

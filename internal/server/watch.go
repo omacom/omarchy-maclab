@@ -28,8 +28,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
 const (
@@ -243,13 +241,13 @@ func (s *Server) look(ctx context.Context) {
 	}
 	s.lookLitestream(now, mini)
 	s.lookDisk(now)
-	s.lookSightings(now)
 	s.lookAlias(ctx, now)
 
 	w.statusMu.Lock()
 	w.status = Status{Looked: whenDated(now), Parts: parts}
 	w.statusMu.Unlock()
 	s.lines.setMark(markAlive, strconv.FormatInt(now.Unix(), 10))
+	s.lookSightings(now)
 }
 
 func (s *Server) releaseText() string {
@@ -531,52 +529,6 @@ func (s *Server) lookDisk(now time.Time) {
 	s.judge(now, "disk", percent < diskLow, 0,
 		fixed(fmt.Sprintf("The mini's disk is %d %% free (%s): under %d %%.", percent, size, diskLow)),
 		fixed(fmt.Sprintf("The mini's disk is %d %% free again (%s).", percent, size)))
-}
-
-// lookSightings watches Lab-owned Macs that have held a Sighting and tells
-// "Agents" once when one stays unsighted past partHold while the Out-of-band
-// controller itself is healthy.
-func (s *Server) lookSightings(now time.Time) {
-	if s.oob.Empty() {
-		return
-	}
-	s.cables.mu.Lock()
-	down := s.cables.down != ""
-	s.cables.mu.Unlock()
-	if down {
-		return
-	}
-	for _, v := range s.allDevs() {
-		v.mu.Lock()
-		d := v.d
-		v.mu.Unlock()
-		if d.IsVolunteer() || d.State == api.StateLeft {
-			continue
-		}
-		s.cables.mu.Lock()
-		sg, sighted := s.cables.held[d.Name]
-		ever := s.cables.everSighted[d.Name]
-		lost := s.cables.lost[d.Name]
-		s.cables.mu.Unlock()
-		key := "sighting:" + d.ID
-		if sighted {
-			port := s.oob.PortName(sg.rid)
-			s.judge(now, key, false, partHold,
-				fixed(""),
-				fixed(fmt.Sprintf("%s is sighted again on the %s port.", d.Name, port)))
-			continue
-		}
-		if !ever {
-			continue
-		}
-		detail := ""
-		if lost != "" {
-			detail = " (" + lost + ")"
-		}
-		s.judge(now, key, true, partHold,
-			fixed(fmt.Sprintf("%s lost its Sighting%s. It has no Hard reset until sighted again or proved.", d.Name, detail)),
-			fixed(d.Name+" is sighted again."))
-	}
 }
 
 // lookAlias asks the Alias from outside whether it still leads to the Lab
