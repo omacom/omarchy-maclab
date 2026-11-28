@@ -175,7 +175,11 @@ func (l *Linux) Preflight() (problems, warnings []string) {
 	if note != "" {
 		warnings = append(warnings, note)
 	}
-	if why := stageRoom(b); why != "" {
+	var known string
+	if kg != nil {
+		known = kg.Kernel
+	}
+	if why := stageRoom(b, known); why != "" {
 		p = append(p, why)
 	}
 	return p, warnings
@@ -207,7 +211,9 @@ func missingTools(b bootloader) []string {
 
 // stageRoom says why test kernels have no room where they are staged, ""
 // when they have: 300 MB, or under Limine what a UKI needs on the ESP.
-func stageRoom(b bootloader) string {
+// knownGood is the Known-good kernel ("" for none), which the ESP inventory
+// never names as unneeded.
+func stageRoom(b bootloader, knownGood string) string {
 	const minFree = uint64(300 << 20)
 	var st syscall.Statfs_t
 	stage := stageDir()
@@ -228,7 +234,11 @@ func stageRoom(b bootloader) string {
 	free := st.Bavail*uint64(st.Bsize) + dirSize(stage)
 	if lim != nil {
 		// Under Limine, staging needs what writeUKIWith checks, not just the reserve.
-		return limineStageProblem(lim.ESP.Target, stage, free, uint64(st.Bsize))
+		why := limineStageProblem(lim.ESP.Target, stage, free, uint64(st.Bsize))
+		if why == "" {
+			return ""
+		}
+		return why + liveESPInventory(lim, free, uint64(st.Bsize), knownGood)
 	}
 	if free < minFree {
 		return fmt.Sprintf("less than %d MB free where test kernels are staged (%s)", minFree>>20, stage)
