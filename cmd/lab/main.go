@@ -1259,6 +1259,9 @@ func showDevices(ctx context.Context, c *client.Client) error {
 			fmt.Printf("%s fails preflight: %s\n", d.Name, p)
 		}
 	}
+	for _, line := range duplicateHostnameWarnings(devs) {
+		fmt.Println(line)
+	}
 	for _, d := range devs {
 		if d.LabAgent != "" {
 			fmt.Printf("%s runs lab-agent %s, older than the lab's %s: %s\n", d.Name, d.Facts.AgentVersion, d.LabAgent, agentUpdateBy(d))
@@ -1270,6 +1273,55 @@ func showDevices(ctx context.Context, c *client.Client) error {
 		}
 	}
 	return nil
+}
+
+// duplicateHostnameWarnings lists one warning per non-placeholder hostname
+// shared by two or more active Lab-owned Macs, since identical hostnames
+// prevent Thunderbolt Sighting.
+func duplicateHostnameWarnings(devs []client.Device) []string {
+	type group struct {
+		host  string
+		names []string
+	}
+	byHost := map[string]*group{}
+	for _, d := range devs {
+		if d.IsVolunteer() || d.State == api.StateLeft {
+			continue
+		}
+		h := strings.TrimSpace(d.Facts.Hostname)
+		if h == "" || isPlaceholderHostname(h) {
+			continue
+		}
+		k := strings.ToLower(h)
+		g := byHost[k]
+		if g == nil {
+			g = &group{host: h}
+			byHost[k] = g
+		}
+		g.names = append(g.names, d.Name)
+	}
+	var keys []string
+	for k, g := range byHost {
+		if len(g.names) > 1 {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		g := byHost[k]
+		slices.Sort(g.names)
+		out = append(out, fmt.Sprintf("%s share hostname %q: duplicate hostnames block Thunderbolt Sighting (rename with hostnamectl set-hostname)", strings.Join(g.names, ", "), g.host))
+	}
+	return out
+}
+
+func isPlaceholderHostname(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "unknown_xd_device", "(none)", "localhost", "localhost.localdomain", "archlinux":
+		return true
+	}
+	return false
 }
 
 // agentUpdateBy is who brings a Mac's older lab-agent up to the lab's: a
@@ -1317,6 +1369,12 @@ func showCable(w io.Writer, st *api.OOBStatus) {
 		fmt.Fprintf(w, "  hard reset:  none: %s\n", st.Cable.NoHardReset)
 	} else {
 		fmt.Fprintf(w, "  hard reset:  through the %s port (`lab reset %s`)\n", st.Cable.Port, st.Device)
+	}
+	if st.CandidatePort != "" {
+		fmt.Fprintf(w, "  hint:        the %s port matches %s's board (%s): `lab reset %s --prove %s`\n", st.CandidatePort, st.Device, st.CandidateBoard, st.Device, st.CandidatePort)
+	}
+	if len(st.DuplicateHostname) > 0 {
+		fmt.Fprintf(w, "  hostname:    shared with %s; duplicate hostnames block Thunderbolt Sighting (rename with hostnamectl set-hostname)\n", strings.Join(st.DuplicateHostname, ", "))
 	}
 	if st.Controller != "" {
 		fmt.Fprintf(w, "  controller:  %s\n", st.Controller)

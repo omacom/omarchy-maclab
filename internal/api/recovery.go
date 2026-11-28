@@ -104,6 +104,14 @@ type OOBStatus struct {
 	Controller string `json:"controller,omitempty"`
 	// Ports are the lab server's ports as the controller last showed them.
 	Ports []OOBPort `json:"ports,omitempty"`
+	// CandidatePort names the one free unnamed port whose USB-PD product id
+	// matches only this Mac's board among unsighted Lab-owned Macs.
+	CandidatePort string `json:"candidate_port,omitempty"`
+	// CandidateBoard is the board matched for CandidatePort (e.g. "j416c").
+	CandidateBoard string `json:"candidate_board,omitempty"`
+	// DuplicateHostname lists other Lab-owned Macs reporting the same
+	// hostname as this Mac, which blocks Thunderbolt Sighting.
+	DuplicateHostname []string `json:"duplicate_hostname,omitempty"`
 }
 
 // ControllerHealthy is OOBStatus.Controller for a controller that answers.

@@ -23,8 +23,18 @@ import (
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
+	"github.com/omacom/omarchy-maclab/internal/detect"
 	"github.com/omacom/omarchy-maclab/internal/oob"
 )
+
+// knownProductBoards maps verified Apple Silicon USB-PD partner product ids
+// (IOPortTransportComponentCCUSBPDSOP Product ID) to their board identifiers,
+// used only as a Proving reset hint when Thunderbolt shows no name.
+var knownProductBoards = map[int]string{
+	29448: "j314s", // MacBook Pro (14-inch, M1 Pro)
+	29453: "j416c", // MacBook Pro (16-inch, M2 Max)
+	29465: "j614s", // MacBook Pro (14-inch, M4 Pro)
+}
 
 // sightEvery is how often labd asks the controller what its ports show.
 const sightEvery = 15 * time.Second
@@ -61,6 +71,10 @@ type cables struct {
 	saveMu sync.Mutex
 	// lost is why a Mac has no Sighting, where there is something to say.
 	lost map[string]string
+	// everSighted records Lab-owned Macs that have held a Sighting in this
+	// process so watch.go alerts "Agents" only for dropped Sightings, never
+	// for remote Macs that have no cable to the mini.
+	everSighted map[string]bool
 	// down is why the controller is not healthy; "" while it answers.
 	down string
 	// downs counts the times it was found not answering, so that a look
@@ -75,7 +89,7 @@ type cables struct {
 }
 
 func newCables(f *oob.Fleet) *cables {
-	return &cables{fleet: f, ports: map[int]oob.Port{}, held: map[string]sighting{}, lost: map[string]string{}}
+	return &cables{fleet: f, ports: map[int]oob.Port{}, held: map[string]sighting{}, lost: map[string]string{}, everSighted: map[string]bool{}}
 }
 
 // sightings are the Sightings labd's data holds.
@@ -178,6 +192,7 @@ func (c *cables) restoreLocked(ports map[int]oob.Port, macs []labOwned) (said []
 		where := name + " on " + c.fleet.PortName(sg.rid)
 		if why != "" {
 			if known[name] {
+				c.everSighted[name] = true
 				c.lost[name] = "its Sighting was not kept across a restart of labd: " + why
 			}
 			said = append(said, "sighting not kept across the restart: "+where+": "+why)
@@ -185,6 +200,7 @@ func (c *cables) restoreLocked(ports map[int]oob.Port, macs []labOwned) (said []
 		}
 		sg.seen.PlugCount, sg.rose = p.PlugCount, time.Time{}
 		c.held[name] = sg
+		c.everSighted[name] = true
 		said = append(said, "sighting kept across the restart: "+where)
 	}
 	c.kept = nil
@@ -334,7 +350,8 @@ func neverAVolunteers(name string) string {
 
 // labOwned is a Lab-owned Mac's record as a look at the ports needs it.
 type labOwned struct {
-	name, hostname string
+	name, hostname, board string
+	left                  bool
 	// boot is its boot id, and heard when labd last heard the Mac itself.
 	boot  string
 	heard time.Time
@@ -359,7 +376,7 @@ func (v *dev) labOwned() (labOwned, bool) {
 	if v.d.IsVolunteer() {
 		return labOwned{}, false
 	}
-	return labOwned{v.d.Name, v.d.Facts.Hostname, v.d.BootID, v.heard}, true
+	return labOwned{v.d.Name, v.d.Facts.Hostname, detect.Board(v.d.Facts.Compatible), v.d.State == api.StateLeft, v.d.BootID, v.heard}, true
 }
 
 // sightLoop keeps the Sightings: it asks the controller what its ports show
@@ -587,6 +604,11 @@ func (c *cables) apply(ports map[int]oob.Port, macs []labOwned, now time.Time) (
 			delete(c.lost, name)
 		}
 	}
+	for name := range c.everSighted {
+		if _, ok := known[name]; !ok {
+			delete(c.everSighted, name)
+		}
+	}
 	// Each name a port shows, and the one record it belongs to.
 	want := map[int]string{}
 	on := map[string][]int{}
@@ -664,6 +686,7 @@ func (c *cables) apply(ports map[int]oob.Port, macs []labOwned, now time.Time) (
 			continue
 		}
 		c.held[name] = sighting{rid: rid, seen: seen, at: now, boot: known[name].boot}
+		c.everSighted[name] = true
 		delete(c.lost, name)
 		said = append(said, fmt.Sprintf("%s is sighted on the %s port (product id %d, plug count %d)", name, c.fleet.PortName(rid), p.ProductID, p.PlugCount))
 	}
@@ -932,6 +955,7 @@ func (s *Server) prove(v *dev, rid int, by string) (*api.Proving, error) {
 		return fail("%s was sighted on %s meanwhile", owner, port)
 	}
 	s.cables.held[name] = sighting{rid: rid, seen: oob.Seen{ProductID: p.ProductID, PlugCount: p.PlugCount}, at: s.now(), proved: true, boot: boot}
+	s.cables.everSighted[name] = true
 	delete(s.cables.lost, name)
 	s.cables.mu.Unlock()
 	s.saveSightings()
@@ -948,11 +972,15 @@ func (s *Server) hOOBStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	v.mu.Lock()
 	out := api.OOBStatus{Device: v.d.Name, Cable: v.cableLocked()}
+	hostname := v.d.Facts.Hostname
+	board := detect.Board(v.d.Facts.Compatible)
 	v.mu.Unlock()
 	if out.Cable == nil || !callerOf(r).reads() {
 		writeJSON(w, out)
 		return
 	}
+	macs := s.labOwnedMacs()
+	out.DuplicateHostname = duplicateHostnames(out.Device, hostname, macs)
 	s.cables.mu.Lock()
 	out.Controller = orStr(s.cables.down, api.ControllerHealthy)
 	if s.oob.Empty() {
@@ -963,8 +991,80 @@ func (s *Server) hOOBStatus(w http.ResponseWriter, r *http.Request) {
 			out.Ports = append(out.Ports, api.OOBPort{Port: s.oob.PortName(rid), Connected: p.Connected, Name: p.Name, ProductID: p.ProductID, PlugCount: p.PlugCount, Mac: s.cables.onPortLocked(rid)})
 		}
 	}
+	if out.Cable.State != api.CableSighted {
+		out.CandidatePort, out.CandidateBoard = s.cables.candidatePortLocked(out.Device, board, macs)
+	}
 	s.cables.mu.Unlock()
 	writeJSON(w, out)
+}
+
+// duplicateHostnames returns the sorted names of other Lab-owned Macs that
+// report the same non-placeholder hostname as target.
+func duplicateHostnames(target, hostname string, macs []labOwned) []string {
+	shown := realName(hostname)
+	if shown == "" {
+		return nil
+	}
+	var others []string
+	for _, m := range macs {
+		if !m.left && m.name != target && strings.EqualFold(realName(m.hostname), shown) {
+			others = append(others, m.name)
+		}
+	}
+	sort.Strings(others)
+	return others
+}
+
+// candidatePortLocked returns the one free unnamed port whose USB-PD product
+// id uniquely matches target's board among unsighted Lab-owned Macs, or ""
+// when unknown or ambiguous. Caller holds c.mu.
+func (c *cables) candidatePortLocked(target, board string, macs []labOwned) (string, string) {
+	if board == "" || c.fleet.Empty() {
+		return "", ""
+	}
+	productBoard := map[int]string{}
+	for pid, b := range knownProductBoards {
+		productBoard[pid] = b
+	}
+	boardByName := map[string]string{}
+	unsightedSameBoard := 0
+	for _, m := range macs {
+		if m.board != "" {
+			boardByName[m.name] = m.board
+		}
+		if !m.left {
+			if _, sighted := c.held[m.name]; !sighted && m.board == board {
+				unsightedSameBoard++
+			}
+		}
+	}
+	if unsightedSameBoard != 1 {
+		return "", ""
+	}
+	// Augment with any product id observed on a live Sighting whose board is known.
+	for name, sg := range c.held {
+		if b := boardByName[name]; b != "" && sg.seen.ProductID > 0 {
+			if existing, ok := productBoard[sg.seen.ProductID]; !ok {
+				productBoard[sg.seen.ProductID] = b
+			} else if existing != b {
+				delete(productBoard, sg.seen.ProductID)
+			}
+		}
+	}
+	var matches []int
+	for _, rid := range c.fleet.Ports() {
+		p, ok := c.ports[rid]
+		if !ok || !p.Connected || c.onPortLocked(rid) != "" || realName(p.Name) != "" || p.ProductID <= 0 {
+			continue
+		}
+		if productBoard[p.ProductID] == board {
+			matches = append(matches, rid)
+		}
+	}
+	if len(matches) != 1 {
+		return "", ""
+	}
+	return c.fleet.PortName(matches[0]), board
 }
 
 // recoverAfterStart runs recovery on every Lab-owned Mac that was up when
