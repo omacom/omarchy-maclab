@@ -241,6 +241,7 @@ func (s *Server) look(ctx context.Context) {
 	}
 	s.lookLitestream(now, mini)
 	s.lookDisk(now)
+	s.lookOffline(ctx, now)
 	s.lookAlias(ctx, now)
 
 	w.statusMu.Lock()
