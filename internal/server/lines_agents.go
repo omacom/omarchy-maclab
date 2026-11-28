@@ -125,6 +125,12 @@ func (a agentsLines) NoLongerNeedsHands(key, mac string, now api.DeviceState) {
 	a.Recovered("needs-hands:"+key, mac+" no longer needs hands: "+is+".")
 }
 
+// IdleRecovered is an idle, offline Lab-owned Mac brought back by an
+// automatic Hard reset without first alerting "Agents".
+func (a agentsLines) IdleRecovered(mac, port string, since time.Time) {
+	a.l.post(lineAgents, mac+" was offline since "+when(since)+" and came back after an automatic Hard reset through the "+port+" port.")
+}
+
 // BackAfterRestart is the lab running again after the mini restarted, with
 // how long it was Dark: from when labd was last known to run to this start.
 func (a agentsLines) BackAfterRestart(from, to time.Time) {
