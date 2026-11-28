@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/omacom/omarchy-maclab/internal/api"
@@ -69,7 +70,7 @@ func (v *dev) idleResetFencedLocked() bool {
 // fenceIdleWhileWaiting cancels an automatic idle Hard reset while it waits
 // its turn at the Out-of-band controller if a Lease is taken or the Mac is no
 // longer idle and offline. Once the controller begins sending, cancel stops nothing.
-func (s *Server) fenceIdleWhileWaiting(ctx context.Context, cancel context.CancelFunc, v *dev) {
+func (s *Server) fenceIdleWhileWaiting(ctx context.Context, cancel context.CancelFunc, v *dev, fenced *atomic.Bool) {
 	tick := s.clock().NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -78,6 +79,7 @@ func (s *Server) fenceIdleWhileWaiting(ctx context.Context, cancel context.Cance
 		ch := v.changed
 		v.mu.Unlock()
 		if stop {
+			fenced.Store(true)
 			cancel()
 			return
 		}
@@ -172,7 +174,8 @@ func (s *Server) lookOffline(ctx context.Context, now time.Time) {
 func (s *Server) idleRecover(v *dev, key, devID, prevResetMark string, since time.Time, why string) {
 	name := v.snapshot().Name
 	rctx, cancel := s.withTimeout(s.ctx, s.cfg.ResetWait)
-	go s.fenceIdleWhileWaiting(rctx, cancel, v)
+	var fencedCancel atomic.Bool
+	go s.fenceIdleWhileWaiting(rctx, cancel, v, &fencedCancel)
 	// Capture the Mac's time and boot id as the controller sends the reset so
 	// an earlier check-in while waiting cannot count as post-reset recovery.
 	var mark sync.Mutex
@@ -193,26 +196,28 @@ func (s *Server) idleRecover(v *dev, key, devID, prevResetMark string, since tim
 	}
 	mark.Unlock()
 	maybe := err != nil && resetMayHaveGone(err)
+	// hardReset wraps oob.NotSent in mayHaveGone, so check whether our own
+	// fence or server shutdown canceled the queued request before OnSending.
+	canceledBeforeSend := err != nil && !dispatched && (s.ctx.Err() != nil || fencedCancel.Load())
 
 	v.mu.Lock()
 	v.resetting = false
-	fenced := v.idleResetFencedLocked()
-	if err == nil || maybe {
+	if !canceledBeforeSend && (err == nil || maybe) {
 		// Keep the Mac unavailable until the reset's boot is confirmed (or
 		// a may-have-gone reset proves it never reached the Mac).
 		v.setStateLocked(api.StateRecovering, "automatic Hard reset of idle offline Mac")
 	}
 	v.mu.Unlock()
 
-	if err != nil && !maybe {
+	if canceledBeforeSend {
 		if s.ctx.Err() != nil {
 			return
 		}
-		if !dispatched && fenced {
-			s.restoreIdleReset(devID, prevResetMark)
-			s.log.Printf("%s: automatic idle Hard reset called off before sending", name)
-			return
-		}
+		s.restoreIdleReset(devID, prevResetMark)
+		s.log.Printf("%s: automatic idle Hard reset called off before sending", name)
+		return
+	}
+	if err != nil && !maybe {
 		s.log.Printf("%s: automatic idle Hard reset failed: %v", name, err)
 		s.agents.Trouble(key, fmt.Sprintf("%s has been offline since %s (%s); automatic Hard reset failed: %v.", name, when(since), why, err))
 		return

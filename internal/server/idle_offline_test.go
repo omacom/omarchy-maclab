@@ -357,8 +357,77 @@ func TestIdleOfflineQueuedResetCanceledByNewLease(t *testing.T) {
 	if resets != 0 {
 		t.Fatalf("sent %d resets after Lease was taken, want 0", resets)
 	}
+	if st := v.snapshot().State; st != api.StateOffline {
+		t.Fatalf("state after canceled queued reset = %s, want offline (must not enter recovering)", st)
+	}
+	// Advance well past BootTimeout: no delayed failure alert and cooldown budget was restored.
+	o.clock.Advance(5 * time.Minute)
+	time.Sleep(50 * time.Millisecond)
 	if len(o.told()) != 0 {
-		t.Fatalf("unexpected alerts when Lease canceled queued reset: %v", o.told())
+		t.Fatalf("unexpected alerts past BootTimeout when Lease canceled queued reset: %v", o.told())
+	}
+	if last, _ := o.s.lastIdleReset(v.snapshot().ID); !last.IsZero() {
+		t.Fatalf("canceled queued reset consumed cooldown budget: %v", last)
+	}
+}
+
+func TestIdleOfflineQueuedResetCanceledWhenMacReturnsOnline(t *testing.T) {
+	fm := newFakeMini(t)
+	o := newOps(t, func(cfg *Config) {
+		cfg.OOB = fm.client
+		cfg.BootTimeout = 2 * time.Minute
+	})
+	v := addIdleTestMac(o, "m2-max", api.KindLabOwned, api.StateOffline, "no heartbeat")
+	fm.plug(portLeft, nil, "m2-max", productM2Max)
+	o.s.sight(o.s.ctx)
+
+	probing, release := fm.holdProbes(t)
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		_, _ = fm.client.Probe(context.Background(), portLeft)
+	}()
+	<-probing
+
+	o.s.look(o.s.ctx)
+	o.later(idleOfflineHold)
+
+	waitUntil(t, 2*time.Second, func() bool {
+		fm.mu.Lock()
+		defer fm.mu.Unlock()
+		return fm.resetsAsked == 1
+	})
+
+	// The Mac wakes up on its own while the automatic reset waits in queue.
+	o.clock.Advance(time.Second)
+	v.heartbeat(api.Checkin{
+		BootID: "boot-m2-max-1",
+		Kernel: "7.3.0-1-ARCH",
+		Health: api.Health{SystemState: "running"},
+	})
+
+	waitUntil(t, 2*time.Second, func() bool {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		return !v.resetting
+	})
+	release()
+	<-probeDone
+
+	fm.mu.Lock()
+	resets := fm.resets
+	fm.mu.Unlock()
+	if resets != 0 {
+		t.Fatalf("sent %d resets after Mac returned online, want 0", resets)
+	}
+	if st := v.snapshot().State; st != api.StateReady {
+		t.Fatalf("state after Mac returned online = %s, want ready", st)
+	}
+	// Advance past BootTimeout: the Mac stays ready and no failure alert fires.
+	o.clock.Advance(3 * time.Minute)
+	time.Sleep(50 * time.Millisecond)
+	if len(o.told()) != 0 {
+		t.Fatalf("unexpected alerts after queued reset was canceled by return: %v", o.told())
 	}
 }
 
@@ -372,21 +441,36 @@ func TestIdleOfflineOnSendingAndHeartbeatDuringResetKeepRecovering(t *testing.T)
 	fm.plug(portLeft, nil, "m2-max", productM2Max)
 	o.s.sight(o.s.ctx)
 
-	// Right as the controller checks the port under its lock (just before
-	// OnSending fires), the Mac checks in on a mid-flight boot and becomes
-	// ready. OnSending must capture boot-mid as the pre-reset boot, and
-	// idleRecover must still keep the Mac in StateRecovering until a newer
-	// post-reset boot arrives.
+	// 1) Right before OnSending fires (in onLook), update the Mac's BootID to
+	// boot-m2-max-mid while still offline so OnSending must capture boot-mid.
+	// 2) Give the tool 150ms (toolTime) and, as soon as the controller begins
+	// executing Reboot (after 102 / OnSending), send a heartbeat moving the Mac
+	// to StateReady — racing with fenceIdleWhileWaiting. Because OnSending has
+	// already fired, idleRecover must still hold StateRecovering and must NOT
+	// count boot-m2-max-mid as post-reset recovery.
 	var once sync.Once
 	fm.mu.Lock()
+	fm.toolTime = 150 * time.Millisecond
 	fm.onLook = func(int) {
 		once.Do(func() {
 			o.clock.Advance(2 * time.Second)
-			v.heartbeat(api.Checkin{
-				BootID: "boot-m2-max-mid",
-				Kernel: "7.3.0-1-ARCH",
-				Health: api.Health{SystemState: "running"},
-			})
+			v.mu.Lock()
+			v.d.BootID = "boot-m2-max-mid"
+			v.d.LastSeen = o.clock.Now()
+			v.mu.Unlock()
+			go func() {
+				waitUntil(t, 2*time.Second, func() bool {
+					fm.mu.Lock()
+					defer fm.mu.Unlock()
+					return len(fm.began) == 1
+				})
+				o.clock.Advance(time.Second)
+				v.heartbeat(api.Checkin{
+					BootID: "boot-m2-max-mid",
+					Kernel: "7.3.0-1-ARCH",
+					Health: api.Health{SystemState: "running"},
+				})
+			}()
 		})
 	}
 	fm.mu.Unlock()
