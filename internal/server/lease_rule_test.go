@@ -467,6 +467,14 @@ func TestTheConfigurationComesFromTheTableElseTheKernelLog(t *testing.T) {
 	if got := conf("max-d"); got != "j414c, 12 CPU and 38 GPU cores" {
 		t.Errorf("the GPU count from an older log: %q", got)
 	}
+	// A GPU count no Known-good log has comes from a test kernel's log; its
+	// CPU count never does.
+	l.lrMac("max-e", "j414c", nil)
+	l.lrKernelLog("max-e", "j-e1", lrKnownGood, t0, lrLog("12", ""))
+	l.lrKernelLog("max-e", "j-e2", "7.2.0-rc1-test", t0.Add(time.Hour), lrLog("4", "38"))
+	if got := conf("max-e"); got != "j414c, 12 CPU and 38 GPU cores" {
+		t.Errorf("the GPU count from a test kernel's log: %q", got)
+	}
 }
 
 // A leased Mac refuses a Maintainer's jobs, naming the holder and the end
