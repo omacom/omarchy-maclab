@@ -93,24 +93,69 @@ func (l *Linux) Health() api.Health {
 	h.Tainted, _ = strconv.ParseInt(readTrim("/proc/sys/kernel/tainted"), 10, 64)
 	_, _, cmd := l.Identity()
 	h.JobTag = jobTag(cmd)
-	h.OnBattery = onBattery("/sys/class/power_supply")
+	h.OnBattery, h.Power = readPower("/sys/class/power_supply")
 	return h
 }
 
 // onBattery is whether the Mac has an AC adapter (a Mains power supply) and
 // it is unplugged. A Mac with none, a desktop, is never on battery.
 func onBattery(dir string) bool {
+	on, _ := readPower(dir)
+	return on
+}
+
+// readPower reads AC and battery telemetry from /sys/class/power_supply.
+// A desktop Mac with no battery supply returns (false, nil).
+func readPower(dir string) (bool, *api.Power) {
 	supplies, _ := os.ReadDir(dir)
 	mains, online := false, false
+	var inputLimitUW int64
+	hasBattery := false
+	var capPtr *int
+	var powerPtr *int64
 	for _, e := range supplies {
 		p := filepath.Join(dir, e.Name())
-		if readTrim(filepath.Join(p, "type")) != "Mains" {
-			continue
+		switch readTrim(filepath.Join(p, "type")) {
+		case "Mains":
+			mains = true
+			if readTrim(filepath.Join(p, "online")) == "1" {
+				online = true
+				if lim, err := strconv.ParseInt(readTrim(filepath.Join(p, "input_power_limit")), 10, 64); err == nil && lim > inputLimitUW {
+					inputLimitUW = lim
+				}
+			}
+		case "Battery":
+			hasBattery = true
+			if capPtr == nil {
+				if v, err := strconv.Atoi(readTrim(filepath.Join(p, "capacity"))); err == nil && v >= 0 && v <= 100 {
+					capPtr = &v
+				}
+			}
+			if powerPtr == nil {
+				if v, err := strconv.ParseInt(readTrim(filepath.Join(p, "power_now")), 10, 64); err == nil {
+					powerPtr = &v
+				} else if uV, errV := strconv.ParseInt(readTrim(filepath.Join(p, "voltage_now")), 10, 64); errV == nil {
+					if uA, errA := strconv.ParseInt(readTrim(filepath.Join(p, "current_now")), 10, 64); errA == nil {
+						w := (uV / 1000) * (uA / 1000) // microwatts without int64 overflow
+						powerPtr = &w
+					}
+				}
+			}
 		}
-		mains = true
-		online = online || readTrim(filepath.Join(p, "online")) == "1"
 	}
-	return mains && !online
+	unplugged := mains && !online
+	if !hasBattery {
+		return unplugged, nil
+	}
+	pw := &api.Power{
+		BatteryPercent:    capPtr,
+		BatteryPowerUW:    powerPtr,
+		InputPowerLimitUW: inputLimitUW,
+	}
+	if online && powerPtr != nil && *powerPtr < 0 && (inputLimitUW == 0 || inputLimitUW < api.UnderpoweredACUW) {
+		pw.Draining = true
+	}
+	return unplugged, pw
 }
 
 func (l *Linux) Facts() api.Facts {

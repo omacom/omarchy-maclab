@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/omacom/omarchy-maclab/internal/api"
 )
 
 const (
@@ -36,7 +38,10 @@ const (
 	tunnelHold = 5 * time.Minute
 	// partHold is how long Litestream, the Builder or the controller must
 	// stay wrong before "Agents" is told.
-	partHold     = 2 * time.Minute
+	partHold = 2 * time.Minute
+	// powerHold is how long a Lab-owned Mac must stay on battery, draining
+	// on underpowered AC, or low without charging before "Agents" is told.
+	powerHold    = 5 * time.Minute
 	backupTooOld = 36 * time.Hour
 	// diskLow is the free space, in percent, under which "Agents" is told.
 	diskLow = 15
@@ -241,6 +246,7 @@ func (s *Server) look(ctx context.Context) {
 	}
 	s.lookLitestream(now, mini)
 	s.lookDisk(now)
+	s.lookPower(now)
 	s.lookAlias(ctx, now)
 
 	w.statusMu.Lock()
@@ -528,6 +534,31 @@ func (s *Server) lookDisk(now time.Time) {
 	s.judge(now, "disk", percent < diskLow, 0,
 		fixed(fmt.Sprintf("The mini's disk is %d %% free (%s): under %d %%.", percent, size, diskLow)),
 		fixed(fmt.Sprintf("The mini's disk is %d %% free again (%s).", percent, size)))
+}
+
+// lookPower watches each live Lab-owned Mac's AC and battery telemetry,
+// telling "Agents" once when one stays on battery, drains on underpowered AC,
+// or sits at a low charge without charging. Offline Macs are skipped so an
+// open power alert does not clear falsely when a drained Mac suspends.
+func (s *Server) lookPower(now time.Time) {
+	for _, v := range s.allDevs() {
+		v.mu.Lock()
+		d := v.d
+		alive := v.aliveLocked()
+		v.mu.Unlock()
+		if d.IsVolunteer() || d.State == api.StateLeft || !alive {
+			continue
+		}
+		bad, detail := d.Health.PowerTrouble()
+		key := "power:" + d.ID
+		rec := d.Name + " is on AC power again."
+		if sum := d.Health.PowerSummary(); sum != "" {
+			rec = fmt.Sprintf("%s is on AC power again: %s.", d.Name, sum)
+		}
+		s.judge(now, key, bad, powerHold,
+			fixed(fmt.Sprintf("%s is %s.", d.Name, detail)),
+			fixed(rec))
+	}
 }
 
 // lookAlias asks the Alias from outside whether it still leads to the Lab

@@ -351,12 +351,137 @@ func StaleKnownGoodFix(name, kernel string) string {
 	return fmt.Sprintf("run `lab baseline %s` to make the running kernel %s its known-good", name, kernel)
 }
 
+// Power thresholds used by lab-agent and labd to spot underpowered AC
+// (such as a host USB-C port supplying 7.5-15 W) and low batteries before
+// upowerd suspends a Lab-owned Mac.
+const (
+	// UnderpoweredACUW is the mains input power limit (20 W) below which
+	// a net-discharging battery counts as losing charge on underpowered AC.
+	UnderpoweredACUW int64 = 20_000_000
+	// LowBatteryPercent is the charge percentage at or below which a
+	// non-charging battery raises a power alert.
+	LowBatteryPercent = 25
+)
+
+// Power is the Mac's AC and battery state from /sys/class/power_supply.
+// Nil for a desktop Mac with no battery or an older lab-agent.
+type Power struct {
+	// BatteryPercent is the charge percentage (0..100), nil when unreadable.
+	BatteryPercent *int `json:"battery_percent,omitempty"`
+	// BatteryPowerUW is net battery power in microwatts (negative while
+	// discharging, positive while charging), nil when unreadable.
+	BatteryPowerUW *int64 `json:"battery_power_uw,omitempty"`
+	// InputPowerLimitUW is the online mains adapter's input power limit
+	// in microwatts (0 when unreadable or offline).
+	InputPowerLimitUW int64 `json:"input_power_limit_uw,omitempty"`
+	// Draining is whether AC reports online while the battery is still
+	// net-discharging on an underpowered supply.
+	Draining bool `json:"draining,omitempty"`
+}
+
 type Health struct {
 	Uptime      float64 `json:"uptime"`
 	SystemState string  `json:"system_state"` // systemctl is-system-running
 	Tainted     int64   `json:"tainted"`
 	JobTag      string  `json:"job_tag,omitempty"`    // maclab.job= from the running cmdline
 	OnBattery   bool    `json:"on_battery,omitempty"` // unplugged from AC power
+	Power       *Power  `json:"power,omitempty"`
+}
+
+// PowerTrouble reports whether the Mac's power state risks an unplanned
+// suspend or shutdown, and a short human-readable description.
+func (h Health) PowerTrouble() (bool, string) {
+	p := h.Power
+	switch {
+	case h.OnBattery:
+		return true, "on battery" + powerDetail(p, false) + ": plug in its charger"
+	case p != nil && p.Draining:
+		return true, "losing charge on underpowered AC" + powerDetail(p, true) + ": plug in its charger"
+	case p != nil && p.BatteryPercent != nil && *p.BatteryPercent <= LowBatteryPercent && (p.BatteryPowerUW == nil || *p.BatteryPowerUW <= 0):
+		return true, fmt.Sprintf("battery low at %d%% and not charging%s: check its charger", *p.BatteryPercent, powerLimitDetail(p))
+	}
+	return false, ""
+}
+
+// PowerSummary is a one-line power description for `lab status <mac>`, or
+// "" when neither battery readings nor on-battery state were reported.
+func (h Health) PowerSummary() string {
+	p := h.Power
+	if p == nil {
+		if h.OnBattery {
+			return "on battery"
+		}
+		return ""
+	}
+	var src string
+	switch {
+	case h.OnBattery:
+		src = "on battery"
+	case p.Draining:
+		src = "underpowered AC"
+	default:
+		src = "AC"
+	}
+	if !h.OnBattery && p.InputPowerLimitUW > 0 {
+		src += fmt.Sprintf(" (%s limit)", formatWatts(p.InputPowerLimitUW))
+	}
+	var parts []string
+	if p.BatteryPercent != nil {
+		parts = append(parts, fmt.Sprintf("battery %d%%", *p.BatteryPercent))
+	}
+	if p.BatteryPowerUW != nil && *p.BatteryPowerUW != 0 {
+		parts = append(parts, formatSignedWatts(*p.BatteryPowerUW))
+	}
+	if p.Draining {
+		parts = append(parts, "draining")
+	}
+	if len(parts) == 0 {
+		return src
+	}
+	return src + ", " + strings.Join(parts, ", ")
+}
+
+func powerDetail(p *Power, withLimit bool) string {
+	if p == nil {
+		return ""
+	}
+	var parts []string
+	if p.BatteryPercent != nil {
+		parts = append(parts, fmt.Sprintf("%d%%", *p.BatteryPercent))
+	}
+	if p.BatteryPowerUW != nil && *p.BatteryPowerUW != 0 {
+		parts = append(parts, formatSignedWatts(*p.BatteryPowerUW))
+	}
+	if withLimit && p.InputPowerLimitUW > 0 {
+		parts = append(parts, formatWatts(p.InputPowerLimitUW)+" limit")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+func powerLimitDetail(p *Power) string {
+	if p == nil || p.InputPowerLimitUW <= 0 {
+		return ""
+	}
+	return " (" + formatWatts(p.InputPowerLimitUW) + " limit)"
+}
+
+func formatWatts(uw int64) string {
+	w := float64(uw) / 1_000_000
+	if w >= 20 || w == float64(int64(w)) {
+		return fmt.Sprintf("%.0f W", w)
+	}
+	return fmt.Sprintf("%.1f W", w)
+}
+
+func formatSignedWatts(uw int64) string {
+	w := float64(uw) / 1_000_000
+	if w >= 0 {
+		return fmt.Sprintf("+%.1f W", w)
+	}
+	return fmt.Sprintf("%.1f W", w)
 }
 
 // KernelEvent is a classified kernel log line, from the agent's /dev/kmsg or from serial.

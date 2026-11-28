@@ -1260,6 +1260,13 @@ func showDevices(ctx context.Context, c *client.Client) error {
 		}
 	}
 	for _, d := range devs {
+		if !d.IsVolunteer() && d.State != api.StateLeft {
+			if bad, detail := d.Health.PowerTrouble(); bad {
+				fmt.Printf("%s is %s\n", d.Name, detail)
+			}
+		}
+	}
+	for _, d := range devs {
 		if d.LabAgent != "" {
 			fmt.Printf("%s runs lab-agent %s, older than the lab's %s: %s\n", d.Name, d.Facts.AgentVersion, d.LabAgent, agentUpdateBy(d))
 		}
@@ -1375,6 +1382,9 @@ func showDevice(ctx context.Context, c *client.Client, name string) error {
 		fmt.Printf("  lab-agent:   %s\n", orDash(d.Facts.AgentVersion, "unknown"))
 	}
 	fmt.Printf("  last seen:   %s, uptime %.0fs, systemd %s\n", ago(d.LastSeen), d.Health.Uptime, d.Health.SystemState)
+	if pw := d.Health.PowerSummary(); pw != "" {
+		fmt.Printf("  power:       %s\n", pw)
+	}
 	if d.BootID != "" {
 		fmt.Printf("  boot:        %s\n", d.BootID)
 	}

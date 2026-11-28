@@ -253,6 +253,8 @@ func (v *dev) perfIdleLocked(length time.Duration) string {
 		return "it waits for the lab's lab-agent"
 	case d.Health.OnBattery:
 		return "it is on battery"
+	case d.Health.Power != nil && d.Health.Power.Draining:
+		return "it is losing charge on underpowered AC"
 	case !d.Facts.PreflightOK:
 		return "it fails preflight"
 	case d.IsVolunteer() && (d.Limited || d.AccessLevel != api.AccessFull):
