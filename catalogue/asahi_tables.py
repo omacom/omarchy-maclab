@@ -96,7 +96,9 @@ ROWS = {
     "dcp": ("dcp", "Display coprocessor (DCP)"),
     "usb2 (tb ports)": ("usb2-tb-ports", "USB2 on Thunderbolt ports"),
     "usb3 (tb ports)": ("usb3-tb-ports", "USB3 on Thunderbolt ports"),
-    "thunderbolt": ("thunderbolt", "Thunderbolt"),
+    "thunderbolt (base)": ("thunderbolt", "Thunderbolt"),
+    "thunderbolt pcie adaptor": ("thunderbolt-pcie-adaptor", "Thunderbolt PCIe adaptor"),
+    "thunderbolt dp adaptor": ("thunderbolt-dp-adaptor", "Thunderbolt DP adaptor"),
     "dp alt mode": ("dp-alt-mode", "DisplayPort alt mode"),
     "gpu": ("gpu", "GPU"),
     "video decoder": ("video-decoder", "Video decoder"),
@@ -282,7 +284,8 @@ def parse_devices(text: str, chips: dict) -> dict[str, dict]:
     boards = {}
     for line in text.splitlines():
         cells = _cells(line) if line.startswith("|") else []
-        if len(cells) < 4 or not re.fullmatch(r"J\w+AP", cells[2]):
+        # Board names are not all J-prefixed: the 2026 MacBook Pro PROLED XDR line is K114/K116.
+        if len(cells) < 4 or not re.fullmatch(r"[A-Z]\w+AP", cells[2]):
             continue
         board = cells[2][0].lower() + cells[2][1:-2]
         soc = SOC_FIXES.get(board, cells[3].lower())

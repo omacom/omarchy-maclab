@@ -302,7 +302,7 @@ func TestAReportChangedAfterItWasSignedIsRefused(t *testing.T) {
 	tampered := []*Object{
 		put(parse(t, read(t, first)), "fail", "checks", 0, "status"),
 		put(parse(t, read(t, first)), "7.1.13-1-ARCH", "machine", "kernel"),
-		put(sign(t, golden(t, "m2-max-image2"), "a"), integer(20), "catalogue_version"),
+		put(sign(t, golden(t, "m2-max-image2"), "a"), integer(99), "catalogue_version"),
 	}
 	for _, report := range tampered {
 		judged, refusal := upload(t, encode(t, report))

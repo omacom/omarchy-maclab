@@ -5,7 +5,7 @@
     "version": "0.2.0"
   },
   "consent_version": 6,
-  "catalogue_version": 19,
+  "catalogue_version": 20,
   "machine": {
     "model": "Apple MacBook Pro (16-inch, M2 Max, 2023)",
     "board": "j416c",
@@ -1570,7 +1570,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "supported"
         }
       }
@@ -1859,7 +1859,7 @@
         "feature": "thunderbolt",
         "layer": "asahi",
         "expected": {
-          "asahi": "wip",
+          "asahi": "linux-asahi",
           "aurora": "supported"
         }
       }

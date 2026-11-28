@@ -271,7 +271,7 @@ func TestAReportsOldLinkShowsTheMachineAndEachCheck(t *testing.T) {
 		`kernel: 7.1.12-2-2-ARCH`,
 		`<span class="badge badge-works outcome outcome-works">works</span>`,
 		`<span class="feature">Device tree, asahi layer</span>`,
-		`<dd>feature catalogue v19</dd>`,
+		`<dd>feature catalogue v20</dd>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the report's page lacks %q", want)
