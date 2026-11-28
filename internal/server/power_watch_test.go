@@ -70,8 +70,11 @@ func TestUnderpoweredDrainingLabMacAlertsAgentsAndStaysLatchedWhileOffline(t *te
 		},
 	}
 
-	setDeviceHealth(o, v, healthyAC, true)
-	o.minutes(10)
+	for i := 0; i < 10; i++ {
+		o.clock.Advance(time.Minute)
+		setDeviceHealth(o, v, healthyAC, true)
+		o.s.look(o.s.ctx)
+	}
 	o.wantTold()
 
 	// Draining for 4 minutes is under powerHold (5 minutes): no alert yet.
@@ -99,7 +102,7 @@ func TestUnderpoweredDrainingLabMacAlertsAgentsAndStaysLatchedWhileOffline(t *te
 
 	// Going offline (e.g. upowerd suspend) must NOT clear the power alert.
 	setDeviceHealth(o, v, draining, false)
-	o.minutes(15)
+	o.minutes(5)
 	o.wantTold(trouble)
 
 	// Checking back in on adequate AC clears the alert once.
@@ -135,6 +138,7 @@ func TestVolunteersMacPowerNeverAlertsAgentsAndDrainingSkipsPerf(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		o.clock.Advance(time.Minute)
 		setDeviceHealth(o, vol, api.Health{OnBattery: true}, true)
+		setDeviceHealth(o, labMac, api.Health{SystemState: "running"}, true)
 		o.s.look(o.s.ctx)
 	}
 	o.wantTold()

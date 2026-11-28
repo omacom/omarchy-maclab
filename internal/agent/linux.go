@@ -104,15 +104,40 @@ func onBattery(dir string) bool {
 	return on
 }
 
-// readPower reads AC and battery telemetry from /sys/class/power_supply.
-// A desktop Mac with no battery supply returns (false, nil).
+const smcBatteryName = "macsmc-battery"
+
+// pickSystemBattery chooses the Mac's own system battery among Battery
+// supplies in dir, preferring macsmc-battery and ignoring peripheral device
+// batteries (scope=Device, such as a wireless mouse or trackpad).
+func pickSystemBattery(dir string, names []string) string {
+	for _, n := range names {
+		if n == smcBatteryName {
+			return n
+		}
+	}
+	var fallback string
+	for _, n := range names {
+		scope := readTrim(filepath.Join(dir, n, "scope"))
+		if scope == "Device" {
+			continue
+		}
+		if scope == "System" {
+			return n
+		}
+		if fallback == "" {
+			fallback = n
+		}
+	}
+	return fallback
+}
+
+// readPower reads AC and system battery telemetry from /sys/class/power_supply.
+// A desktop Mac with no system battery supply returns (false, nil).
 func readPower(dir string) (bool, *api.Power) {
 	supplies, _ := os.ReadDir(dir)
 	mains, online := false, false
 	var inputLimitUW int64
-	hasBattery := false
-	var capPtr *int
-	var powerPtr *int64
+	var batteries []string
 	for _, e := range supplies {
 		p := filepath.Join(dir, e.Name())
 		switch readTrim(filepath.Join(p, "type")) {
@@ -125,27 +150,27 @@ func readPower(dir string) (bool, *api.Power) {
 				}
 			}
 		case "Battery":
-			hasBattery = true
-			if capPtr == nil {
-				if v, err := strconv.Atoi(readTrim(filepath.Join(p, "capacity"))); err == nil && v >= 0 && v <= 100 {
-					capPtr = &v
-				}
-			}
-			if powerPtr == nil {
-				if v, err := strconv.ParseInt(readTrim(filepath.Join(p, "power_now")), 10, 64); err == nil {
-					powerPtr = &v
-				} else if uV, errV := strconv.ParseInt(readTrim(filepath.Join(p, "voltage_now")), 10, 64); errV == nil {
-					if uA, errA := strconv.ParseInt(readTrim(filepath.Join(p, "current_now")), 10, 64); errA == nil {
-						w := (uV / 1000) * (uA / 1000) // microwatts without int64 overflow
-						powerPtr = &w
-					}
-				}
-			}
+			batteries = append(batteries, e.Name())
 		}
 	}
 	unplugged := mains && !online
-	if !hasBattery {
+	bat := pickSystemBattery(dir, batteries)
+	if bat == "" {
 		return unplugged, nil
+	}
+	bp := filepath.Join(dir, bat)
+	var capPtr *int
+	if v, err := strconv.Atoi(readTrim(filepath.Join(bp, "capacity"))); err == nil && v >= 0 && v <= 100 {
+		capPtr = &v
+	}
+	var powerPtr *int64
+	if v, err := strconv.ParseInt(readTrim(filepath.Join(bp, "power_now")), 10, 64); err == nil {
+		powerPtr = &v
+	} else if uV, errV := strconv.ParseInt(readTrim(filepath.Join(bp, "voltage_now")), 10, 64); errV == nil {
+		if uA, errA := strconv.ParseInt(readTrim(filepath.Join(bp, "current_now")), 10, 64); errA == nil {
+			w := (uV / 1000) * (uA / 1000) // microwatts without int64 overflow
+			powerPtr = &w
+		}
 	}
 	pw := &api.Power{
 		BatteryPercent:    capPtr,

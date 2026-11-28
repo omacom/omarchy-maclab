@@ -128,4 +128,73 @@ func TestReadPower(t *testing.T) {
 			t.Fatalf("fallback power = %v, want -11500000", p.BatteryPowerUW)
 		}
 	})
+
+	t.Run("peripheral mouse battery ignored in favor of macsmc-battery", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSupply(t, dir, "macsmc-ac", map[string]string{
+			"type":              "Mains",
+			"online":            "1",
+			"input_power_limit": "139720000",
+		})
+		// hidpp_battery_0 sorts alphabetically before macsmc-battery.
+		writeSupply(t, dir, "hidpp_battery_0", map[string]string{
+			"type":     "Battery",
+			"scope":    "Device",
+			"capacity": "5",
+		})
+		writeSupply(t, dir, "macsmc-battery", map[string]string{
+			"type":      "Battery",
+			"scope":     "System",
+			"capacity":  "85",
+			"power_now": "5000000",
+		})
+		onBat, p := readPower(dir)
+		if onBat || p == nil {
+			t.Fatalf("got (%v, %+v), want system battery telemetry", onBat, p)
+		}
+		if p.BatteryPercent == nil || *p.BatteryPercent != 85 {
+			t.Fatalf("battery percent = %v, want 85 (not mouse 5%%)", p.BatteryPercent)
+		}
+		if p.BatteryPowerUW == nil || *p.BatteryPowerUW != 5000000 {
+			t.Fatalf("battery power = %v, want 5000000", p.BatteryPowerUW)
+		}
+		if bad, why := (api.Health{OnBattery: onBat, Power: p}).PowerTrouble(); bad {
+			t.Fatalf("unexpected trouble from low mouse battery: %s", why)
+		}
+	})
+
+	t.Run("desktop with only peripheral device battery returns nil power", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSupply(t, dir, "hidpp_battery_0", map[string]string{
+			"type":     "Battery",
+			"scope":    "Device",
+			"capacity": "5",
+		})
+		onBat, p := readPower(dir)
+		if onBat || p != nil {
+			t.Fatalf("got (%v, %+v), want (false, nil) for desktop with mouse battery", onBat, p)
+		}
+	})
+
+	t.Run("non-SMC system battery preferred over device battery", func(t *testing.T) {
+		dir := t.TempDir()
+		writeSupply(t, dir, "aaa-mouse", map[string]string{
+			"type":     "Battery",
+			"scope":    "Device",
+			"capacity": "10",
+		})
+		writeSupply(t, dir, "bat-no-scope", map[string]string{
+			"type":     "Battery",
+			"capacity": "60",
+		})
+		writeSupply(t, dir, "bat-system", map[string]string{
+			"type":     "Battery",
+			"scope":    "System",
+			"capacity": "72",
+		})
+		_, p := readPower(dir)
+		if p == nil || p.BatteryPercent == nil || *p.BatteryPercent != 72 {
+			t.Fatalf("got %+v, want scope=System battery at 72%%", p)
+		}
+	})
 }
