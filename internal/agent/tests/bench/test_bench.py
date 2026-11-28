@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -710,6 +711,81 @@ class Browser(Case):
             s = self.metric(mid)["settings"]
             self.assertEqual((s["width"], s["height"], s["device_pixel_ratio"]), (1920, 1080, bench.DEVICE_PIXEL_RATIO))
         self.assertEqual(self.metric("motionmark")["settings"]["refresh_hz"], bench.REFRESH_HZ)
+
+    def drive_browser(self, mid, settings, draw_fps):
+        """A web benchmark against a browser whose about:blank reads 60 frames/s
+        and whose draw probe reads draw_fps: the DevTools calls made, and the
+        value or the reason code."""
+        calls = []
+
+        class FakeCDP:
+            def __init__(self, url):
+                pass
+
+            def call(self, method, **p):
+                calls.append(method)
+                return {}
+
+            def eval(self, expr):
+                calls.append(expr)
+                if expr == bench.PROBE:
+                    return {"renderer": "ANGLE (Mesa, AGX G13/G14, OpenGL ES 3.2)", "dpr": 2}
+                if expr == bench.FRAME_RATE:
+                    return 60.0
+                if expr == bench.DRAW_RATE:
+                    return draw_fps
+                return True
+
+            def close(self):
+                pass
+
+        class Listing(io.StringIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+        m = dict(self.metric(mid), settings=settings)
+        self.ctx.program = lambda fid, name: "chrome"
+        self.ctx.serve = lambda fid: ("http://127.0.0.1:1/", lambda: None)
+        self.h.spawn = lambda *a, **k: types.SimpleNamespace(wait=lambda t: 0)
+        listing = '[{"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:2/devtools/page/1"}]'
+        with mock.patch.object(bench, "CDP", FakeCDP), mock.patch.object(bench, "devtools_port", lambda p: 2), \
+                mock.patch.object(bench.urllib.request, "urlopen", lambda *a, **k: Listing(listing)), \
+                mock.patch.object(bench, "page_result", lambda r: (100.0, 1.0)):
+            try:
+                v = bench.browser(mid)(self.ctx, m)
+            except bench.Reason as r:
+                return calls, r.code
+        return calls, v.value
+
+    def test_from_bench_4_motionmark_and_speedometer_count_the_draw_probes_frame_rate(self):
+        for mid in ("motionmark", "speedometer"):
+            s = dict(self.metric(mid)["settings"], refresh_measured_on="draw_probe")
+            calls, got = self.drive_browser(mid, s, 2.3)
+            self.assertEqual(got, "fell_back", mid)
+            self.assertNotIn("Page.navigate", calls, mid)
+            self.assertNotIn(bench.FRAME_RATE, calls, mid)
+            calls, got = self.drive_browser(mid, s, 60.0)
+            self.assertEqual(got, 100.0, mid)
+            self.assertLess(calls.index(bench.DRAW_RATE), calls.index("Page.navigate"), mid)
+
+    def test_before_bench_4_the_frame_rate_is_about_blanks(self):
+        for mid in ("motionmark", "speedometer", "jetstream"):
+            calls, got = self.drive_browser(mid, self.metric(mid)["settings"], 2.3)
+            self.assertEqual(got, 100.0, mid)
+            self.assertNotIn(bench.DRAW_RATE, calls, mid)
+            self.assertLess(calls.index(bench.FRAME_RATE), calls.index("Page.navigate"), mid)
+
+    def test_from_bench_4_motionmark_and_speedometer_take_the_draw_probe(self):
+        probed = {n: sorted(m["id"] for m in json.loads((HERE / "sets" / f"bench-{n}.json").read_text())["metrics"]
+                            if bench.refresh_on_draw_probe(m)) for n in range(1, 5)}
+        self.assertEqual(probed, {1: [], 2: [], 3: [], 4: ["motionmark", "speedometer"]})
+
+    def test_the_draw_probe_redraws_a_screen_sized_canvas_every_frame(self):
+        for part in ("innerWidth * devicePixelRatio", "innerHeight * devicePixelRatio", "fillRect(0, 0, c.width, c.height)",
+                     "requestAnimationFrame(f)", "c.remove()"):
+            self.assertIn(part, bench.DRAW_RATE)
 
     def test_devtools_port_file(self):
         with tempfile.TemporaryDirectory() as d:

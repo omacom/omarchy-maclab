@@ -867,6 +867,21 @@ FRAME_RATE = ("new Promise(r => { let n = 0; let t0 = null; function f(t) {"
               " if (t - t0 >= 2000) r(n * 1000 / (t - t0)); else requestAnimationFrame(f); }"
               " requestAnimationFrame(f); })")
 
+# The draw probe: FRAME_RATE while a canvas the size of the screen is redrawn
+# every frame. about:blank draws nothing, so it reads 60 on a driver that takes
+# hundreds of milliseconds for every drawn frame. The macOS runner's is the same.
+DRAW_RATE = ("new Promise(r => { const c = document.createElement('canvas');"
+             " c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio;"
+             " c.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh';"
+             " document.body.appendChild(c); const g = c.getContext('2d');"
+             " let n = 0; let t0 = null; function f(t) {"
+             " g.fillStyle = 'hsl(' + (t / 5 % 360) + ',70%,50%)'; g.fillRect(0, 0, c.width, c.height);"
+             " for (let i = 0; i < 200; i++) { g.fillStyle = 'hsl(' + (i * 7 + t / 3) % 360 + ',80%,60%)';"
+             " g.fillRect((i * 97 + t) % c.width, (i * 53 + t / 2) % c.height, 120, 120); }"
+             " if (t0 === null) t0 = t; else n++;"
+             " if (t - t0 >= 2000) { c.remove(); r(n * 1000 / (t - t0)); } else requestAnimationFrame(f); }"
+             " requestAnimationFrame(f); })")
+
 
 def software_gl(renderer):
     """Whether the browser's GL renderer is not the Mac's GPU."""
@@ -883,6 +898,12 @@ def browser_verdict(probe, fps):
     if not isinstance(fps, (int, float)) or abs(fps - REFRESH_HZ) > REFRESH_HZ * REFRESH_SLACK:
         return "fell_back"
     return None
+
+
+def refresh_on_draw_probe(m):
+    """Whether the frame rate is the draw probe's (from bench-4's MotionMark
+    and Speedometer) rather than about:blank's."""
+    return (m.get("settings") or {}).get("refresh_measured_on") == "draw_probe"
 
 
 def _wait(host, fn, timeout, step=2, what="the page"):
@@ -937,8 +958,10 @@ def browser(app):
                 pages = [p for p in json.load(r) if p.get("type") == "page"]
             cdp = CDP(pages[0]["webSocketDebuggerUrl"])
             probe = _try_for(h, lambda: (lambda p: p if p and p.get("renderer") else None)(cdp.eval(PROBE)), 30)
-            fps = cdp.eval(FRAME_RATE)
-            ctx.log(f"{app}: renderer {probe and probe.get('renderer')}, dpr {probe and probe.get('dpr')}, {fps} frames/s")
+            drawn = refresh_on_draw_probe(m)
+            fps = cdp.eval(DRAW_RATE if drawn else FRAME_RATE)
+            where = "the draw probe" if drawn else "about:blank"
+            ctx.log(f"{app}: renderer {probe and probe.get('renderer')}, dpr {probe and probe.get('dpr')}, {fps} frames/s on {where}")
             why = browser_verdict(probe, fps)
             if why:
                 raise Reason(why)
